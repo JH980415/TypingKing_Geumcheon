@@ -24,6 +24,7 @@
     "dist": "vite build && tsc -p tsconfig.node.json && electron-builder --config electron-builder.game.yml --publish=never && electron-builder --config electron-builder.leaderboard.yml --publish=never && electron-builder --config electron-builder.ai.yml --publish=never && electron-builder --config electron-builder.ai-leaderboard.yml --publish=never && electron-builder --config electron-builder.practice.yml --publish=never && electron-builder --config electron-builder.practice-leaderboard.yml --publish=never && node scripts/prepare-release.mjs",
     "test:logic": "tsx scripts/logic-tests.ts",
     "test:geumcheon:client": "tsx --test tests/events/eventProfile.test.ts tests/events/runtimeIsolation.test.ts tests/events/geumcheonVariants.test.ts tests/domain/geumcheonStageTexts.test.ts tests/domain/stageTextShuffle.test.ts tests/domain/geumcheonTiming.test.ts tests/domain/geumcheonRanking.test.ts tests/domain/geumcheonFairnessSimulation.test.ts tests/domain/geumcheonLeaderboardSelection.test.ts",
+    "test:nas-client": "tsx --test tests/nas-client/protocol.test.ts tests/nas-client/credentialStore.test.ts tests/nas-client/outbox.test.ts tests/nas-client/apiClient.test.ts tests/nas-client/retryWorker.test.ts tests/nas-client/leaderboardClient.test.ts tests/nas-client/adminSession.test.ts tests/nas-client/piiBoundary.test.ts",
     "prepare:geumcheon-client-release": "node scripts/prepare-geumcheon-client-release.mjs",
     "clean:release": "node scripts/clean-release.mjs",
     "scan:pii": "node scripts/scan-pii.mjs",

@@ -2,6 +2,15 @@ import type { DeviceProfile, EventProfile, EventVariantPolicy } from "../events/
 
 export type AppMode = "game" | "leaderboard";
 export type { DeviceProfile, EventProfile, EventProfileId, EventVariantPolicy, SessionKind } from "../events/types";
+export type {
+  NasLeaderboardEntryV1,
+  NasLeaderboardSnapshotV1,
+  NasRecordAckV1,
+  NasRecordEnvelopeV1,
+  NasSessionV1,
+  NasStageAttemptV1,
+  NasVisibilityActionV1,
+} from "../nas/protocol";
 export type AppVariant =
   | "typing"
   | "typing-leaderboard"
