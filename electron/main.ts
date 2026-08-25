@@ -33,7 +33,7 @@ import {
   validateStageReadiness
 } from "../shared/csv/fileStore";
 import type { AppMode, AppVariant, LeaderboardSyncStatus, PcRole, RecordRow, SaveRecordInput, StageText } from "../shared/types";
-import { resolveStartupProfile } from "./startupProfile";
+import { resolveLaunchPolicy, resolveStartupProfile } from "./startupProfile";
 
 let mainWindow: BrowserWindow | null = null;
 let startupRuntimeRoot: string | undefined;
@@ -262,7 +262,7 @@ function createWindow(variant: AppVariant): void {
   }
 }
 
-function registerIpc(variant: AppVariant): void {
+function registerIpc(variant: AppVariant, pcRole: PcRole): void {
   const isPracticeVariant = variant === "practice" || variant === "practice-leaderboard";
   // ensureRuntime(설정 로드) 전에 연습모드를 확정해야 세션 경로가 "연습회차" 폴더로 계산된다.
   setPracticeSessionMode(isPracticeVariant);
@@ -274,8 +274,6 @@ function registerIpc(variant: AppVariant): void {
   }
   const mode = appModeFromVariant(variant);
   const scopedRecordMode = recordModeFromVariant(variant);
-  const pcRole: PcRole = mode === "leaderboard" ? "leaderboard" : "player";
-
   ipcMain.handle("app:getBootstrap", () => ({
     ok: true,
     data: {
@@ -497,6 +495,8 @@ async function safeAsync<T>(task: () => Promise<T>, fallback?: string) {
 }
 
 void app.whenReady().then(() => {
+  const variant = resolveVariant();
+  let launchPolicy: ReturnType<typeof resolveLaunchPolicy> | undefined;
   try {
     const startup = resolveStartupProfile({
       isPackaged: app.isPackaged,
@@ -509,14 +509,15 @@ void app.whenReady().then(() => {
     });
     startupRuntimeRoot = startup.runtimeRoot;
     if (startup.userDataPath) app.setPath("userData", startup.userDataPath);
+    launchPolicy = resolveLaunchPolicy(startup, variant);
   } catch (error) {
     dialog.showErrorBox("시작할 수 없습니다", error instanceof Error ? error.message : String(error));
     app.exit(1);
     return;
   }
-  const variant = resolveVariant();
+  if (!launchPolicy) return;
   app.setAppUserModelId(appUserModelId(variant));
-  registerIpc(variant);
+  registerIpc(variant, launchPolicy.pcRole);
   createWindow(variant);
 
   app.on("activate", () => {

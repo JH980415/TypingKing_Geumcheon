@@ -1,7 +1,38 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
-import { resolveDeviceRuntimeRoot, resolveStartupProfile } from "../../electron/startupProfile";
+import { loadEventProfile } from "../../shared/events/eventProfile";
+import {
+  resolveDeviceRuntimeRoot,
+  resolveLaunchPolicy,
+  resolveStartupProfile,
+  type StartupProfile
+} from "../../electron/startupProfile";
+
+const geumcheonEventProfile = loadEventProfile(path.resolve("events/geumcheon-2026/event.config.json"));
+
+function geumcheonStartup(role: "player" | "leaderboard"): StartupProfile {
+  const deviceId = role === "player" ? "PC01" : "LEADERBOARD01";
+  return {
+    eventProfile: geumcheonEventProfile,
+    deviceProfile: {
+      schemaVersion: 1,
+      eventProfileId: "geumcheon-2026",
+      eventId: "geumcheon-science-festival-2026",
+      deviceId,
+      role,
+      apiBaseUrl: "https://records.example.test",
+      sessions: {
+        official: { sessionId: "day-1-round-1", dayNo: 1, roundNo: 1 },
+        practice: { sessionId: "practice" }
+      },
+      requestTimeoutMs: 5000,
+      retry: { initialDelayMs: 2000, maxDelayMs: 60000 }
+    },
+    runtimeRoot: path.join("C:\\Local", deviceId),
+    userDataPath: path.join("C:\\Local", deviceId, "electron-user-data")
+  };
+}
 
 test("isolates Geumcheon runtime by device", () => {
   assert.equal(
@@ -56,4 +87,23 @@ test("stops a packaged Geumcheon launch without its device profile", () => {
       }),
     /device profile/i
   );
+});
+
+test("rejects disabled Geumcheon normal variants before launch", () => {
+  const startup = geumcheonStartup("player");
+  assert.throws(() => resolveLaunchPolicy(startup, "typing"), /disabled/i);
+  assert.throws(() => resolveLaunchPolicy(startup, "typing-leaderboard"), /disabled/i);
+});
+
+test("rejects a player device launching a leaderboard variant", () => {
+  assert.throws(() => resolveLaunchPolicy(geumcheonStartup("player"), "ai-leaderboard"), /role/i);
+});
+
+test("rejects a leaderboard device launching a player variant", () => {
+  assert.throws(() => resolveLaunchPolicy(geumcheonStartup("leaderboard"), "ai"), /role/i);
+});
+
+test("returns the validated device role for allowed Geumcheon launches", () => {
+  assert.deepEqual(resolveLaunchPolicy(geumcheonStartup("player"), "ai"), { pcRole: "player" });
+  assert.deepEqual(resolveLaunchPolicy(geumcheonStartup("leaderboard"), "ai-leaderboard"), { pcRole: "leaderboard" });
 });

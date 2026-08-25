@@ -1,5 +1,6 @@
 import path from "node:path";
 import { loadDeviceProfile, loadEventProfile } from "../shared/events/eventProfile";
+import type { AppVariant, PcRole } from "../shared/types";
 import type { DeviceProfile, EventProfile, EventProfileId } from "../shared/events/types";
 
 export type StartupProfile = {
@@ -8,6 +9,8 @@ export type StartupProfile = {
   runtimeRoot: string;
   userDataPath?: string;
 };
+
+export type LaunchPolicy = { pcRole: PcRole };
 
 export type StartupProfileOptions = {
   isPackaged: boolean;
@@ -68,6 +71,19 @@ export function resolveDeviceRuntimeRoot(
   deviceId: DeviceProfile["deviceId"]
 ): string {
   return path.join(localAppData, "ThePMD", "TypingKing2026", profileId, deviceId);
+}
+
+export function resolveLaunchPolicy(startup: StartupProfile, variant: AppVariant): LaunchPolicy {
+  const variantPolicy = startup.eventProfile.variants[variant];
+  if (!variantPolicy.enabled) throw new Error(`Variant ${variant} is disabled for ${startup.eventProfile.profileId}`);
+  if (startup.eventProfile.profileId === "geumcheon-2026") {
+    if (!startup.deviceProfile) throw new Error("Geumcheon launch requires a validated device profile");
+    if (startup.deviceProfile.role !== variantPolicy.role) {
+      throw new Error(`Device role ${startup.deviceProfile.role} cannot launch ${variantPolicy.role} variant ${variant}`);
+    }
+    return { pcRole: startup.deviceProfile.role };
+  }
+  return { pcRole: variantPolicy.role };
 }
 
 export function resolveStartupProfile(options: StartupProfileOptions): StartupProfile {
