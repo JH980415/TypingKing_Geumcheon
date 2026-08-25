@@ -147,3 +147,32 @@ test("Geumcheon official AI leaderboard excludes rows missing authoritative comp
 
   assert.deepEqual(visible.map(({ record: row }) => row.record_id), ["trusted"]);
 });
+
+test("Geumcheon official AI leaderboard keeps zero-elapsed interruptions below finishers", () => {
+  const visible = selectGeumcheonAiLeaderboardEntriesForMode(
+    [
+      entry(record({
+        record_id: "interrupted-at-countdown",
+        participant_name: "중단참가자",
+        participantKey: "server-hmac-interrupted",
+        completionStatus: "interrupted",
+        result_stage: "0",
+        participant_progress_percent: "0",
+        totalTypingUnits: 0,
+        totalUserTimeMs: 0
+      })),
+      entry(record({
+        record_id: "completed",
+        participant_name: "완주참가자",
+        participantKey: "server-hmac-completed",
+        completionStatus: "completed"
+      }))
+    ],
+    { isGeumcheonOfficialBoard: true, isGeumcheonPracticeBoard: false }
+  );
+
+  assert.deepEqual(
+    visible.map(({ record: row }) => row.record_id),
+    ["completed", "interrupted-at-countdown"]
+  );
+});

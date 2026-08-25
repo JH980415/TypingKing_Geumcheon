@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
+import * as startupProfileModule from "../../electron/startupProfile";
 import { loadEventProfile } from "../../shared/events/eventProfile";
 import {
   resolveDeviceRuntimeRoot,
@@ -73,6 +74,18 @@ test("keeps packaged SkillUp compatible without a copied event profile", () => {
   });
   assert.equal(startup.eventProfile.profileId, "skillup-2026");
   assert.equal(startup.runtimeRoot, path.join("C:\\Local", "ThePMD", "TypingKing2026"));
+});
+
+test("allows executable-adjacent runtime migration only for legacy SkillUp", () => {
+  const migrationAllowed = (
+    startupProfileModule as typeof startupProfileModule & {
+      portableRuntimeMigrationAllowed?: (profileId: string) => boolean;
+    }
+  ).portableRuntimeMigrationAllowed;
+
+  assert.equal(typeof migrationAllowed, "function");
+  assert.equal(migrationAllowed?.("skillup-2026"), true);
+  assert.equal(migrationAllowed?.("geumcheon-2026"), false);
 });
 
 test("stops a packaged Geumcheon launch without its device profile", () => {

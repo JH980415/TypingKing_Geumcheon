@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
+import * as bootstrapDataModule from "../../shared/events/bootstrapData";
+import { DEFAULT_CONFIG } from "../../shared/constants/defaults";
 import { loadEventProfile, validateDeviceProfile, variantPolicyFor } from "../../shared/events/eventProfile";
 
 const validDeviceProfile = {
@@ -23,6 +25,30 @@ test("loads the AI-only Geumcheon variant policy", () => {
   assert.equal(profile.eventName, "제8회 금천과학축제");
   assert.equal(variantPolicyFor(profile, "typing").enabled, false);
   assert.deepEqual(variantPolicyFor(profile, "ai").gameModes, ["ai_challenge"]);
+});
+
+test("resolves SkillUp runtime theme overrides while keeping the Geumcheon profile theme", () => {
+  const resolveTheme = (
+    bootstrapDataModule as typeof bootstrapDataModule & {
+      resolveBootstrapTheme?: (bootstrap: {
+        config: typeof DEFAULT_CONFIG;
+        eventProfile: ReturnType<typeof loadEventProfile>;
+      }) => typeof DEFAULT_CONFIG.theme;
+    }
+  ).resolveBootstrapTheme;
+  const skillUpProfile = loadEventProfile(path.resolve("events/skillup-2026/event.config.json"));
+  const geumcheonProfile = loadEventProfile(path.resolve("events/geumcheon-2026/event.config.json"));
+  const customTheme = { ...DEFAULT_CONFIG.theme, primaryColor: "#123456" };
+
+  assert.equal(typeof resolveTheme, "function");
+  assert.equal(
+    resolveTheme?.({ config: { ...DEFAULT_CONFIG, theme: customTheme }, eventProfile: skillUpProfile }).primaryColor,
+    "#123456"
+  );
+  assert.equal(
+    resolveTheme?.({ config: { ...DEFAULT_CONFIG, theme: customTheme }, eventProfile: geumcheonProfile }).primaryColor,
+    geumcheonProfile.theme.primaryColor
+  );
 });
 
 test("accepts each permitted Geumcheon device profile", () => {

@@ -47,6 +47,10 @@ const expectedRuntimeAiAssets = publicResources
   .filter((file) => file.startsWith("assets/"))
   .map((file) => file.slice("assets/".length))
   .sort();
+const expectedRuntimeEventResources = publicResources
+  .filter((file) => file.startsWith("events/geumcheon-2026/"))
+  .map((file) => file.slice("events/geumcheon-2026/".length))
+  .sort();
 const forbiddenPath = /(?:^|[\/_.-])(device|bootstrap|credential|token|pin|nas|record|queue|log|recovery|export|admin)(?:s|[\/_.-]|$)/i;
 
 function fileList(dir: string, relative = ""): string[] {
@@ -75,6 +79,20 @@ function assertPortableBuildOutputs(): void {
     assert.deepEqual(runtimeAssets, expectedRuntimeAiAssets, `${variant} packages an unexpected runtime asset`);
     for (const asset of runtimeAssets) {
       assert.ok(fs.statSync(path.join(runtimeAssetsDir, asset)).size > 0, `${variant} has a zero-byte runtime asset: ${asset}`);
+    }
+    const runtimeEventDir = path.join(outputDir, "win-unpacked", "resources", "events", "geumcheon-2026");
+    assert.equal(fs.existsSync(runtimeEventDir), true, `${variant} is missing packaged event resources`);
+    const runtimeEventResources = fileList(runtimeEventDir).sort();
+    assert.deepEqual(
+      runtimeEventResources,
+      expectedRuntimeEventResources,
+      `${variant} packages an unexpected event resource`
+    );
+    for (const resource of runtimeEventResources) {
+      assert.ok(
+        fs.statSync(path.join(runtimeEventDir, resource)).size > 0,
+        `${variant} has a zero-byte event resource: ${resource}`
+      );
     }
   }
 }

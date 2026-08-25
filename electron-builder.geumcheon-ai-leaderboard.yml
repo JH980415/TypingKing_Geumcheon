@@ -25,6 +25,11 @@ extraResources:
       - ai_challenge_title.png
   - from: events/geumcheon-2026
     to: events/geumcheon-2026
+    filter:
+      - event.config.json
+      - stage_texts.csv
+      - assets/event-title.png
+      - assets/key-visual.png
 asar: true
 win:
   icon: assets/icons/leaderboard_app_icon.ico

@@ -54,6 +54,10 @@ export function recordModeFromPolicy(policy: EventVariantPolicy): "normal" | "ai
   return policy.gameModes[0] || "normal";
 }
 
+export function portableRuntimeMigrationAllowed(profileId: EventProfileId): boolean {
+  return profileId === "skillup-2026";
+}
+
 export function resolveApplicationResourcePaths(input: {
   isPackaged: boolean;
   projectRoot: string;

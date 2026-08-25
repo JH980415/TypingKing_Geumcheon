@@ -1,6 +1,7 @@
 ﻿import React, { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { BootstrapData } from "../../../shared/types";
+import { resolveBootstrapTheme } from "../../../shared/events/bootstrapData";
 import { TypingGameApp } from "../../typing-game/src/TypingGameApp";
 import { LeaderboardApp } from "../../leaderboard/src/LeaderboardApp";
 import "./styles.css";
@@ -52,7 +53,7 @@ function Shell() {
 
 function applyTheme(bootstrap: BootstrapData): void {
   const root = document.documentElement;
-  const theme = bootstrap.eventProfile.theme;
+  const theme = resolveBootstrapTheme(bootstrap);
   root.dataset.eventProfile = bootstrap.eventProfile.profileId;
   root.style.setProperty("--primary", theme.primaryColor);
   root.style.setProperty("--accent", theme.accentColor);

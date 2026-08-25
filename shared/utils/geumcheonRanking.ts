@@ -36,7 +36,13 @@ function requirePositiveSafeInteger(value: number, name: string): void {
 function validateCandidate(record: OfficialAttemptCandidate): void {
   requireNonnegativeSafeInteger(record.completedStages, "completedStages");
   requireNonnegativeSafeInteger(record.totalTypingUnits, "totalTypingUnits");
-  requirePositiveSafeInteger(record.totalUserTimeMs, "totalUserTimeMs");
+  requireNonnegativeSafeInteger(record.totalUserTimeMs, "totalUserTimeMs");
+  if (record.completionStatus === "completed" && record.totalUserTimeMs === 0) {
+    throw new Error("completed totalUserTimeMs must be positive");
+  }
+  if (record.totalUserTimeMs === 0 && record.totalTypingUnits !== 0) {
+    throw new Error("zero totalUserTimeMs requires zero totalTypingUnits");
+  }
   if (!Number.isFinite(record.progressPercent) || record.progressPercent < 0) {
     throw new Error("progressPercent must be nonnegative");
   }
@@ -133,7 +139,7 @@ export function assignOfficialAttemptEligibility<T extends OfficialAttemptCandid
     return {
       ...record,
       attemptNumber,
-      rankingEligible: attemptNumber <= limit && record.completionStatus === "completed"
+      rankingEligible: attemptNumber <= limit
     };
   });
 }
@@ -144,7 +150,7 @@ export function selectBestEligibleRecordPerParticipant<
   const best = new Map<string, T>();
   for (const record of records) {
     validateCandidate(record);
-    if (!record.rankingEligible || record.completionStatus !== "completed") continue;
+    if (!record.rankingEligible) continue;
     const current = best.get(record.participantKey);
     if (!current || compareGeumcheonRecords(record, current) < 0) best.set(record.participantKey, record);
   }

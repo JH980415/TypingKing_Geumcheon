@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
 import {
@@ -168,4 +171,111 @@ test("SkillUp runtime refresh remains raw settings", () => {
   };
 
   assert.deepEqual(mergeRuntimeConfigWithEventProfile(runtimeRefresh, skillupProfile, "official"), runtimeRefresh);
+});
+
+const geumcheonArtifacts = [
+  ["ai", "G-Science AI 타자왕.exe"],
+  ["ai-leaderboard", "G-Science AI 타자왕_리더보드.exe"],
+  ["practice", "G-Science AI 타자왕_연습모드.exe"],
+  ["practice-leaderboard", "G-Science AI 타자왕_연습모드_리더보드.exe"]
+] as const;
+const approvedEventResources = [
+  "event.config.json",
+  "stage_texts.csv",
+  "assets/event-title.png",
+  "assets/key-visual.png"
+];
+const approvedAiAssets = [
+  "ai_boss_typing.png",
+  "ai_boss_victory.png",
+  "ai_boss_defeat.png",
+  "vs_badge.png",
+  "stage_badge_1.png",
+  "stage_badge_2.png",
+  "stage_badge_3.png",
+  "ai_title_compact.png",
+  "ai_title_oneline_trimmed.png",
+  "ai_challenge_title.png"
+];
+
+function writeFixtureFile(root: string, relativePath: string, content = "fixture"): void {
+  const filePath = path.join(root, ...relativePath.split("/"));
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, content);
+}
+
+function createClientBuildGateFixture(root: string, unexpectedResource: string): void {
+  writeFixtureFile(
+    root,
+    "release-geumcheon/.typingking-geumcheon-client-release.json",
+    `${JSON.stringify({ schemaVersion: 1, kind: "typingking-geumcheon-client-release" })}\n`
+  );
+  for (const [, fileName] of geumcheonArtifacts) {
+    writeFixtureFile(root, `release-geumcheon/${fileName}`);
+  }
+  for (const resource of approvedEventResources) {
+    const content = resource === "event.config.json"
+      ? `${JSON.stringify({ profileId: "geumcheon-2026" })}\n`
+      : "public fixture";
+    writeFixtureFile(root, `release-geumcheon/events/geumcheon-2026/${resource}`, content);
+  }
+  for (const asset of approvedAiAssets) {
+    writeFixtureFile(root, `release-geumcheon/assets/ai_challenge/${asset}`);
+  }
+
+  for (const [variant, fileName] of geumcheonArtifacts) {
+    const outputRoot = `release-build/geumcheon/${variant}`;
+    writeFixtureFile(root, `${outputRoot}/${fileName}`);
+    for (const asset of approvedAiAssets) {
+      writeFixtureFile(root, `${outputRoot}/win-unpacked/resources/assets/ai_challenge/${asset}`);
+    }
+    for (const resource of approvedEventResources) {
+      writeFixtureFile(root, `${outputRoot}/win-unpacked/resources/events/geumcheon-2026/${resource}`);
+    }
+    writeFixtureFile(
+      root,
+      `${outputRoot}/win-unpacked/resources/events/geumcheon-2026/${unexpectedResource}`,
+      "fixture-secret-token"
+    );
+  }
+}
+
+test("client build gate rejects an unexpected secret-bearing packaged event resource", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-client-gate-"));
+  try {
+    createClientBuildGateFixture(fixtureRoot, "private/device-token.log");
+    const result = spawnSync(
+      process.execPath,
+      [path.resolve("node_modules/tsx/dist/cli.mjs"), path.resolve("scripts/geumcheon-client-build-check.ts")],
+      { cwd: fixtureRoot, encoding: "utf8" }
+    );
+
+    assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(`${result.stdout}\n${result.stderr}`, /device-token\.log|unexpected event resource/i);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+});
+
+test("PII scanner inspects executables for supplied secret needles", () => {
+  const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-pii-exe-"));
+  const secret = "client-security-secret-20260826";
+  try {
+    const executable = path.join(fixtureRoot, "fixture.exe");
+    fs.writeFileSync(executable, Buffer.from(`binary-prefix\0${secret}\0binary-suffix`, "utf8"));
+    const result = spawnSync(
+      process.execPath,
+      [path.resolve("scripts/scan-pii.mjs"), "--target", executable],
+      {
+        cwd: path.resolve(),
+        encoding: "utf8",
+        env: { ...process.env, TYPINGKING_PII_NEEDLES: secret }
+      }
+    );
+
+    assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(`${result.stdout}\n${result.stderr}`, new RegExp(secret));
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+  }
 });

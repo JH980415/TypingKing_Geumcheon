@@ -37,6 +37,7 @@ import type { AppMode, AppVariant, DrawStageTextsInput, LeaderboardSyncStatus, P
 import { createBootstrapData } from "../shared/events/bootstrapData";
 import type { EventProfile, EventVariantPolicy } from "../shared/events/types";
 import {
+  portableRuntimeMigrationAllowed,
   recordModeFromPolicy,
   resolveApplicationResourcePaths,
   resolveLaunchPolicy,
@@ -271,7 +272,9 @@ function registerIpc(
   // ensureRuntime(설정 로드) 전에 연습모드를 확정해야 세션 경로가 "연습회차" 폴더로 계산된다.
   setPracticeSessionMode(isPracticeVariant);
   const runtimeRoot = resolveRuntimeRoot();
-  const migratedFileCount = migratePortableRuntime(resolveRoot(), runtimeRoot);
+  const migratedFileCount = portableRuntimeMigrationAllowed(eventProfile.profileId)
+    ? migratePortableRuntime(resolveRoot(), runtimeRoot)
+    : 0;
   const ctx = ensureRuntime(runtimeRoot, applicationResources.resourceRoot);
   if (migratedFileCount > 0) {
     ctx.notices.push(`기존 실행 폴더의 설정과 누락 기록 ${migratedFileCount}개를 이 PC의 로컬 저장소로 복사했습니다.`);

@@ -747,7 +747,7 @@ function toGeumcheonOfficialEntry(entry: AiLeaderboardEntry): GeumcheonAiLeaderb
   const participantKey = stringMetadata(record.participantKey);
   const serverReceivedAt = stringMetadata(record.serverReceivedAt);
   const completionStatus = completionStatusMetadata(record.completionStatus);
-  const totalUserTimeMs = positiveIntegerMetadata(record.totalUserTimeMs ?? record.fairness?.totalUserTimeMs);
+  const totalUserTimeMs = nonnegativeIntegerMetadata(record.totalUserTimeMs ?? record.fairness?.totalUserTimeMs);
   const totalTypingUnits = nonnegativeIntegerMetadata(
     record.totalTypingUnits ?? record.fairness?.stages.reduce((sum, stage) => sum + stage.typingUnits, 0)
   );

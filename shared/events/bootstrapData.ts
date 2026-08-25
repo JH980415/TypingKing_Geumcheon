@@ -12,6 +12,14 @@ type BootstrapInput = {
   deviceProfile?: unknown;
 };
 
+export function resolveBootstrapTheme(
+  bootstrap: Pick<BootstrapData, "config" | "eventProfile">
+): AppConfig["theme"] {
+  return bootstrap.eventProfile.profileId === "geumcheon-2026"
+    ? bootstrap.eventProfile.theme
+    : bootstrap.config.theme;
+}
+
 export function mergeRuntimeConfigWithEventProfile(
   runtimeConfig: AppConfig,
   eventProfile: EventProfile,

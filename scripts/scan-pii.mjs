@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { createReadStream } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { spawnSync } from "node:child_process";
@@ -51,15 +52,7 @@ function shouldScanFile(filePath) {
   return true;
 }
 
-async function scanTextFile(filePath, label, findings) {
-  if (!shouldScanFile(filePath)) return;
-  let text = "";
-  try {
-    text = await fs.readFile(filePath, "utf8");
-  } catch {
-    return;
-  }
-
+function scanText(text, label, findings) {
   for (const needle of exactNeedles) {
     if (text.includes(needle)) findings.push({ file: label, value: needle });
   }
@@ -70,6 +63,42 @@ async function scanTextFile(filePath, label, findings) {
     if (allowedPhones.has(value) || allowedPhones.has(compact)) continue;
     if (/^0100{7,8}$/.test(compact)) continue;
     findings.push({ file: label, value });
+  }
+}
+
+async function scanTextFile(filePath, label, findings) {
+  if (!shouldScanFile(filePath)) return;
+  let text = "";
+  try {
+    text = await fs.readFile(filePath, "utf8");
+  } catch {
+    return;
+  }
+
+  scanText(text, label, findings);
+}
+
+async function scanExecutable(filePath, label, findings) {
+  const binaryNeedles = exactNeedles.flatMap((value) => [
+    { value, bytes: Buffer.from(value, "utf8") },
+    { value, bytes: Buffer.from(value, "utf16le") }
+  ]);
+  if (binaryNeedles.length === 0) return;
+  const overlapBytes = Math.max(
+    64,
+    ...binaryNeedles.map(({ bytes }) => bytes.length + 4)
+  );
+  let carry = Buffer.alloc(0);
+  const seen = new Set();
+  for await (const chunk of createReadStream(filePath, { highWaterMark: 1024 * 1024 })) {
+    const combined = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
+    for (const { value, bytes } of binaryNeedles) {
+      if (combined.indexOf(bytes) >= 0 && !seen.has(value)) {
+        seen.add(value);
+        findings.push({ file: label, value });
+      }
+    }
+    carry = combined.subarray(Math.max(0, combined.length - overlapBytes));
   }
 }
 
@@ -91,7 +120,9 @@ async function extractZip(zipPath) {
 async function scanTarget(target, label, findings) {
   const files = await listFiles(target);
   for (const file of files) {
-    await scanTextFile(file, path.relative(target, file) ? `${label}/${path.relative(target, file)}` : label, findings);
+    const fileLabel = path.relative(target, file) ? `${label}/${path.relative(target, file)}` : label;
+    if (path.extname(file).toLowerCase() === ".exe") await scanExecutable(file, fileLabel, findings);
+    else await scanTextFile(file, fileLabel, findings);
   }
 }
 

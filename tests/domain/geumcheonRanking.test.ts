@@ -43,7 +43,7 @@ test("ranks an 11 second 700 CPM completion over a 10 second 600 CPM completion"
   assert.ok(compareGeumcheonRecords(faster, shorter) < 0);
 });
 
-test("assigns attempt numbers by server receipt order but only completed first-three attempts are ranking eligible", () => {
+test("counts completed, failed, and interrupted records among the first three ranking attempts", () => {
   const rows = assignOfficialAttemptEligibility([
     completed({
       recordId: "gsc26-pc01-00000000-0000-4000-8000-000000000003",
@@ -72,11 +72,36 @@ test("assigns attempt numbers by server receipt order but only completed first-t
   assert.deepEqual(
     rows.map((row) => [row.recordId.slice(-12), row.attemptNumber, row.rankingEligible]),
     [
-      ["000000000001", 1, false],
-      ["000000000002", 2, false],
+      ["000000000001", 1, true],
+      ["000000000002", 2, true],
       ["000000000003", 3, true],
       ["000000000004", 4, false]
     ]
+  );
+});
+
+test("keeps a zero-elapsed countdown interruption visible below finishers", () => {
+  const rows = assignOfficialAttemptEligibility([
+    completed({
+      recordId: "incomplete-only",
+      participantKey: "participant-hmac-incomplete",
+      serverReceivedAt: "2026-09-18T01:00:01.000Z",
+      completionStatus: "interrupted",
+      completedStages: 0,
+      progressPercent: 0,
+      totalTypingUnits: 0,
+      totalUserTimeMs: 0
+    }),
+    completed({
+      recordId: "finisher",
+      participantKey: "participant-hmac-finisher",
+      serverReceivedAt: "2026-09-18T01:00:02.000Z"
+    })
+  ]);
+
+  assert.deepEqual(
+    selectBestEligibleRecordPerParticipant(rows).map((row) => row.recordId),
+    ["finisher", "incomplete-only"]
   );
 });
 
