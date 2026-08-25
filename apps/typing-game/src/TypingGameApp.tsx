@@ -365,6 +365,26 @@ export function TypingGameApp({ bootstrap }: Props) {
       return;
     }
 
+    if (bootstrap.eventProfile.profileId === "geumcheon-2026") {
+      const drawn = await window.typingKing.drawStageTexts({
+        sessionKind: bootstrap.variantPolicy.sessionKind,
+        gameMode: "ai_challenge"
+      });
+      if (!drawn.ok || !drawn.data) {
+        setFormMessage(drawn.error || "대회 문구를 불러오지 못했습니다. 관리자에게 문의해 주세요.");
+        return;
+      }
+      setStageTexts(drawn.data.selections.map((selection) => selection.text) as [string, string, string]);
+      setStageIndex(0);
+      setInput("");
+      setStageTimes([]);
+      setResult(null);
+      setDebugModeType(requestedDebugMode);
+      setAiRunId((value) => value + 1);
+      setScreen("ai");
+      return;
+    }
+
     const readiness = await window.typingKing.getStageReadiness(modeToStart);
     if (readiness.ok && readiness.data && readiness.data.length > 0) {
       setFormMessage(readiness.data[0]);

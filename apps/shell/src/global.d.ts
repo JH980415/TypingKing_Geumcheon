@@ -10,7 +10,9 @@ import type {
   QueuedRecordFlushResult,
   RecordRow,
   SaveRecordInput,
-  StageText
+  StageText,
+  DrawStageTextsInput,
+  DrawStageTextsResult
 } from "../../../shared/types";
 
 declare global {
@@ -19,6 +21,7 @@ declare global {
       getBootstrap(): Promise<ApiResult<BootstrapData>>;
       validateAdmin(password: string, adminName?: string): Promise<ApiResult<{ adminName: string }>>;
       listStageTexts(): Promise<ApiResult<StageText[]>>;
+      drawStageTexts(input: DrawStageTextsInput): Promise<ApiResult<DrawStageTextsResult>>;
       getStageReadiness(gameMode?: string): Promise<ApiResult<string[]>>;
       addStageText(stageNumber: string, text: string, gameMode?: string): Promise<ApiResult<StageText>>;
       updateStageText(id: string, patch: Partial<StageText>): Promise<ApiResult<StageText>>;

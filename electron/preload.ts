@@ -1,11 +1,12 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { AppConfig, RecordRow, SaveRecordInput, StageText } from "../shared/types";
+import type { AppConfig, DrawStageTextsInput, RecordRow, SaveRecordInput, StageText } from "../shared/types";
 
 contextBridge.exposeInMainWorld("typingKing", {
   getBootstrap: () => ipcRenderer.invoke("app:getBootstrap"),
   validateAdmin: (password: string, adminName?: string) =>
     ipcRenderer.invoke("admin:validate", password, adminName),
   listStageTexts: () => ipcRenderer.invoke("stage:list"),
+  drawStageTexts: (input: DrawStageTextsInput) => ipcRenderer.invoke("stage:draw", input),
   getStageReadiness: (gameMode?: string) => ipcRenderer.invoke("stage:readiness", gameMode),
   addStageText: (stageNumber: string, text: string, gameMode?: string) =>
     ipcRenderer.invoke("stage:add", stageNumber, text, gameMode),

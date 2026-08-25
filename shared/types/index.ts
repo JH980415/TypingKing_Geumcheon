@@ -81,12 +81,30 @@ export type AppConfig = {
 
 export type StageText = {
   id: string;
+  catalog_version?: string;
   game_mode: string;
   stage_number: string;
   text: string;
   is_active: string;
   created_at: string;
   updated_at: string;
+};
+
+export type DrawStageTextsInput = {
+  sessionKind: "official" | "practice";
+  gameMode: "ai_challenge";
+};
+
+export type StageTextSelection = {
+  id: string;
+  catalogVersion: string;
+  stageNumber: 1 | 2 | 3;
+  text: string;
+};
+
+export type DrawStageTextsResult = {
+  catalogVersion: string;
+  selections: readonly [StageTextSelection, StageTextSelection, StageTextSelection];
 };
 
 export type RecordRow = {

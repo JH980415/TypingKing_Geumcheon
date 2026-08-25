@@ -7,6 +7,7 @@ import {
   clearRecords,
   cleanupLegacyOneDriveArtifacts,
   deleteRecord,
+  drawGeumcheonStageTexts,
   ensureRuntime,
   checkGameStartReadiness,
   exportCurrentSessionBackupClean,
@@ -32,7 +33,7 @@ import {
   validateOneDriveSetup,
   validateStageReadiness
 } from "../shared/csv/fileStore";
-import type { AppMode, AppVariant, LeaderboardSyncStatus, PcRole, RecordRow, SaveRecordInput, StageText } from "../shared/types";
+import type { AppMode, AppVariant, DrawStageTextsInput, LeaderboardSyncStatus, PcRole, RecordRow, SaveRecordInput, StageText } from "../shared/types";
 import { createBootstrapData } from "../shared/events/bootstrapData";
 import type { EventProfile, EventVariantPolicy } from "../shared/events/types";
 import {
@@ -303,6 +304,20 @@ function registerIpc(
   });
 
   ipcMain.handle("stage:list", () => safe(() => readStageTexts(ctx)));
+  ipcMain.handle("stage:draw", (_event, input: DrawStageTextsInput) =>
+    safe(() => {
+      if (eventProfile.profileId !== "geumcheon-2026") throw new Error("Stage catalog draw is unavailable for this event");
+      if (!input || input.gameMode !== "ai_challenge" || input.sessionKind !== variantPolicy.sessionKind) {
+        throw new Error("Invalid stage catalog draw request");
+      }
+      return drawGeumcheonStageTexts(ctx, {
+        ...input,
+        eventId: eventProfile.eventId,
+        catalogVersion: eventProfile.stageTextCatalogVersion,
+        catalogPath: path.join(applicationResources.resourceRoot, "events", eventProfile.profileId, "stage_texts.csv")
+      });
+    })
+  );
   ipcMain.handle("stage:readiness", (_event, gameMode?: string) => safe(() => validateStageReadiness(ctx, gameMode)));
   ipcMain.handle("stage:add", (_event, stageNumber: string, text: string, gameMode?: string) =>
     safeAsync(() => addStageText(ctx, stageNumber, text, gameMode))

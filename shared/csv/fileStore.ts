@@ -22,6 +22,8 @@ import type {
   AuditRow,
   CsvBackupExportResult,
   CsvBackupStatus,
+  DrawStageTextsInput,
+  DrawStageTextsResult,
   GameStartReadiness,
   LeaderboardSyncStatus,
   OneDriveCleanupResult,
@@ -34,6 +36,8 @@ import { formatBirthdate, formatMs, nowIso, timestampForFile } from "../utils/da
 import { buildPhoneFull, maskBirthdate, maskPhone, validatePhoneParts } from "../utils/masking";
 import { compareRecords, isInterruptedRecord } from "../utils/ranking";
 import { calculateFinalCpm, countConvertedTypingUnits, countTypeableChars } from "../utils/typing";
+import { parseStageTextCatalog, validateStageTextCatalog } from "../events/stageTextCatalog";
+import { drawStageTextFromBag, stageTextBagKey, type StageTextShuffleState } from "../utils/stageTextShuffle";
 
 type RuntimePaths = {
   root: string;
@@ -1273,6 +1277,69 @@ export function validateOneDriveSetup(ctx: RuntimeContext, role?: PcRole): AppCo
     details: { activeSessionPath }
   });
   return saved;
+}
+
+function readStageTextShuffleState(filePath: string): StageTextShuffleState {
+  try {
+    const value = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return { schemaVersion: 2, bags: {} };
+    const state = value as Partial<StageTextShuffleState>;
+    if (state.schemaVersion !== 2 || !state.bags || typeof state.bags !== "object" || Array.isArray(state.bags)) {
+      return { schemaVersion: 2, bags: {} };
+    }
+    const bags: StageTextShuffleState["bags"] = {};
+    for (const [key, bag] of Object.entries(state.bags)) {
+      if (!bag || typeof bag !== "object" || Array.isArray(bag)) continue;
+      const candidate = bag as { remainingIds?: unknown; lastSelectedId?: unknown };
+      if (!Array.isArray(candidate.remainingIds)) continue;
+      bags[key] = {
+        remainingIds: candidate.remainingIds.filter((id): id is string => typeof id === "string"),
+        ...(typeof candidate.lastSelectedId === "string" ? { lastSelectedId: candidate.lastSelectedId } : {})
+      };
+    }
+    return { schemaVersion: 2, bags };
+  } catch {
+    return { schemaVersion: 2, bags: {} };
+  }
+}
+
+export function drawGeumcheonStageTexts(
+  ctx: RuntimeContext,
+  input: DrawStageTextsInput & { eventId: string; catalogVersion: string; catalogPath: string }
+): DrawStageTextsResult {
+  const rows = parseStageTextCatalog(fs.readFileSync(input.catalogPath, "utf8"));
+  validateStageTextCatalog(rows, {
+    expectedVersion: input.catalogVersion,
+    expectedMode: "ai_challenge",
+    expectedRowsPerStage: 20
+  });
+  const statePath = path.join(ctx.paths.root, "state", "stage-text-shuffle.json");
+  let state = readStageTextShuffleState(statePath);
+  const selections = ([1, 2, 3] as const).map((stageNumber) => {
+    const result = drawStageTextFromBag(
+      rows.filter((row) => row.stage_number === String(stageNumber)),
+      stageTextBagKey({
+        eventId: input.eventId,
+        catalogVersion: input.catalogVersion,
+        sessionKind: input.sessionKind,
+        gameMode: input.gameMode,
+        stageNumber
+      }),
+      state
+    );
+    state = result.nextState;
+    return {
+      id: result.selected.id,
+      catalogVersion: input.catalogVersion,
+      stageNumber,
+      text: result.selected.text
+    };
+  });
+  writeJsonAtomic(statePath, state);
+  return {
+    catalogVersion: input.catalogVersion,
+    selections: [selections[0], selections[1], selections[2]]
+  };
 }
 
 function writeJsonAtomic(filePath: string, value: unknown): void {
