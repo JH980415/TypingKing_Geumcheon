@@ -57,10 +57,17 @@ export function LeaderboardApp({ bootstrap }: Props) {
   const { assetBaseUrl } = bootstrap;
   const [config, setConfig] = useState<AppConfig>(bootstrap.config);
   const leaderboardVariant = bootstrap.variant;
-  // 연습 리더보드는 일반+AI 두 보드를 나란히(좌 일잘러, 우 AI) 표시한다.
-  const isPracticeBoard = leaderboardVariant === "practice-leaderboard";
-  const showNormalLeaderboard = leaderboardVariant === "typing-leaderboard" || isPracticeBoard;
-  const showAiLeaderboard = leaderboardVariant === "ai-leaderboard" || isPracticeBoard;
+  const isPracticeBoard = bootstrap.variantPolicy.sessionKind === "practice";
+  const showNormalLeaderboard = bootstrap.variantPolicy.gameModes.includes("normal");
+  const showAiLeaderboard = bootstrap.variantPolicy.gameModes.includes("ai_challenge");
+  const isDualPracticeBoard = isPracticeBoard && showNormalLeaderboard && showAiLeaderboard;
+  const eventAsset = (configuredPath: string) => {
+    const relativePath = configuredPath.replace(/^assets\//, "");
+    return bootstrap.eventProfile.profileId === "geumcheon-2026" &&
+      (configuredPath === bootstrap.eventProfile.assets.eventTitle || configuredPath === bootstrap.eventProfile.assets.pageBackground)
+      ? `${assetBaseUrl}/../events/${bootstrap.eventProfile.profileId}/assets/${relativePath}`
+      : `${assetBaseUrl}/${relativePath}`;
+  };
   const [records, setRecords] = useState<RecordRow[]>([]);
   const [message, setMessage] = useState("");
   const [refreshError, setRefreshError] = useState("");
@@ -301,13 +308,13 @@ export function LeaderboardApp({ bootstrap }: Props) {
   }
 
   async function exportCsv(scope: "all" | "filtered" | "leaderboard") {
-    const variantMode = isPracticeBoard ? null : showAiLeaderboard ? "ai_challenge" : "normal";
+    const variantMode = isDualPracticeBoard ? null : showAiLeaderboard ? "ai_challenge" : "normal";
     const exportSource = (includeDebug ? records : records.filter((record) => record.is_debug !== "true"))
       .filter((record) => variantMode == null || (record.game_mode || "normal") === variantMode);
     // 연습 보드는 일반+AI를 함께 표시하므로 내보내기도 두 보드(일반 순위 → AI 순위)를 합쳐 내보낸다.
     const rows = scope === "all"
       ? exportSource.map((record) => enrichRecordForExport(record))
-      : isPracticeBoard
+      : isDualPracticeBoard
         ? [
             ...normalRecords.map((record) => enrichRecordForExport(record)),
             ...aiRecords.map(({ record, display }) => enrichAiRecordForExportV2(normalizeFinalCpmForLeaderboard(record), display))
@@ -350,16 +357,15 @@ export function LeaderboardApp({ bootstrap }: Props) {
   }
 
   return (
-    <main className="app leaderboard-app" style={{ backgroundImage: `url("${assetBaseUrl}/background/brand-soft.png")` }}>
+    <main className="app leaderboard-app" style={{ backgroundImage: `url("${eventAsset(bootstrap.eventProfile.assets.pageBackground)}")` }}>
       <header className="leaderboard-header">
         <div>
-          <p className="eyebrow">2026 일잘러 페스타</p>
+          {bootstrap.eventProfile.profileId === "geumcheon-2026" && (
+            <img className="geumcheon-header-title" src={eventAsset(bootstrap.eventProfile.assets.eventTitle)} alt={bootstrap.eventProfile.eventName} />
+          )}
+          <p className="eyebrow">{bootstrap.eventProfile.profileId === "geumcheon-2026" ? bootstrap.eventProfile.eventName : "2026 일잘러 페스타"}</p>
           <h1 className="visually-hidden">
-            {isPracticeBoard
-              ? "타자왕 연습모드 리더보드"
-              : showAiLeaderboard
-                ? "AI 타자왕을 이겨라! 리더보드"
-                : "일잘러 타자왕은 누구!? 리더보드"}
+            {bootstrap.variantPolicy.displayName}
           </h1>
         </div>
         <div className="leader-actions">
@@ -376,7 +382,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
 
       <section className={isPracticeBoard ? "leaderboard-board split-board practice-board" : "leaderboard-board split-board"}>
         {refreshError && <div className="leaderboard-alert">{refreshError}</div>}
-        <div className={isPracticeBoard ? "dual-leaderboards" : "dual-leaderboards single-leaderboard"}>
+        <div className={isDualPracticeBoard ? "dual-leaderboards" : "dual-leaderboards single-leaderboard"}>
           {showNormalLeaderboard && (
             <div className="ranking-table compact-ranking">
               <SessionSummary
@@ -433,9 +439,9 @@ export function LeaderboardApp({ bootstrap }: Props) {
                 <AssetImage
                   src={`${assetBaseUrl}/ai_challenge/ai_title_oneline_trimmed.png`}
                   fallbackSrc={`${assetBaseUrl}/ai_challenge/ai_challenge_title.png`}
-                  alt="AI 타자왕을 이겨라!"
+                    alt={bootstrap.variantPolicy.displayName}
                   className="leaderboard-mode-title-img leaderboard-ai-title-img"
-                  fallback={<span>AI 타자왕을 이겨라!</span>}
+                    fallback={<span>{bootstrap.eventProfile.gameName}</span>}
                 />
               </h2>
               <div className="ranking-body">

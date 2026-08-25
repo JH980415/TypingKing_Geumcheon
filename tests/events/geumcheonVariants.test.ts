@@ -1,0 +1,52 @@
+import assert from "node:assert/strict";
+import path from "node:path";
+import test from "node:test";
+import { createBootstrapData } from "../../shared/events/bootstrapData";
+import { loadEventProfile, variantPolicyFor } from "../../shared/events/eventProfile";
+
+const geumcheonProfile = loadEventProfile(
+  path.resolve("events/geumcheon-2026/event.config.json")
+);
+
+const deviceProfile = {
+  schemaVersion: 1,
+  eventProfileId: "geumcheon-2026",
+  eventId: "geumcheon-science-festival-2026",
+  deviceId: "PC01",
+  role: "player",
+  apiBaseUrl: "https://records.example.test",
+  sessions: {
+    official: { sessionId: "day-1-round-1", dayNo: 1, roundNo: 1 },
+    practice: { sessionId: "practice" }
+  },
+  requestTimeoutMs: 5000,
+  retry: { initialDelayMs: 2000, maxDelayMs: 60000 }
+} as const;
+
+test("adds the validated Geumcheon profile policy and device to renderer bootstrap", () => {
+  const bootstrap = createBootstrapData({
+    config: {} as never,
+    assetBaseUrl: "file:///assets",
+    notices: [],
+    mode: "game",
+    variant: "ai",
+    eventProfile: geumcheonProfile,
+    deviceProfile
+  });
+  assert.equal(bootstrap.eventProfile.profileId, "geumcheon-2026");
+  assert.equal(bootstrap.variantPolicy.variant, "ai");
+  assert.equal(bootstrap.deviceProfile?.deviceId, "PC01");
+});
+
+for (const variant of ["ai", "ai-leaderboard", "practice", "practice-leaderboard"] as const) {
+  test(`${variant} is enabled and AI-only`, () => {
+    const policy = variantPolicyFor(geumcheonProfile, variant);
+    assert.equal(policy.enabled, true);
+    assert.deepEqual(policy.gameModes, ["ai_challenge"]);
+  });
+}
+
+test("normal variants are disabled", () => {
+  assert.equal(variantPolicyFor(geumcheonProfile, "typing").enabled, false);
+  assert.equal(variantPolicyFor(geumcheonProfile, "typing-leaderboard").enabled, false);
+});

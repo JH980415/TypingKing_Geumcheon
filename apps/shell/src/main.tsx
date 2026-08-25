@@ -14,7 +14,7 @@ function Shell() {
       if (result.ok && result.data) {
         setBootstrap(result.data);
         applyTheme(result.data);
-        document.title = titleForVariant(result.data.variant);
+        document.title = result.data.variantPolicy.windowTitle;
       } else {
         setError(result.error || "프로그램 설정을 불러오지 못했습니다.");
       }
@@ -50,18 +50,10 @@ function Shell() {
   );
 }
 
-function titleForVariant(variant: BootstrapData["variant"]): string {
-  if (variant === "typing") return "일잘러 타자왕은 누구!?";
-  if (variant === "typing-leaderboard") return "일잘러 타자왕은 누구!? 리더보드";
-  if (variant === "ai") return "AI 타자왕을 이겨라!";
-  if (variant === "practice") return "타자왕 연습모드";
-  if (variant === "practice-leaderboard") return "타자왕 연습모드 리더보드";
-  return "AI 타자왕을 이겨라! 리더보드";
-}
-
 function applyTheme(bootstrap: BootstrapData): void {
   const root = document.documentElement;
-  const theme = bootstrap.config.theme;
+  const theme = bootstrap.eventProfile.theme;
+  root.dataset.eventProfile = bootstrap.eventProfile.profileId;
   root.style.setProperty("--primary", theme.primaryColor);
   root.style.setProperty("--accent", theme.accentColor);
   root.style.setProperty("--bg", theme.backgroundColor);
@@ -70,6 +62,11 @@ function applyTheme(bootstrap: BootstrapData): void {
   root.style.setProperty("--cyan", theme.cyanColor || "#08A7D8");
   root.style.setProperty("--orange", theme.orangeColor || "#F58220");
   root.style.setProperty("--success", theme.successColor || "#098A55");
+  if (bootstrap.eventProfile.profileId === "geumcheon-2026") {
+    root.style.setProperty("--deep-purple", "#3F1556");
+    root.style.setProperty("--yellow", "#FED900");
+    root.style.setProperty("--white", "#FFFFFF");
+  }
 }
 
 createRoot(document.getElementById("root")!).render(

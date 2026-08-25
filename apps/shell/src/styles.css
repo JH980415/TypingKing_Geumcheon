@@ -3248,6 +3248,114 @@ textarea:focus {
   font-weight: 900;
 }
 
+/* Geumcheon presentation is profile-scoped so the existing SkillUp screens remain unchanged. */
+html[data-event-profile="geumcheon-2026"] {
+  --geumcheon-purple: #552D8D;
+  --deep-purple: #3F1556;
+  --geumcheon-magenta: #C40080;
+  --geumcheon-cyan: #00B3EC;
+  --yellow: #FED900;
+  --white: #FFFFFF;
+}
+
+html[data-event-profile="geumcheon-2026"] body {
+  background: var(--deep-purple);
+  color: var(--deep-purple);
+}
+
+html[data-event-profile="geumcheon-2026"] .app {
+  background-color: var(--deep-purple);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+html[data-event-profile="geumcheon-2026"] .app::before {
+  background: transparent;
+}
+
+html[data-event-profile="geumcheon-2026"] .brand-header,
+html[data-event-profile="geumcheon-2026"] .leaderboard-header {
+  background: var(--deep-purple);
+  border-bottom-color: var(--geumcheon-cyan);
+  color: var(--white);
+}
+
+html[data-event-profile="geumcheon-2026"] .brand-header img,
+html[data-event-profile="geumcheon-2026"] .geumcheon-header-title {
+  width: min(58vw, 760px);
+  max-height: 92px;
+  object-fit: contain;
+}
+
+html[data-event-profile="geumcheon-2026"] .geumcheon-header-title {
+  display: block;
+}
+
+html[data-event-profile="geumcheon-2026"] .hero-panel,
+html[data-event-profile="geumcheon-2026"] .entry-panel,
+html[data-event-profile="geumcheon-2026"] .game-stage,
+html[data-event-profile="geumcheon-2026"] .duel-panel,
+html[data-event-profile="geumcheon-2026"] .result-panel,
+html[data-event-profile="geumcheon-2026"] .challenge-result-panel,
+html[data-event-profile="geumcheon-2026"] .leaderboard-board,
+html[data-event-profile="geumcheon-2026"] .ranking-table,
+html[data-event-profile="geumcheon-2026"] .modal {
+  background: var(--white);
+  border-color: var(--geumcheon-cyan);
+  color: var(--deep-purple);
+  box-shadow: 0 10px 0 var(--geumcheon-purple);
+}
+
+html[data-event-profile="geumcheon-2026"] .eyebrow,
+html[data-event-profile="geumcheon-2026"] .brand-subtitle,
+html[data-event-profile="geumcheon-2026"] .hero-copy,
+html[data-event-profile="geumcheon-2026"] .guide-text {
+  color: var(--geumcheon-purple);
+}
+
+html[data-event-profile="geumcheon-2026"] .primary-button,
+html[data-event-profile="geumcheon-2026"] .mode-card.active {
+  background: var(--geumcheon-magenta);
+  border-color: var(--geumcheon-magenta);
+  color: var(--white);
+}
+
+html[data-event-profile="geumcheon-2026"] .secondary-button {
+  background: var(--geumcheon-purple);
+  border-color: var(--geumcheon-purple);
+  color: var(--white);
+}
+
+html[data-event-profile="geumcheon-2026"] input:focus,
+html[data-event-profile="geumcheon-2026"] select:focus,
+html[data-event-profile="geumcheon-2026"] textarea:focus,
+html[data-event-profile="geumcheon-2026"] button:focus-visible {
+  outline: 4px solid var(--yellow);
+  outline-offset: 3px;
+}
+
+html[data-event-profile="geumcheon-2026"] .ranking-head,
+html[data-event-profile="geumcheon-2026"] .challenge-top {
+  background: var(--geumcheon-purple);
+  color: var(--white);
+}
+
+@media (max-width: 1366px), (max-height: 768px) {
+  html[data-event-profile="geumcheon-2026"] .brand-header img,
+  html[data-event-profile="geumcheon-2026"] .geumcheon-header-title {
+    max-height: 58px;
+  }
+
+  html[data-event-profile="geumcheon-2026"] .hero-panel,
+  html[data-event-profile="geumcheon-2026"] .entry-panel,
+  html[data-event-profile="geumcheon-2026"] .game-stage,
+  html[data-event-profile="geumcheon-2026"] .duel-panel,
+  html[data-event-profile="geumcheon-2026"] .leaderboard-board {
+    padding: 14px;
+  }
+}
+
 @media (max-width: 1500px) {
   .practice-board {
     padding: 18px 18px 14px;

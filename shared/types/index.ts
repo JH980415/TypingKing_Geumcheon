@@ -1,3 +1,5 @@
+import type { DeviceProfile, EventProfile, EventVariantPolicy } from "../events/types";
+
 export type AppMode = "game" | "leaderboard";
 export type { DeviceProfile, EventProfile, EventProfileId, EventVariantPolicy, SessionKind } from "../events/types";
 export type AppVariant =
@@ -314,4 +316,7 @@ export type BootstrapData = {
   notices: string[];
   mode: AppMode;
   variant: AppVariant;
+  eventProfile: EventProfile;
+  variantPolicy: EventVariantPolicy;
+  deviceProfile?: DeviceProfile;
 };

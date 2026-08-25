@@ -2,6 +2,7 @@
 import type { OpenDialogOptions } from "electron";
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   addStageText,
   clearRecords,
@@ -33,19 +34,12 @@ import {
   validateStageReadiness
 } from "../shared/csv/fileStore";
 import type { AppMode, AppVariant, LeaderboardSyncStatus, PcRole, RecordRow, SaveRecordInput, StageText } from "../shared/types";
+import { createBootstrapData } from "../shared/events/bootstrapData";
+import type { EventProfile, EventVariantPolicy } from "../shared/events/types";
 import { resolveLaunchPolicy, resolveStartupProfile } from "./startupProfile";
 
 let mainWindow: BrowserWindow | null = null;
 let startupRuntimeRoot: string | undefined;
-
-const WINDOW_TITLES: Record<AppVariant, string> = {
-  typing: "일잘러 타자왕은 누구!?",
-  "typing-leaderboard": "일잘러 타자왕은 누구!? 리더보드",
-  ai: "AI 타자왕을 이겨라!",
-  "ai-leaderboard": "AI 타자왕을 이겨라! 리더보드",
-  practice: "타자왕 연습모드",
-  "practice-leaderboard": "타자왕 연습모드 리더보드"
-};
 
 app.commandLine.appendSwitch("disable-gpu");
 app.commandLine.appendSwitch("disable-software-rasterizer");
@@ -85,6 +79,9 @@ function resolveVariant(): AppVariant {
     return envVariant;
   }
 
+  const metadataVariant = packagedVariant();
+  if (metadataVariant) return metadataVariant;
+
   const joinedArgs = process.argv.join(" ");
   if (joinedArgs.includes("--variant=practice-leaderboard")) return "practice-leaderboard";
   if (joinedArgs.includes("--variant=practice")) return "practice";
@@ -109,8 +106,8 @@ function appModeFromVariant(variant: AppVariant): AppMode {
   return variant.endsWith("leaderboard") ? "leaderboard" : "game";
 }
 
-function recordModeFromVariant(variant: AppVariant): "normal" | "ai_challenge" {
-  return variant === "ai" || variant === "ai-leaderboard" ? "ai_challenge" : "normal";
+function recordModeFromPolicy(policy: EventVariantPolicy): "normal" | "ai_challenge" {
+  return policy.gameModes[0] || "normal";
 }
 
 function resolveRoot(): string {
@@ -139,6 +136,22 @@ function packagedEventProfile(): string | undefined {
       typingKingEventProfile?: unknown;
     };
     return typeof packageJson.typingKingEventProfile === "string" ? packageJson.typingKingEventProfile : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function packagedVariant(): AppVariant | undefined {
+  if (!app.isPackaged) return undefined;
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(path.join(app.getAppPath(), "package.json"), "utf8")) as {
+      typingKingVariant?: unknown;
+    };
+    const variant = packageJson.typingKingVariant;
+    return variant === "typing" || variant === "typing-leaderboard" || variant === "ai" ||
+      variant === "ai-leaderboard" || variant === "practice" || variant === "practice-leaderboard"
+      ? variant
+      : undefined;
   } catch {
     return undefined;
   }
@@ -189,23 +202,27 @@ function migratePortableRuntime(sourceRoot: string, targetRoot: string): number 
   return copied;
 }
 
-function appUserModelId(variant: AppVariant): string {
-  return `com.skillupfesta.typingking.${variant}`;
+function appUserModelId(profile: EventProfile, policy: EventVariantPolicy): string {
+  const namespace = profile.profileId === "geumcheon-2026"
+    ? "com.thepmd.gscience.typingking"
+    : "com.skillupfesta.typingking";
+  return `${namespace}.${policy.variant}`;
 }
 
-function iconPath(mode: AppMode): string {
+function iconPath(role: EventVariantPolicy["role"]): string {
   return path.join(
     resolveRoot(),
     "assets",
     "icons",
-    mode === "leaderboard" ? "leaderboard_app_icon.ico" : "typing_app_icon.ico"
+    role === "leaderboard" ? "leaderboard_app_icon.ico" : "typing_app_icon.ico"
   );
 }
 
-function createWindow(variant: AppVariant): void {
+function createWindow(variant: AppVariant, eventProfile: EventProfile): void {
   const mode = appModeFromVariant(variant);
+  const variantPolicy = eventProfile.variants[variant];
   const preload = path.join(__dirname, "preload.js");
-  const windowTitle = WINDOW_TITLES[variant];
+  const windowTitle = variantPolicy.windowTitle;
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -214,8 +231,8 @@ function createWindow(variant: AppVariant): void {
     show: false,
     fullscreenable: true,
     title: windowTitle,
-    icon: iconPath(mode),
-    backgroundColor: "#F7F8F2",
+    icon: iconPath(variantPolicy.role),
+    backgroundColor: eventProfile.theme.backgroundColor,
     webPreferences: {
       preload,
       contextIsolation: true,
@@ -262,8 +279,14 @@ function createWindow(variant: AppVariant): void {
   }
 }
 
-function registerIpc(variant: AppVariant, pcRole: PcRole): void {
-  const isPracticeVariant = variant === "practice" || variant === "practice-leaderboard";
+function registerIpc(
+  variant: AppVariant,
+  eventProfile: EventProfile,
+  deviceProfile: ReturnType<typeof resolveStartupProfile>["deviceProfile"],
+  pcRole: PcRole
+): void {
+  const variantPolicy = eventProfile.variants[variant];
+  const isPracticeVariant = variantPolicy.sessionKind === "practice";
   // ensureRuntime(설정 로드) 전에 연습모드를 확정해야 세션 경로가 "연습회차" 폴더로 계산된다.
   setPracticeSessionMode(isPracticeVariant);
   const runtimeRoot = resolveRuntimeRoot();
@@ -273,16 +296,22 @@ function registerIpc(variant: AppVariant, pcRole: PcRole): void {
     ctx.notices.push(`기존 실행 폴더의 설정과 누락 기록 ${migratedFileCount}개를 이 PC의 로컬 저장소로 복사했습니다.`);
   }
   const mode = appModeFromVariant(variant);
-  const scopedRecordMode = recordModeFromVariant(variant);
+  const scopedRecordMode = recordModeFromPolicy(variantPolicy);
+  const hasMultipleRecordModes = variantPolicy.gameModes.length > 1;
+  const rendererAssetBaseUrl = eventProfile.profileId === "geumcheon-2026"
+    ? pathToFileURL(path.join(resolveRoot(), "assets")).toString()
+    : ctx.assetBaseUrl;
   ipcMain.handle("app:getBootstrap", () => ({
     ok: true,
-    data: {
+    data: createBootstrapData({
       config: ctx.config,
-      assetBaseUrl: ctx.assetBaseUrl,
+      assetBaseUrl: rendererAssetBaseUrl,
       notices: ctx.notices,
       mode,
-      variant
-    }
+      variant,
+      eventProfile,
+      deviceProfile
+    })
   }));
 
   ipcMain.handle("admin:validate", (_event, password: string, adminName?: string) => {
@@ -342,7 +371,7 @@ function registerIpc(variant: AppVariant, pcRole: PcRole): void {
     safeAsync(
       async () => {
         // 연습 리더보드는 일반+AI 두 보드를 함께 표시하므로 두 모드 모두 표시 초기화한다.
-        if (variant === "practice-leaderboard") {
+        if (hasMultipleRecordModes) {
           await clearRecords(ctx, adminName, "normal");
           await clearRecords(ctx, adminName, "ai_challenge");
           return;
@@ -356,10 +385,10 @@ function registerIpc(variant: AppVariant, pcRole: PcRole): void {
     safe(() => {
       // 연습 리더보드는 일반+AI 두 보드를 표시하므로 CSV도 두 모드를 각각 내보낸다.
       // (OneDrive 모드의 exportRecords는 모드별 최신 기록으로 재구성하므로 단일 호출로는 한쪽이 유실됨)
-      if (variant === "practice-leaderboard") {
+      if (hasMultipleRecordModes) {
         const files: string[] = [];
         const errors: string[] = [];
-        for (const mode of ["normal", "ai_challenge"] as const) {
+        for (const mode of variantPolicy.gameModes) {
           try {
             files.push(exportRecords(ctx, rows, scope, mode));
           } catch (error) {
@@ -374,7 +403,7 @@ function registerIpc(variant: AppVariant, pcRole: PcRole): void {
   );
   ipcMain.handle("records:exportSessionBackup", () =>
     safe(() => {
-      if (variant === "practice-leaderboard") {
+      if (hasMultipleRecordModes) {
         const normal = exportCurrentSessionBackupClean(ctx, "normal");
         const ai = exportCurrentSessionBackupClean(ctx, "ai_challenge");
         return { ...normal, message: `[일잘러]\n${normal.message}\n\n[AI]\n${ai.message}` };
@@ -383,7 +412,7 @@ function registerIpc(variant: AppVariant, pcRole: PcRole): void {
     }, "현재 회차 CSV 백업 중 오류가 발생했습니다. 저장 위치를 확인해 주세요.")
   );
   ipcMain.handle("records:syncStatus", () => safe(() => {
-    if (variant !== "practice-leaderboard") return getCleanLeaderboardSyncStatus(ctx, scopedRecordMode);
+    if (!hasMultipleRecordModes) return getCleanLeaderboardSyncStatus(ctx, scopedRecordMode);
     const normal = getCleanLeaderboardSyncStatus(ctx, "normal");
     const ai = getCleanLeaderboardSyncStatus(ctx, "ai_challenge");
     const status: LeaderboardSyncStatus["status"] =
@@ -497,8 +526,9 @@ async function safeAsync<T>(task: () => Promise<T>, fallback?: string) {
 void app.whenReady().then(() => {
   const variant = resolveVariant();
   let launchPolicy: ReturnType<typeof resolveLaunchPolicy> | undefined;
+  let startup: ReturnType<typeof resolveStartupProfile> | undefined;
   try {
-    const startup = resolveStartupProfile({
+    startup = resolveStartupProfile({
       isPackaged: app.isPackaged,
       projectRoot: resolveRoot(),
       executableDirectory: process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath),
@@ -515,13 +545,13 @@ void app.whenReady().then(() => {
     app.exit(1);
     return;
   }
-  if (!launchPolicy) return;
-  app.setAppUserModelId(appUserModelId(variant));
-  registerIpc(variant, launchPolicy.pcRole);
-  createWindow(variant);
+  if (!launchPolicy || !startup) return;
+  app.setAppUserModelId(appUserModelId(startup.eventProfile, startup.eventProfile.variants[variant]));
+  registerIpc(variant, startup.eventProfile, startup.deviceProfile, launchPolicy.pcRole);
+  createWindow(variant, startup.eventProfile);
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow(variant);
+    if (BrowserWindow.getAllWindows().length === 0) createWindow(variant, startup.eventProfile);
   });
 });
 

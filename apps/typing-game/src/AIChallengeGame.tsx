@@ -1,6 +1,6 @@
 ﻿import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { AppConfig, RecordRow, SaveRecordInput } from "../../../shared/types";
+import type { AppConfig, EventProfile, RecordRow, SaveRecordInput } from "../../../shared/types";
 import { formatBirthdate } from "../../../shared/utils/date";
 import { buildPhoneFull } from "../../../shared/utils/masking";
 import {
@@ -65,6 +65,7 @@ type Props = {
   participant: Participant;
   stageTexts: [string, string, string];
   assetBaseUrl: string;
+  eventProfile: EventProfile;
   debugModeType?: "" | "normal_typing_debug" | "ai_challenge_debug";
   onHome: () => void;
   onRetry: () => void;
@@ -74,7 +75,8 @@ const MAIN_CONFIRM_MESSAGE = "진행 중인 게임을 종료하고 메인 화면
 const RETRY_CONFIRM_MESSAGE = "현재 게임을 처음부터 다시 시작하시겠습니까? 중단 시점까지 참여자 패배 기록으로 저장됩니다.";
 type ChallengeControlAction = "home" | "retry";
 
-export function AIChallengeGame({ config, participant, stageTexts, assetBaseUrl, debugModeType = "", onHome, onRetry }: Props) {
+export function AIChallengeGame({ config, participant, stageTexts, assetBaseUrl, eventProfile, debugModeType = "", onHome, onRetry }: Props) {
+  const profileAsset = (configuredPath: string) => `${assetBaseUrl}/${configuredPath.replace(/^assets\//, "")}`;
   const [stageIndex, setStageIndex] = useState(0);
   const [countdown, setCountdown] = useState<string>(String(config.aiChallenge.countdownSeconds));
   const [running, setRunning] = useState(false);
@@ -482,20 +484,20 @@ export function AIChallengeGame({ config, participant, stageTexts, assetBaseUrl,
   if (resultReady) {
     return (
       <section className="challenge-result-panel">
-        <AiTitle assetBaseUrl={assetBaseUrl} className="challenge-result-title" />
+        <AiTitle assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} className="challenge-result-title" />
         <p className="eyebrow">AI 챌린지 성공</p>
         <h1>인간 승리. AI보다 빠르고 정확하게 완주했습니다.</h1>
         {debugModeType === "ai_challenge_debug" && (
           <p className="notice-text debug-result-note">디버그 모드 기록은 리더보드에 반영되지 않습니다.</p>
         )}
         <AssetImage
-          src={`${assetBaseUrl}/ai_challenge/ai_boss_defeat.png`}
+          src={profileAsset(eventProfile.assets.aiBossDefeat)}
           alt="패배한 AI"
           className="challenge-result-art"
         />
         {saveError && <p className="error-text">{saveError}</p>}
         <p className="notice-text auto-home-notice">{autoHomeSeconds}초뒤 메인화면으로 이동</p>
-        <ChallengeSummary battles={battles} row={savedRow} participant={participant} assetBaseUrl={assetBaseUrl} />
+        <ChallengeSummary battles={battles} row={savedRow} participant={participant} assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} />
         <div className="button-row">
           <button className="primary-button large" onClick={() => leaveChallenge("retry")}>다시 도전하기</button>
           <button className="secondary-button large" onClick={() => leaveChallenge("home")}>메인화면으로 가기</button>
@@ -508,11 +510,11 @@ export function AIChallengeGame({ config, participant, stageTexts, assetBaseUrl,
     <section className="challenge-screen">
       <header className="challenge-top challenge-top-repositioned">
         <div className="challenge-title-side">
-          <AiTitle assetBaseUrl={assetBaseUrl} className="challenge-title-image" />
+          <AiTitle assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} className="challenge-title-image" />
         </div>
         <div className="challenge-stage-center">
-          <StageBadges assetBaseUrl={assetBaseUrl} currentStage={stageIndex + 1} completedStages={battles.map((battle) => battle.stage)} />
-          <p className="eyebrow">AI 타자왕을 이겨라</p>
+          <StageBadges assetBaseUrl={assetBaseUrl} badgePaths={eventProfile.assets.stageBadges} currentStage={stageIndex + 1} completedStages={battles.map((battle) => battle.stage)} />
+          <p className="eyebrow">{eventProfile.profileId === "geumcheon-2026" ? eventProfile.gameName : "AI 타자왕을 이겨라"}</p>
         </div>
         <strong>{countdown || (running ? "대결 중" : "결과 확인")}</strong>
         <div className="button-row game-control-row challenge-game-controls">
@@ -526,7 +528,7 @@ export function AIChallengeGame({ config, participant, stageTexts, assetBaseUrl,
       </header>
       <div className="challenge-boss-float">
         <AssetImage
-          src={`${assetBaseUrl}/ai_challenge/ai_boss_typing.png`}
+          src={profileAsset(eventProfile.assets.aiBossTyping)}
           alt="타자를 입력하는 AI"
           className={aiProgress > userProgress ? "ai-boss-typing is-ahead" : "ai-boss-typing"}
         />
@@ -577,7 +579,7 @@ export function AIChallengeGame({ config, participant, stageTexts, assetBaseUrl,
         <div className="versus-column">
           {!countdown && (
             <AssetImage
-              src={`${assetBaseUrl}/ai_challenge/vs_badge.png`}
+              src={profileAsset(eventProfile.assets.vsBadge)}
               alt="VS"
               className="vs-badge"
               fallback={<span className="vs-fallback">VS</span>}
@@ -586,7 +588,7 @@ export function AIChallengeGame({ config, participant, stageTexts, assetBaseUrl,
         </div>
 
         <DuelPanel
-          title="AI 타자왕"
+          title={eventProfile.profileId === "geumcheon-2026" ? eventProfile.gameName : "AI 타자왕"}
           target={target}
           input={aiInput}
           cpm={aiObservedCpm}
@@ -620,6 +622,7 @@ export function AIChallengeGame({ config, participant, stageTexts, assetBaseUrl,
           onHome={() => leaveChallenge("home")}
           saveError={saveError}
           assetBaseUrl={assetBaseUrl}
+          eventProfile={eventProfile}
           isDebug={debugModeType === "ai_challenge_debug"}
         />
       )}
@@ -887,6 +890,7 @@ function BattlePopup({
   onHome,
   saveError,
   assetBaseUrl,
+  eventProfile,
   isDebug
 }: {
   battle: StageBattle;
@@ -896,6 +900,7 @@ function BattlePopup({
   onHome: () => void;
   saveError: string;
   assetBaseUrl: string;
+  eventProfile: EventProfile;
   isDebug: boolean;
 }) {
   const userWin = battle.result === "USER_WIN";
@@ -920,12 +925,12 @@ function BattlePopup({
       <section className="modal challenge-modal">
         <div className="challenge-modal-lead">
           <AssetImage
-            src={`${assetBaseUrl}/ai_challenge/${userWin ? "ai_boss_defeat.png" : "ai_boss_victory.png"}`}
+            src={`${assetBaseUrl}/${(userWin ? eventProfile.assets.aiBossDefeat : eventProfile.assets.aiBossVictory).replace(/^assets\//, "")}`}
             alt={userWin ? "패배한 AI" : "승리한 AI"}
             className="challenge-modal-art"
           />
           <div>
-            <StageBadges assetBaseUrl={assetBaseUrl} currentStage={battle.stage} completedStages={userWin ? [battle.stage] : []} compact />
+            <StageBadges assetBaseUrl={assetBaseUrl} badgePaths={eventProfile.assets.stageBadges} currentStage={battle.stage} completedStages={userWin ? [battle.stage] : []} compact />
             <p className="eyebrow">Stage {battle.stage}</p>
             <h2>{userWin ? "승리했습니다. AI보다 빠르게 입력했습니다." : "아쉽습니다. AI가 먼저 입력을 완료했습니다."}</h2>
           </div>
@@ -983,12 +988,14 @@ function ChallengeSummary({
   battles,
   row,
   participant,
-  assetBaseUrl
+  assetBaseUrl,
+  eventProfile
 }: {
   battles: StageBattle[];
   row: RecordRow | null;
   participant: Participant;
   assetBaseUrl: string;
+  eventProfile: EventProfile;
 }) {
   const phone = buildPhoneFull(participant.phone1, participant.phone2, participant.phone3);
   const birth = formatBirthdate(participant.birthYear, participant.birthMonth, participant.birthDay);
@@ -1006,7 +1013,7 @@ function ChallengeSummary({
       </div>
       {battles.map((battle) => (
         <div key={battle.stage}>
-          <StageBadge assetBaseUrl={assetBaseUrl} stage={battle.stage} state="complete" compact />
+          <StageBadge assetBaseUrl={assetBaseUrl} assetPath={eventProfile.assets.stageBadges[battle.stage - 1]} stage={battle.stage} state="complete" compact />
           <strong>
             사용자 {formatRecordDisplay(battle.userTimeMs, battleUserCharCount(battle))} / AI {formatRecordDisplay(battle.aiElapsedMs, battleAiCharCount(battle))} / AI 평균 {formatDisplayNumber(battle.aiCpm, 2)}타
           </strong>
@@ -1034,11 +1041,16 @@ function ChallengeSummary({
 
 function AiTitle({
   assetBaseUrl,
+  eventProfile,
   className
 }: {
   assetBaseUrl: string;
+  eventProfile: EventProfile;
   className: string;
 }) {
+  if (eventProfile.profileId === "geumcheon-2026") {
+    return <div className={`ai-title-fallback ${className}`}>{eventProfile.gameName}</div>;
+  }
   return (
     <AssetImage
       src={`${assetBaseUrl}/ai_challenge/ai_title_oneline_trimmed.png`}
@@ -1052,11 +1064,13 @@ function AiTitle({
 
 function StageBadges({
   assetBaseUrl,
+  badgePaths,
   currentStage,
   completedStages,
   compact = false
 }: {
   assetBaseUrl: string;
+  badgePaths: EventProfile["assets"]["stageBadges"];
   currentStage: number;
   completedStages: number[];
   compact?: boolean;
@@ -1067,6 +1081,7 @@ function StageBadges({
         <StageBadge
           key={stage}
           assetBaseUrl={assetBaseUrl}
+          assetPath={badgePaths[stage - 1]}
           stage={stage}
           state={completedStages.includes(stage) ? "complete" : stage === currentStage ? "current" : "locked"}
           compact={compact}
@@ -1078,11 +1093,13 @@ function StageBadges({
 
 function StageBadge({
   assetBaseUrl,
+  assetPath,
   stage,
   state,
   compact = false
 }: {
   assetBaseUrl: string;
+  assetPath: string;
   stage: number;
   state: "current" | "complete" | "locked";
   compact?: boolean;
@@ -1090,7 +1107,7 @@ function StageBadge({
   return (
     <span className={`stage-badge ${state}${compact ? " compact" : ""}`}>
       <AssetImage
-        src={`${assetBaseUrl}/ai_challenge/stage_badge_${stage}.png`}
+        src={`${assetBaseUrl}/${assetPath.replace(/^assets\//, "")}`}
         alt={`Stage ${stage}`}
         className="stage-badge-img"
         fallback={<span className="stage-badge-fallback">Stage {stage}</span>}

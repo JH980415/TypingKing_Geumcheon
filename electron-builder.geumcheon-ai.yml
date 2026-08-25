@@ -1,0 +1,26 @@
+appId: com.thepmd.gscience.typingking.ai
+productName: G-Science AI 타자왕
+extraMetadata:
+  typingKingEventProfile: geumcheon-2026
+  typingKingVariant: ai
+directories:
+  output: release-build/geumcheon/ai
+files:
+  - dist-renderer/**
+  - dist-electron/**
+  - package.json
+extraResources:
+  - from: assets
+    to: assets
+  - from: events/geumcheon-2026
+    to: events/geumcheon-2026
+asar: true
+win:
+  icon: assets/icons/typing_app_icon.ico
+  signExecutable: false
+  target:
+    - target: portable
+      arch:
+        - x64
+portable:
+  artifactName: G-Science AI 타자왕.exe

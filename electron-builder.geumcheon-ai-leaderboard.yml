@@ -1,0 +1,26 @@
+appId: com.thepmd.gscience.typingking.ai-leaderboard
+productName: G-Science AI 타자왕 리더보드
+extraMetadata:
+  typingKingEventProfile: geumcheon-2026
+  typingKingVariant: ai-leaderboard
+directories:
+  output: release-build/geumcheon/ai-leaderboard
+files:
+  - dist-renderer/**
+  - dist-electron/**
+  - package.json
+extraResources:
+  - from: assets
+    to: assets
+  - from: events/geumcheon-2026
+    to: events/geumcheon-2026
+asar: true
+win:
+  icon: assets/icons/leaderboard_app_icon.ico
+  signExecutable: false
+  target:
+    - target: portable
+      arch:
+        - x64
+portable:
+  artifactName: G-Science AI 타자왕_리더보드.exe

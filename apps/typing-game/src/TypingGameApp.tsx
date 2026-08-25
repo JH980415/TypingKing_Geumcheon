@@ -88,10 +88,10 @@ function sameGameConfig(a: BootstrapData["config"], b: BootstrapData["config"]):
 export function TypingGameApp({ bootstrap }: Props) {
   const { assetBaseUrl } = bootstrap;
   const [config, setConfig] = useState(bootstrap.config);
-  // 연습모드(practice)는 시작 화면에서 좌(일잘러)/우(AI) 두 모드 중 하나를 선택한다.
-  const isPracticeApp = bootstrap.variant === "practice";
-  const forcedGameMode: GameMode | null =
-    bootstrap.variant === "ai" ? "ai_challenge" : isPracticeApp ? null : "normal";
+  const isPracticeApp = bootstrap.variantPolicy.sessionKind === "practice";
+  const forcedGameMode: GameMode | null = bootstrap.variantPolicy.gameModes.length === 1
+    ? bootstrap.variantPolicy.gameModes[0]
+    : null;
   const [screen, setScreen] = useState<"start" | "game" | "ai" | "result">("start");
   const [gameMode, setGameMode] = useState<GameMode>(forcedGameMode ?? "normal");
   const [debugModeType, setDebugModeType] = useState<DebugModeType>("");
@@ -286,6 +286,17 @@ export function TypingGameApp({ bootstrap }: Props) {
   function asset(path: string) {
     return `${assetBaseUrl}/${path}`;
   }
+
+  function profileAsset(path: string) {
+    const relativePath = path.replace(/^assets\//, "");
+    if (bootstrap.eventProfile.profileId === "geumcheon-2026" &&
+      (path === bootstrap.eventProfile.assets.eventTitle || path === bootstrap.eventProfile.assets.pageBackground)) {
+      return `${assetBaseUrl}/../events/${bootstrap.eventProfile.profileId}/assets/${relativePath}`;
+    }
+    return asset(relativePath);
+  }
+
+  const pageBackground = profileAsset(bootstrap.eventProfile.assets.pageBackground);
 
   function updateDigits(next: string, setter: (value: string) => void, max: number) {
     if (/\D/.test(next)) setFormMessage("휴대폰번호는 숫자만 입력할 수 있습니다.");
@@ -636,8 +647,8 @@ export function TypingGameApp({ bootstrap }: Props) {
 
   if (screen === "result" && result) {
     return (
-      <main className="app game-app" style={{ backgroundImage: `url("${asset("background/brand-soft.png")}")` }}>
-        <BrandHeader assetBaseUrl={assetBaseUrl} />
+      <main className="app game-app" style={{ backgroundImage: `url("${pageBackground}")` }}>
+        <BrandHeader bootstrap={bootstrap} />
         <ResultScreen
           result={result}
           assetBaseUrl={assetBaseUrl}
@@ -651,8 +662,8 @@ export function TypingGameApp({ bootstrap }: Props) {
 
   if (screen === "game" && stageTexts) {
     return (
-      <main className="app game-app" style={{ backgroundImage: `url("${asset("background/brand-soft.png")}")` }}>
-        <BrandHeader assetBaseUrl={assetBaseUrl} />
+      <main className="app game-app" style={{ backgroundImage: `url("${pageBackground}")` }}>
+        <BrandHeader bootstrap={bootstrap} />
         <section className="game-layout">
           <div className="game-stage">
             <FallbackAssetImage
@@ -739,14 +750,15 @@ export function TypingGameApp({ bootstrap }: Props) {
       privacyAgreedAt
     };
     return (
-      <main className="app game-app" style={{ backgroundImage: `url("${asset("background/brand-soft.png")}")` }}>
-        <BrandHeader assetBaseUrl={assetBaseUrl} />
+      <main className="app game-app" style={{ backgroundImage: `url("${pageBackground}")` }}>
+        <BrandHeader bootstrap={bootstrap} />
         <AIChallengeGame
           key={aiRunId}
           config={config}
           participant={participant}
           stageTexts={stageTexts}
           assetBaseUrl={assetBaseUrl}
+          eventProfile={bootstrap.eventProfile}
           debugModeType={debugModeType}
           onHome={resetAll}
           onRetry={() => void startGame("ai_challenge", debugModeType === "ai_challenge_debug" ? debugModeType : "")}
@@ -756,22 +768,22 @@ export function TypingGameApp({ bootstrap }: Props) {
   }
 
   return (
-    <main className="app game-app" style={{ backgroundImage: `url("${asset("background/brand-soft.png")}")` }}>
-      <BrandHeader assetBaseUrl={assetBaseUrl} />
+    <main className="app game-app" style={{ backgroundImage: `url("${pageBackground}")` }}>
+      <BrandHeader bootstrap={bootstrap} />
       <section className="start-grid" key={startFormKey}>
         <div className="hero-panel">
           <div className="brand-slogan-row">
-            <p className="eyebrow">Work, Re:design</p>
-            <span className="brand-subtitle">일의 본질을 묻다.</span>
+            <p className="eyebrow">{bootstrap.eventProfile.profileId === "geumcheon-2026" ? bootstrap.eventProfile.eventNameEn : "Work, Re:design"}</p>
+            <span className="brand-subtitle">{bootstrap.eventProfile.profileId === "geumcheon-2026" ? bootstrap.eventProfile.slogan : "일의 본질을 묻다."}</span>
           </div>
           {gameMode === "ai_challenge" ? (
             <>
               <FallbackAssetImage
                 src={asset("ai_challenge/ai_title_oneline_trimmed.png")}
                 fallbackSrc={asset("ai_challenge/ai_challenge_title.png")}
-                alt="AI 타자왕을 이겨라!"
+                alt={bootstrap.variantPolicy.displayName}
                 className="mode-title-image start-ai-title-image ai-title-image"
-                fallback={<h1>AI 타자왕을 이겨라!</h1>}
+                fallback={<h1>{bootstrap.variantPolicy.displayName}</h1>}
               />
               <p className="hero-copy">3개의 스테이지에서 가상 AI 챌린저보다 먼저 정확하게 입력하세요.</p>
             </>
@@ -788,7 +800,7 @@ export function TypingGameApp({ bootstrap }: Props) {
             </>
           )}
           <section className="hero-guide-card">
-            <h2>{MODE_GUIDES[gameMode].title}</h2>
+            <h2>{bootstrap.eventProfile.profileId === "geumcheon-2026" ? `${bootstrap.eventProfile.gameName} 도전 안내` : MODE_GUIDES[gameMode].title}</h2>
             <ol className="hero-guide-list">
               {MODE_GUIDES[gameMode].items.map((item) => (
                 <li key={item}>{item}</li>
@@ -804,8 +816,8 @@ export function TypingGameApp({ bootstrap }: Props) {
                 지금은 자유 연습회차입니다. <small>※ 공식 순위 및 사은품 집계 제외</small>
               </p>
             )}
-            <div className={isPracticeApp ? "mode-selector" : "mode-selector single-mode-selector"}>
-              {(forcedGameMode === "normal" || isPracticeApp) && (
+            <div className={forcedGameMode === null ? "mode-selector" : "mode-selector single-mode-selector"}>
+              {(forcedGameMode === "normal" || forcedGameMode === null) && (
               <button
                 type="button"
                 className={!isPracticeApp || gameMode === "normal" ? "mode-card active" : "mode-card"}
@@ -821,7 +833,7 @@ export function TypingGameApp({ bootstrap }: Props) {
                 <small>3개 스테이지 기록 경쟁</small>
               </button>
               )}
-              {(forcedGameMode === "ai_challenge" || isPracticeApp) && (
+              {(forcedGameMode === "ai_challenge" || forcedGameMode === null) && (
               <button
                 type="button"
                 className={!isPracticeApp || gameMode === "ai_challenge" ? "mode-card active" : "mode-card"}
@@ -833,7 +845,7 @@ export function TypingGameApp({ bootstrap }: Props) {
                   alt=""
                   className="mode-card-art"
                 />
-                <strong>AI 타자왕을 이겨라!</strong>
+                <strong>{bootstrap.variantPolicy.displayName}</strong>
                 <small>가상 AI 챌린저와 1:1 대결</small>
               </button>
               )}
@@ -986,13 +998,18 @@ function GameControlConfirmModal({
   );
 }
 
-function BrandHeader({ assetBaseUrl }: { assetBaseUrl: string }) {
+function BrandHeader({ bootstrap }: { bootstrap: BootstrapData }) {
   const [logoLoaded, setLogoLoaded] = useState(false);
+  const configuredPath = bootstrap.eventProfile.assets.eventTitle;
+  const relativePath = configuredPath.replace(/^assets\//, "");
+  const titleUrl = bootstrap.eventProfile.profileId === "geumcheon-2026"
+    ? `${bootstrap.assetBaseUrl}/../events/${bootstrap.eventProfile.profileId}/assets/${relativePath}`
+    : `${bootstrap.assetBaseUrl}/${relativePath}`;
   return (
     <header className="brand-header">
       <img
-        src={`${assetBaseUrl}/logo/event-logo.png`}
-        alt="2026 일잘러 페스타"
+        src={titleUrl}
+        alt={bootstrap.eventProfile.eventName}
         onLoad={() => setLogoLoaded(true)}
         onError={(event) => {
           event.currentTarget.style.display = "none";
@@ -1000,8 +1017,8 @@ function BrandHeader({ assetBaseUrl }: { assetBaseUrl: string }) {
         }}
       />
       <div className="brand-title-fallback" style={{ display: logoLoaded ? "none" : undefined }}>
-        <strong>2026</strong>
-        <span>일잘러 페스타</span>
+        <strong>{bootstrap.eventProfile.profileId === "geumcheon-2026" ? bootstrap.eventProfile.gameName : "2026"}</strong>
+        <span>{bootstrap.eventProfile.profileId === "geumcheon-2026" ? bootstrap.eventProfile.eventName : "일잘러 페스타"}</span>
       </div>
     </header>
   );
