@@ -1,4 +1,5 @@
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { loadDeviceProfile, loadEventProfile } from "../shared/events/eventProfile";
 import type { AppVariant, PcRole } from "../shared/types";
 import type { DeviceProfile, EventProfile, EventProfileId } from "../shared/events/types";
@@ -21,6 +22,57 @@ export type StartupProfileOptions = {
   packagedEventProfile?: string;
   runtimeRootOverride?: string;
 };
+
+export type PackagedMetadata = {
+  eventProfileId?: EventProfileId;
+  variant?: AppVariant;
+};
+
+export type ApplicationResourcePaths = {
+  resourceRoot: string;
+  eventProfilePath: string;
+  iconPath: string;
+  rendererAssetBaseUrl: string;
+};
+
+export function resolvePackagedMetadata(value: unknown): PackagedMetadata {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
+  const metadata = value as Record<string, unknown>;
+  const eventProfileId = metadata.typingKingEventProfile === "skillup-2026" ||
+    metadata.typingKingEventProfile === "geumcheon-2026"
+    ? metadata.typingKingEventProfile
+    : undefined;
+  const variant = metadata.typingKingVariant === "typing" || metadata.typingKingVariant === "typing-leaderboard" ||
+    metadata.typingKingVariant === "ai" || metadata.typingKingVariant === "ai-leaderboard" ||
+    metadata.typingKingVariant === "practice" || metadata.typingKingVariant === "practice-leaderboard"
+    ? metadata.typingKingVariant
+    : undefined;
+  return { eventProfileId, variant };
+}
+
+export function resolveApplicationResourcePaths(input: {
+  isPackaged: boolean;
+  projectRoot: string;
+  resourcesPath?: string;
+  eventProfileId: EventProfileId;
+  role: PcRole;
+}): ApplicationResourcePaths {
+  if (input.isPackaged && !input.resourcesPath) {
+    throw new Error("Packaged application resources path is required");
+  }
+  const resourceRoot = input.isPackaged ? input.resourcesPath! : input.projectRoot;
+  const assetsRoot = path.join(resourceRoot, "assets");
+  return {
+    resourceRoot,
+    eventProfilePath: path.join(resourceRoot, "events", input.eventProfileId, "event.config.json"),
+    iconPath: path.join(
+      assetsRoot,
+      "icons",
+      input.role === "leaderboard" ? "leaderboard_app_icon.ico" : "typing_app_icon.ico"
+    ),
+    rendererAssetBaseUrl: pathToFileURL(assetsRoot).toString()
+  };
+}
 
 const skillUpCompatibilityProfile: EventProfile = {
   schemaVersion: 1,

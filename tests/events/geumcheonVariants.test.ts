@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
+import { resolveApplicationResourcePaths, resolvePackagedMetadata } from "../../electron/startupProfile";
 import { createBootstrapData } from "../../shared/events/bootstrapData";
 import { loadEventProfile, variantPolicyFor } from "../../shared/events/eventProfile";
 
@@ -49,4 +51,41 @@ for (const variant of ["ai", "ai-leaderboard", "practice", "practice-leaderboard
 test("normal variants are disabled", () => {
   assert.equal(variantPolicyFor(geumcheonProfile, "typing").enabled, false);
   assert.equal(variantPolicyFor(geumcheonProfile, "typing-leaderboard").enabled, false);
+});
+
+test("packaged Geumcheon launch resolves profiles and assets from resourcesPath", () => {
+  const executableDirectory = path.resolve("test_artifacts", "portable-exe");
+  const resourcesPath = path.resolve();
+  const metadata = resolvePackagedMetadata({
+    typingKingEventProfile: "geumcheon-2026",
+    typingKingVariant: "practice-leaderboard"
+  });
+  const resources = resolveApplicationResourcePaths({
+    isPackaged: true,
+    projectRoot: executableDirectory,
+    resourcesPath,
+    eventProfileId: metadata.eventProfileId!,
+    role: "leaderboard"
+  });
+
+  assert.equal(metadata.variant, "practice-leaderboard");
+  assert.equal(resources.resourceRoot, resourcesPath);
+  assert.notEqual(resources.resourceRoot, executableDirectory);
+  assert.equal(
+    resources.eventProfilePath,
+    path.join(resourcesPath, "events", "geumcheon-2026", "event.config.json")
+  );
+  assert.equal(
+    resources.iconPath,
+    path.join(resourcesPath, "assets", "icons", "leaderboard_app_icon.ico")
+  );
+  assert.equal(
+    resources.rendererAssetBaseUrl,
+    pathToFileURL(path.join(resourcesPath, "assets")).toString()
+  );
+
+  const profile = loadEventProfile(resources.eventProfilePath);
+  const policy = variantPolicyFor(profile, metadata.variant!);
+  assert.equal(policy.windowTitle, "G-Science AI 타자왕 연습모드 리더보드");
+  assert.deepEqual(policy.gameModes, ["ai_challenge"]);
 });

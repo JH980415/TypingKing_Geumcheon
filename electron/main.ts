@@ -2,7 +2,6 @@
 import type { OpenDialogOptions } from "electron";
 import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import {
   addStageText,
   clearRecords,
@@ -36,7 +35,13 @@ import {
 import type { AppMode, AppVariant, LeaderboardSyncStatus, PcRole, RecordRow, SaveRecordInput, StageText } from "../shared/types";
 import { createBootstrapData } from "../shared/events/bootstrapData";
 import type { EventProfile, EventVariantPolicy } from "../shared/events/types";
-import { resolveLaunchPolicy, resolveStartupProfile } from "./startupProfile";
+import {
+  resolveApplicationResourcePaths,
+  resolveLaunchPolicy,
+  resolvePackagedMetadata,
+  resolveStartupProfile
+} from "./startupProfile";
+import type { ApplicationResourcePaths, PackagedMetadata } from "./startupProfile";
 
 let mainWindow: BrowserWindow | null = null;
 let startupRuntimeRoot: string | undefined;
@@ -66,7 +71,7 @@ function executableName(): string {
   return path.basename(process.env.PORTABLE_EXECUTABLE_FILE || process.execPath);
 }
 
-function resolveVariant(): AppVariant {
+function resolveVariant(metadataVariant?: AppVariant): AppVariant {
   const envVariant = process.env.APP_VARIANT;
   if (
     envVariant === "typing" ||
@@ -79,7 +84,6 @@ function resolveVariant(): AppVariant {
     return envVariant;
   }
 
-  const metadataVariant = packagedVariant();
   if (metadataVariant) return metadataVariant;
 
   const joinedArgs = process.argv.join(" ");
@@ -129,31 +133,14 @@ function resolveRuntimeRoot(): string {
   return resolveRoot();
 }
 
-function packagedEventProfile(): string | undefined {
-  if (!app.isPackaged) return undefined;
+function packagedMetadata(): PackagedMetadata {
+  if (!app.isPackaged) return {};
   try {
-    const packageJson = JSON.parse(fs.readFileSync(path.join(app.getAppPath(), "package.json"), "utf8")) as {
-      typingKingEventProfile?: unknown;
-    };
-    return typeof packageJson.typingKingEventProfile === "string" ? packageJson.typingKingEventProfile : undefined;
+    return resolvePackagedMetadata(
+      JSON.parse(fs.readFileSync(path.join(app.getAppPath(), "package.json"), "utf8"))
+    );
   } catch {
-    return undefined;
-  }
-}
-
-function packagedVariant(): AppVariant | undefined {
-  if (!app.isPackaged) return undefined;
-  try {
-    const packageJson = JSON.parse(fs.readFileSync(path.join(app.getAppPath(), "package.json"), "utf8")) as {
-      typingKingVariant?: unknown;
-    };
-    const variant = packageJson.typingKingVariant;
-    return variant === "typing" || variant === "typing-leaderboard" || variant === "ai" ||
-      variant === "ai-leaderboard" || variant === "practice" || variant === "practice-leaderboard"
-      ? variant
-      : undefined;
-  } catch {
-    return undefined;
+    return {};
   }
 }
 
@@ -209,16 +196,11 @@ function appUserModelId(profile: EventProfile, policy: EventVariantPolicy): stri
   return `${namespace}.${policy.variant}`;
 }
 
-function iconPath(role: EventVariantPolicy["role"]): string {
-  return path.join(
-    resolveRoot(),
-    "assets",
-    "icons",
-    role === "leaderboard" ? "leaderboard_app_icon.ico" : "typing_app_icon.ico"
-  );
-}
-
-function createWindow(variant: AppVariant, eventProfile: EventProfile): void {
+function createWindow(
+  variant: AppVariant,
+  eventProfile: EventProfile,
+  applicationResources: ApplicationResourcePaths
+): void {
   const mode = appModeFromVariant(variant);
   const variantPolicy = eventProfile.variants[variant];
   const preload = path.join(__dirname, "preload.js");
@@ -231,7 +213,7 @@ function createWindow(variant: AppVariant, eventProfile: EventProfile): void {
     show: false,
     fullscreenable: true,
     title: windowTitle,
-    icon: iconPath(variantPolicy.role),
+    icon: applicationResources.iconPath,
     backgroundColor: eventProfile.theme.backgroundColor,
     webPreferences: {
       preload,
@@ -283,7 +265,8 @@ function registerIpc(
   variant: AppVariant,
   eventProfile: EventProfile,
   deviceProfile: ReturnType<typeof resolveStartupProfile>["deviceProfile"],
-  pcRole: PcRole
+  pcRole: PcRole,
+  applicationResources: ApplicationResourcePaths
 ): void {
   const variantPolicy = eventProfile.variants[variant];
   const isPracticeVariant = variantPolicy.sessionKind === "practice";
@@ -291,7 +274,7 @@ function registerIpc(
   setPracticeSessionMode(isPracticeVariant);
   const runtimeRoot = resolveRuntimeRoot();
   const migratedFileCount = migratePortableRuntime(resolveRoot(), runtimeRoot);
-  const ctx = ensureRuntime(runtimeRoot, resolveRoot());
+  const ctx = ensureRuntime(runtimeRoot, applicationResources.resourceRoot);
   if (migratedFileCount > 0) {
     ctx.notices.push(`기존 실행 폴더의 설정과 누락 기록 ${migratedFileCount}개를 이 PC의 로컬 저장소로 복사했습니다.`);
   }
@@ -299,7 +282,7 @@ function registerIpc(
   const scopedRecordMode = recordModeFromPolicy(variantPolicy);
   const hasMultipleRecordModes = variantPolicy.gameModes.length > 1;
   const rendererAssetBaseUrl = eventProfile.profileId === "geumcheon-2026"
-    ? pathToFileURL(path.join(resolveRoot(), "assets")).toString()
+    ? applicationResources.rendererAssetBaseUrl
     : ctx.assetBaseUrl;
   ipcMain.handle("app:getBootstrap", () => ({
     ok: true,
@@ -524,34 +507,52 @@ async function safeAsync<T>(task: () => Promise<T>, fallback?: string) {
 }
 
 void app.whenReady().then(() => {
-  const variant = resolveVariant();
+  const metadata = packagedMetadata();
+  const variant = resolveVariant(metadata.variant);
   let launchPolicy: ReturnType<typeof resolveLaunchPolicy> | undefined;
   let startup: ReturnType<typeof resolveStartupProfile> | undefined;
+  let applicationResources: ApplicationResourcePaths | undefined;
   try {
-    startup = resolveStartupProfile({
+    const startupResources = resolveApplicationResourcePaths({
       isPackaged: app.isPackaged,
       projectRoot: resolveRoot(),
+      resourcesPath: process.resourcesPath,
+      eventProfileId: metadata.eventProfileId || "skillup-2026",
+      role: variant.endsWith("leaderboard") ? "leaderboard" : "player"
+    });
+    startup = resolveStartupProfile({
+      isPackaged: app.isPackaged,
+      projectRoot: startupResources.resourceRoot,
       executableDirectory: process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath),
       localAppData: process.env.LOCALAPPDATA || process.env.APPDATA,
       eventProfile: process.env.EVENT_PROFILE,
-      packagedEventProfile: packagedEventProfile(),
+      packagedEventProfile: metadata.eventProfileId,
       runtimeRootOverride: process.env.TYPINGKING_RUNTIME_ROOT
     });
     startupRuntimeRoot = startup.runtimeRoot;
     if (startup.userDataPath) app.setPath("userData", startup.userDataPath);
     launchPolicy = resolveLaunchPolicy(startup, variant);
+    applicationResources = resolveApplicationResourcePaths({
+      isPackaged: app.isPackaged,
+      projectRoot: resolveRoot(),
+      resourcesPath: process.resourcesPath,
+      eventProfileId: startup.eventProfile.profileId,
+      role: startup.eventProfile.variants[variant].role
+    });
   } catch (error) {
     dialog.showErrorBox("시작할 수 없습니다", error instanceof Error ? error.message : String(error));
     app.exit(1);
     return;
   }
-  if (!launchPolicy || !startup) return;
+  if (!launchPolicy || !startup || !applicationResources) return;
   app.setAppUserModelId(appUserModelId(startup.eventProfile, startup.eventProfile.variants[variant]));
-  registerIpc(variant, startup.eventProfile, startup.deviceProfile, launchPolicy.pcRole);
-  createWindow(variant, startup.eventProfile);
+  registerIpc(variant, startup.eventProfile, startup.deviceProfile, launchPolicy.pcRole, applicationResources);
+  createWindow(variant, startup.eventProfile, applicationResources);
 
   app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow(variant, startup.eventProfile);
+    if (BrowserWindow.getAllWindows().length === 0) {
+      createWindow(variant, startup.eventProfile, applicationResources);
+    }
   });
 });
 
