@@ -208,6 +208,7 @@ git commit -m "feat: add event profiles and isolated device runtime"
 - Create: `electron-builder.geumcheon-ai-leaderboard.yml`
 - Create: `electron-builder.geumcheon-practice.yml`
 - Create: `electron-builder.geumcheon-practice-leaderboard.yml`
+- Create: `shared/events/bootstrapData.ts`
 - Create: `tests/events/geumcheonVariants.test.ts`
 - Modify: `shared/types/index.ts`
 - Modify: `electron/main.ts`
@@ -222,6 +223,7 @@ git commit -m "feat: add event profiles and isolated device runtime"
 
 - Consumes `EventProfile` and `EventVariantPolicy` from Task 1.
 - Adds `eventProfile`, `variantPolicy`, and optional `deviceProfile` to `BootstrapData`.
+- Produces `createBootstrapData(input)` as a pure boundary that derives `variantPolicy` from the validated event profile and selected variant; `electron/main.ts` must use this boundary for the renderer payload.
 
 ```ts
 export type BootstrapData = {
@@ -242,11 +244,42 @@ export type BootstrapData = {
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
+import { createBootstrapData } from "../../shared/events/bootstrapData";
 import { loadEventProfile, variantPolicyFor } from "../../shared/events/eventProfile";
 
 const geumcheonProfile = loadEventProfile(
   path.resolve("events/geumcheon-2026/event.config.json")
 );
+
+const deviceProfile = {
+  schemaVersion: 1,
+  eventProfileId: "geumcheon-2026",
+  eventId: "geumcheon-science-festival-2026",
+  deviceId: "PC01",
+  role: "player",
+  apiBaseUrl: "https://records.example.test",
+  sessions: {
+    official: { sessionId: "day-1-round-1", dayNo: 1, roundNo: 1 },
+    practice: { sessionId: "practice" }
+  },
+  requestTimeoutMs: 5000,
+  retry: { initialDelayMs: 2000, maxDelayMs: 60000 }
+} as const;
+
+test("adds the validated Geumcheon profile policy and device to renderer bootstrap", () => {
+  const bootstrap = createBootstrapData({
+    config: {} as never,
+    assetBaseUrl: "file:///assets",
+    notices: [],
+    mode: "game",
+    variant: "ai",
+    eventProfile: geumcheonProfile,
+    deviceProfile
+  });
+  assert.equal(bootstrap.eventProfile.profileId, "geumcheon-2026");
+  assert.equal(bootstrap.variantPolicy.variant, "ai");
+  assert.equal(bootstrap.deviceProfile?.deviceId, "PC01");
+});
 
 for (const variant of ["ai", "ai-leaderboard", "practice", "practice-leaderboard"] as const) {
   test(`${variant} is enabled and AI-only`, () => {
@@ -262,11 +295,11 @@ test("normal variants are disabled", () => {
 });
 ```
 
-- [ ] **Step 2: Run the test and verify it fails on missing policies**
+- [ ] **Step 2: Run the test and verify it fails on the missing bootstrap boundary**
 
 Run: `npx tsx --test tests/events/geumcheonVariants.test.ts`
 
-Expected: FAIL because Geumcheon variant policies and bootstrap fields are absent.
+Expected: FAIL because `shared/events/bootstrapData.ts` and the event/device fields on `BootstrapData` do not exist yet. The policy-only assertions may already pass after Task 1; the new bootstrap-behavior test is the mandatory RED.
 
 - [ ] **Step 3: Add exact product metadata**
 
@@ -314,7 +347,7 @@ Expected: Vite and Electron TypeScript builds PASS.
 - [ ] **Step 7: Commit**
 
 ```text
-git add events/geumcheon-2026/assets/event-title.png events/geumcheon-2026/assets/key-visual.png electron-builder.geumcheon-ai.yml electron-builder.geumcheon-ai-leaderboard.yml electron-builder.geumcheon-practice.yml electron-builder.geumcheon-practice-leaderboard.yml tests/events/geumcheonVariants.test.ts shared/types/index.ts electron/main.ts apps/shell/src/main.tsx apps/typing-game/src/TypingGameApp.tsx apps/typing-game/src/AIChallengeGame.tsx apps/leaderboard/src/LeaderboardApp.tsx apps/shell/src/styles.css package.json
+git add events/geumcheon-2026/assets/event-title.png events/geumcheon-2026/assets/key-visual.png electron-builder.geumcheon-ai.yml electron-builder.geumcheon-ai-leaderboard.yml electron-builder.geumcheon-practice.yml electron-builder.geumcheon-practice-leaderboard.yml shared/events/bootstrapData.ts tests/events/geumcheonVariants.test.ts shared/types/index.ts electron/main.ts apps/shell/src/main.tsx apps/typing-game/src/TypingGameApp.tsx apps/typing-game/src/AIChallengeGame.tsx apps/leaderboard/src/LeaderboardApp.tsx apps/shell/src/styles.css package.json
 git commit -m "feat: add Geumcheon AI application variants"
 ```
 
