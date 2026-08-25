@@ -43,6 +43,10 @@ const publicResources = [
   "assets/ai_challenge/ai_title_oneline_trimmed.png",
   "assets/ai_challenge/ai_challenge_title.png"
 ];
+const expectedRuntimeAiAssets = publicResources
+  .filter((file) => file.startsWith("assets/"))
+  .map((file) => file.slice("assets/".length))
+  .sort();
 const forbiddenPath = /(?:^|[\/_.-])(device|bootstrap|credential|token|pin|nas|record|queue|log|recovery|export|admin)(?:s|[\/_.-]|$)/i;
 
 function fileList(dir: string, relative = ""): string[] {
@@ -65,6 +69,13 @@ function assertPortableBuildOutputs(): void {
       .filter((entry) => entry.isFile() && path.extname(entry.name).toLowerCase() === ".exe")
       .map((entry) => entry.name);
     assert.deepEqual(executables, [fileName], `${variant} must contain exactly its approved portable EXE`);
+    const runtimeAssetsDir = path.join(outputDir, "win-unpacked", "resources", "assets");
+    assert.equal(fs.existsSync(runtimeAssetsDir), true, `${variant} is missing packaged runtime AI assets`);
+    const runtimeAssets = fileList(runtimeAssetsDir).sort();
+    assert.deepEqual(runtimeAssets, expectedRuntimeAiAssets, `${variant} packages an unexpected runtime asset`);
+    for (const asset of runtimeAssets) {
+      assert.ok(fs.statSync(path.join(runtimeAssetsDir, asset)).size > 0, `${variant} has a zero-byte runtime asset: ${asset}`);
+    }
   }
 }
 

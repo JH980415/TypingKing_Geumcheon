@@ -4,7 +4,7 @@ import os from "node:os";
 import { spawnSync } from "node:child_process";
 
 const root = process.cwd();
-const releaseDir = path.join(root, "release");
+const defaultTargets = ["release", "release-geumcheon"];
 const binaryExtensions = new Set([
   ".exe",
   ".dll",
@@ -95,19 +95,42 @@ async function scanTarget(target, label, findings) {
   }
 }
 
+function parseTargets(args) {
+  if (args.length === 0) {
+    return { targets: defaultTargets.map((target) => path.join(root, target)), usesDefaultTargets: true };
+  }
+  const targets = [];
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] !== "--target") throw new Error(`Unknown argument: ${args[index]}`);
+    const target = args[index + 1];
+    if (!target || target.startsWith("--")) throw new Error("--target requires a directory or file path");
+    targets.push(path.resolve(root, target));
+    index += 1;
+  }
+  return { targets, usesDefaultTargets: false };
+}
+
+function targetLabel(target) {
+  const relative = path.relative(root, target);
+  return relative && !relative.startsWith("..") ? relative.replaceAll(path.sep, "/") : target;
+}
+
 async function main() {
   const findings = [];
-  await scanTarget(releaseDir, "release", findings);
+  const { targets, usesDefaultTargets } = parseTargets(process.argv.slice(2));
+  await Promise.all(targets.map((target) => scanTarget(target, targetLabel(target), findings)));
 
-  const rootEntries = await fs.readdir(root);
-  const zipFiles = rootEntries.filter((name) => /^release.*\.zip$/i.test(name));
-  for (const zipFile of zipFiles) {
-    const zipPath = path.join(root, zipFile);
-    const tempDir = await extractZip(zipPath);
-    try {
-      await scanTarget(tempDir, zipFile, findings);
-    } finally {
-      await fs.rm(tempDir, { recursive: true, force: true });
+  if (usesDefaultTargets) {
+    const rootEntries = await fs.readdir(root);
+    const zipFiles = rootEntries.filter((name) => /^release.*\.zip$/i.test(name));
+    for (const zipFile of zipFiles) {
+      const zipPath = path.join(root, zipFile);
+      const tempDir = await extractZip(zipPath);
+      try {
+        await scanTarget(tempDir, zipFile, findings);
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
     }
   }
 
@@ -119,7 +142,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("PII 검사 통과: release 폴더와 release ZIP에서 개인정보 의심 문자열을 찾지 못했습니다.");
+  console.log(`PII 검사 통과: ${targets.map(targetLabel).join(", ")} 대상에서 개인정보 의심 문자열을 찾지 못했습니다.${usesDefaultTargets ? " release ZIP도 검사했습니다." : ""}`);
 }
 
 main().catch((error) => {

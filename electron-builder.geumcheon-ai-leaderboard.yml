@@ -10,8 +10,19 @@ files:
   - dist-electron/**
   - package.json
 extraResources:
-  - from: assets
-    to: assets
+  - from: assets/ai_challenge
+    to: assets/ai_challenge
+    filter:
+      - ai_boss_typing.png
+      - ai_boss_victory.png
+      - ai_boss_defeat.png
+      - vs_badge.png
+      - stage_badge_1.png
+      - stage_badge_2.png
+      - stage_badge_3.png
+      - ai_title_compact.png
+      - ai_title_oneline_trimmed.png
+      - ai_challenge_title.png
   - from: events/geumcheon-2026
     to: events/geumcheon-2026
 asar: true
