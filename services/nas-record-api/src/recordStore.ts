@@ -61,7 +61,7 @@ export class RecordStore {
       const dataRoot = await realpath(this.#dataRoot);
       const incomingDirectory = resolve(dataRoot, ...segments);
       if (!inside(dataRoot, incomingDirectory)) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
-      await mkdir(incomingDirectory, { recursive: true, mode: 0o700 });
+      await createCanonicalDirectoryChain(dataRoot, segments);
       await assertCanonicalDirectoryChain(dataRoot, segments, incomingDirectory);
       const targetPath = resolve(incomingDirectory, `${record.record.record_id}.json`);
       if (dirname(targetPath) !== incomingDirectory) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
@@ -91,6 +91,29 @@ export class RecordStore {
       storedSha256: sha256(bytes),
       receivedAt: existing.record.received_at,
     };
+  }
+}
+
+async function createCanonicalDirectoryChain(dataRoot: string, segments: readonly string[]): Promise<void> {
+  let current = dataRoot;
+  for (const segment of segments) {
+    const next = resolve(current, segment);
+    let stat;
+    try {
+      stat = await lstat(next);
+    } catch (error) {
+      if (!isMissingPath(error)) throw error;
+      try {
+        await mkdir(next, { mode: 0o700 });
+      } catch (mkdirError) {
+        if (!isAlreadyExists(mkdirError)) throw mkdirError;
+      }
+      stat = await lstat(next);
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
+    const canonical = await realpath(next);
+    if (canonical !== next || !inside(dataRoot, canonical)) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
+    current = next;
   }
 }
 
@@ -124,6 +147,10 @@ function isAlreadyExists(error: unknown): error is NodeJS.ErrnoException {
 
 function isFilesystemError(error: unknown): error is NodeJS.ErrnoException {
   return typeof error === "object" && error != null && /^E[A-Z0-9_]+$/.test(String((error as NodeJS.ErrnoException).code ?? ""));
+}
+
+function isMissingPath(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === "object" && error != null && (error as NodeJS.ErrnoException).code === "ENOENT";
 }
 
 function storageError(error: unknown): Error {

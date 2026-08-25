@@ -79,3 +79,28 @@ No client, Electron renderer, release, `.serena`, real NAS, deployment configura
 ### Remaining boundary
 
 The substitution test created and verified a local Windows junction. Real SMB/NFS behavior, Synology ACLs, NAS-side reparse behavior, and power-loss durability remain unrun.
+
+## Fix round 2/5: intermediate-parent substitution side effect
+
+### TDD evidence
+
+1. RED command: `npm --prefix services/nas-record-api exec -- tsx --test services/nas-record-api/test/recordStore.test.ts`.
+   - Result: 8 passed, 1 failed.
+   - Expected failure: the new intermediate-parent junction test rejected the write but found the unintended `outside/ai` child, proving recursive `mkdir` had crossed the unverified junction.
+2. GREEN command: `npm --prefix services/nas-record-api exec -- tsx --test services/nas-record-api/test/recordStore.test.ts services/nas-record-api/test/routes.test.ts`.
+   - Result: 14 passed, 0 failed.
+
+### Change
+
+`targetPath` now creates the exact session-directory chain one component at a time. Before any descendant is created, each existing component is lstat-checked as a real directory (not a symlink/junction) and realpath-checked to equal its expected location under the canonical data root. The only benign creation race (`EEXIST`) is re-lstat-validated. The final parent is still revalidated before publication.
+
+### Verification
+
+- Four-file service suite: `npm --prefix services/nas-record-api exec -- tsx --test services/nas-record-api/test/auth.test.ts services/nas-record-api/test/recordSchema.test.ts services/nas-record-api/test/recordStore.test.ts services/nas-record-api/test/routes.test.ts` — 37 passed, 0 failed.
+- `npm --prefix services/nas-record-api run typecheck` — passed.
+- `npm run test:logic` — passed.
+- `git diff --check` — passed.
+
+### Remaining boundary
+
+This protects the tested pre-existing substitution path. Real SMB/NFS/Synology reparse behavior and adversarial concurrent path replacement remain unrun; no rate-limit clock change was made in this round.

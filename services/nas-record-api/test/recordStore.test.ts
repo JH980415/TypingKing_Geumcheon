@@ -145,3 +145,21 @@ test("rejects an incoming parent redirected through a symlink or junction before
   await assert.rejects(() => new RecordStore({ dataRoot: root }).put(validStoredRecord()), /STORAGE_PATH_SUBSTITUTION/);
   assert.equal(readdirSync(redirected).length, 0);
 });
+
+test("rejects an intermediate redirected parent before it can create a child outside the data root", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "nas-store-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const redirected = join(root, "outside");
+  const incomingDirectory = incoming(root);
+  const intermediateParent = dirname(incomingDirectory);
+  mkdirSync(redirected);
+  mkdirSync(dirname(intermediateParent), { recursive: true });
+  try {
+    symlinkSync(redirected, intermediateParent, process.platform === "win32" ? "junction" : "dir");
+  } catch (error) {
+    context.skip(`symlink/junction creation unavailable: ${error instanceof Error ? (error as NodeJS.ErrnoException).code ?? error.name : "unknown"}`);
+    return;
+  }
+  await assert.rejects(() => new RecordStore({ dataRoot: root }).put(validStoredRecord()), /STORAGE_PATH_SUBSTITUTION/);
+  assert.deepEqual(readdirSync(redirected), []);
+});
