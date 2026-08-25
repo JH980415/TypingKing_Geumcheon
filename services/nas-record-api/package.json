@@ -1,0 +1,21 @@
+{
+  "name": "@typingking/nas-record-api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "tsx --test test/auth.test.ts test/recordSchema.test.ts test/recordStore.test.ts test/routes.test.ts test/leaderboard.test.ts test/operatorActions.test.ts test/piiBoundary.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "esbuild src/cli.ts --bundle --platform=node --target=node24 --format=cjs --packages=external --outfile=dist/server.cjs",
+    "start": "node dist/server.cjs"
+  },
+  "dependencies": {
+    "fastify": "^5.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "esbuild": "^0.25.10",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}
