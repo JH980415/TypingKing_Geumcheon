@@ -23,6 +23,8 @@
     "dist:geumcheon": "npm run build && npm run dist:geumcheon:ai && npm run dist:geumcheon:ai-leaderboard && npm run dist:geumcheon:practice && npm run dist:geumcheon:practice-leaderboard",
     "dist": "vite build && tsc -p tsconfig.node.json && electron-builder --config electron-builder.game.yml --publish=never && electron-builder --config electron-builder.leaderboard.yml --publish=never && electron-builder --config electron-builder.ai.yml --publish=never && electron-builder --config electron-builder.ai-leaderboard.yml --publish=never && electron-builder --config electron-builder.practice.yml --publish=never && electron-builder --config electron-builder.practice-leaderboard.yml --publish=never && node scripts/prepare-release.mjs",
     "test:logic": "tsx scripts/logic-tests.ts",
+    "test:geumcheon:client": "tsx --test tests/events/eventProfile.test.ts tests/events/runtimeIsolation.test.ts tests/events/geumcheonVariants.test.ts tests/domain/geumcheonStageTexts.test.ts tests/domain/stageTextShuffle.test.ts tests/domain/geumcheonTiming.test.ts tests/domain/geumcheonRanking.test.ts tests/domain/geumcheonFairnessSimulation.test.ts tests/domain/geumcheonLeaderboardSelection.test.ts",
+    "prepare:geumcheon-client-release": "node scripts/prepare-geumcheon-client-release.mjs",
     "clean:release": "node scripts/clean-release.mjs",
     "scan:pii": "node scripts/scan-pii.mjs",
     "test:e2e:multi-pc": "tsx scripts/e2e-multi-pc-check.ts",

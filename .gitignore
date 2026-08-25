@@ -4,6 +4,7 @@ dist/
 dist-electron/
 dist-renderer/
 release-build/
+release-geumcheon/
 release/
 test_artifacts/
 coverage/

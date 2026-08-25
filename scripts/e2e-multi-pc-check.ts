@@ -314,7 +314,7 @@ function createDiagnosticsZip(): string {
     [
       "-NoProfile",
       "-Command",
-      `Compress-Archive -LiteralPath '${artifactRoot}\\*' -DestinationPath '${zipPath}' -Force`
+      `Compress-Archive -Path '${artifactRoot}\\*' -DestinationPath '${zipPath}' -Force`
     ],
     { stdio: "ignore" }
   );
