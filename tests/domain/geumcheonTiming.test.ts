@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { createGeumcheonFairness } from "../../apps/typing-game/src/AIChallengeGame";
 import {
   loadEventProfile,
   resolveAiChallengeConfig
@@ -126,6 +127,32 @@ function fairnessKey(value: ReturnType<typeof fairness>) {
   const terminal = value.stages.at(-1)!;
   return `${terminal.stageNumber}:${terminal.result}`;
 }
+
+test("persists the planned AI CPM for every countdown-stage interruption", async () => {
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-geumcheon-countdown-"));
+  try {
+    const ctx = ensureRuntime(path.join(runtimeRoot, "runtime"));
+    ctx.config.syncMode = "local";
+    for (const [terminalStage, plannedAiCpm] of [[1, 175], [2, 225], [3, 275]] as const) {
+      const battles = selections.slice(0, terminalStage).map((selection, index) => ({
+        stage: selection.stageNumber,
+        text: selection.text,
+        userTimeMs: index === terminalStage - 1 ? 0 : [1200, 2300][index],
+        userInput: index === terminalStage - 1 ? "" : selection.text,
+        aiCpm: 0,
+        plannedAiCpm,
+        result: "AI_WIN" as const
+      }));
+      const produced = createGeumcheonFairness(battles, selections, "home", terminalStage);
+      assert.equal(produced.stages.at(-1)?.aiCpm, plannedAiCpm);
+      const saved = await saveRecord(ctx, geumcheonSaveInput(produced));
+      assert.equal(saved.fairness?.stages.at(-1)?.aiCpm, plannedAiCpm);
+      assert.equal(saved.fairness?.stages.at(-1)?.result, "INTERRUPTED");
+    }
+  } finally {
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});
 
 test("keeps complete, AI-loss, and interrupted Geumcheon fairness data through JSON, queue, and readback", async () => {
   const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-geumcheon-fairness-"));

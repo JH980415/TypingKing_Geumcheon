@@ -42,11 +42,17 @@ type StageBattle = {
   aiTimeMs: number;
   aiElapsedMs: number;
   aiCpm: number;
+  plannedAiCpm: number;
   aiTypedUnits: number;
   aiTypedChars: number;
   result: "USER_WIN" | "AI_WIN";
   userInput: string;
 };
+
+export type GeumcheonFairnessBattle = Pick<
+  StageBattle,
+  "stage" | "text" | "userTimeMs" | "userInput" | "plannedAiCpm" | "result"
+>;
 
 type AiSpeedSegment = {
   startMs: number;
@@ -63,8 +69,15 @@ type AiPlan = {
   averageCpm: number;
 };
 
-function createGeumcheonFairness(
-  battles: readonly StageBattle[],
+function plannedAiCpmForFairness(plan: AiPlan | null): number {
+  if (!plan || !Number.isSafeInteger(plan.averageCpm) || plan.averageCpm < 1) {
+    throw new Error("금천 AI 기록에는 계획된 AI 속도가 필요합니다.");
+  }
+  return plan.averageCpm;
+}
+
+export function createGeumcheonFairness(
+  battles: readonly GeumcheonFairnessBattle[],
   selections: readonly [StageTextSelection, StageTextSelection, StageTextSelection] | undefined,
   interruptionAction: ChallengeControlAction | undefined,
   terminalStage: number
@@ -83,7 +96,7 @@ function createGeumcheonFairness(
       typedText: battle.userInput,
       userTimeMs: battle.userTimeMs,
       typingUnits: countConvertedTypingUnits(battle.userInput),
-      aiCpm: battle.aiCpm,
+      aiCpm: battle.plannedAiCpm,
       result: interruptionAction && battle.stage === terminalStage ? "INTERRUPTED" : battle.result
     };
   });
@@ -134,6 +147,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
   const countdownIntervalRef = useRef(0);
   const countdownClearRef = useRef(0);
   const controlPausedAtRef = useRef(0);
+  const aiPlanRef = useRef<AiPlan | null>(null);
   const controlWasRunningRef = useRef(false);
   const controlSavingRef = useRef(false);
 
@@ -246,7 +260,9 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
   function beginStage(nextStageIndex: number) {
     clearCountdownTimers();
     const nextTargetUnits = countConvertedTypingUnits(stageTexts[nextStageIndex]);
-    setAiPlan(createAiPlan(nextStageIndex + 1, nextTargetUnits, config, debugModeType === "ai_challenge_debug"));
+    const nextAiPlan = createAiPlan(nextStageIndex + 1, nextTargetUnits, config, debugModeType === "ai_challenge_debug");
+    aiPlanRef.current = nextAiPlan;
+    setAiPlan(nextAiPlan);
     setInput("");
     inputValueRef.current = "";
     setRunning(false);
@@ -312,6 +328,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
     const currentInput = inputValueRef.current;
     const currentAiSnapshot = getAiSnapshot(aiPlan, currentElapsed, targetTypingUnits);
     const currentAiInput = getTextPrefixByTypingUnits(target, currentAiSnapshot.typedUnits);
+    const plannedAiCpm = plannedAiCpmForFairness(aiPlanRef.current);
     const interruptedBattle: StageBattle = {
       stage: stageIndex + 1,
       text: target,
@@ -321,6 +338,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
       aiTimeMs: currentElapsed,
       aiElapsedMs: currentElapsed,
       aiCpm: calculateFinalCpm(currentAiSnapshot.typedUnits, currentElapsed),
+      plannedAiCpm,
       aiTypedUnits: currentAiSnapshot.typedUnits,
       aiTypedChars: countTypeableChars(currentAiInput),
       result: "AI_WIN",
@@ -403,6 +421,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
       ? targetTypingUnits
       : getAiSnapshot(aiPlan, userElapsedMs, targetTypingUnits).typedUnits;
     const aiInputAtFinish = getTextPrefixByTypingUnits(target, aiTypedUnitsAtFinish);
+    const plannedAiCpm = plannedAiCpmForFairness(aiPlanRef.current);
     const stageBattle: StageBattle = {
       stage: stageIndex + 1,
       text: target,
@@ -412,6 +431,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
       aiTimeMs,
       aiElapsedMs,
       aiCpm: calculateFinalCpm(aiTypedUnitsAtFinish, aiElapsedMs),
+      plannedAiCpm,
       aiTypedUnits: aiTypedUnitsAtFinish,
       aiTypedChars: countTypeableChars(aiInputAtFinish),
       result,
