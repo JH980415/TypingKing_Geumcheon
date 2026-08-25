@@ -104,3 +104,28 @@ GREEN checkpoints:
 - Route-level writer/leaderboard/operator enforcement, `Idempotency-Key`, storage, conflict handling, public leaderboard, operator actions, PII-boundary integration, and API response status mapping are not Task 2 and were not implemented or claimed.
 - Actual NAS, HTTPS, reverse proxy, ACL, Windows service identity, NAS reboot, public-network, and event-site checks were not run. This report does not claim NAS deployment or field readiness.
 - Only synthetic runtime-generated token material and synthetic participant fixtures were used. No real token, PIN, NAS address, participant record, or private deployment file was added.
+
+## Review fix round 1: token dates and protected-file trust
+
+This addendum supersedes the earlier statement that the Windows permission check is simply skipped.
+
+Token-manifest timestamp validation now parses every ISO component and round-trips the wall-clock fields before accepting `expiresAt` or `revokedAt`. Invalid normalized dates such as a non-leap-year February 29, invalid clock fields, and invalid UTC offsets are rejected. Tests cover invalid non-leap expiry/revocation values and valid leap-day expiry/revocation values.
+
+Protected-file validation now:
+
+- uses `lstat` and canonical real-path comparison to reject leaf symlinks and any parent symlink, junction, or reparse substitution;
+- reads configuration, manifest, and HMAC material only through the verified canonical path;
+- on Linux, requires the leaf and every parent directory to be owned by root, the running service UID, or an explicitly trusted owner UID;
+- on Linux, rejects group/other-writable leaves and parents, with only the standard sticky-directory protection for a trusted child owner;
+- on Windows, fails with `CONFIG_FILE_TRUST_UNVERIFIED` unless the service integrator supplies an ACL verifier; a false result or verifier failure is fail-closed;
+- passes only the canonical path and protected-file kind to the injected Windows ACL verifier and never includes a path in an error.
+
+The production Synology/Linux gate remains built in and cannot be bypassed by the Windows ACL callback. A Synology deployment whose protected files are owned by a NAS-specific administrative UID must explicitly provide that UID in `trustedOwnerUids`; the default trusts only root and the running service UID.
+
+TDD evidence for this review round:
+
+1. RED: the focused authentication/config suite failed three new behaviors—impossible token dates were accepted, Windows loaded without an ACL trust decision, and a directory junction was followed.
+2. GREEN: the focused authentication/config suite passed 16 tests after the minimal implementation.
+3. The combined Task 2 suite passed 23 tests after the behavior change. The first typecheck exposed only a `Stats` overload inference issue; it was corrected without changing runtime behavior and is rechecked in final verification.
+
+Remaining boundary: this package defines and enforces the Windows ACL-verifier contract but does not claim that a production Windows service ACL verifier has been connected. Without one, Windows loading is intentionally blocked.

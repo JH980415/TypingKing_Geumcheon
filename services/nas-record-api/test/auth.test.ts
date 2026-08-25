@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,7 +12,7 @@ import {
   type AuthenticationHeaders,
   type TokenManifestV1,
 } from "../src/auth.js";
-import { loadNasConfig, type NasConfigEnvironment } from "../src/config.js";
+import { loadNasConfig, validateLinuxProtectionChain, type NasConfigEnvironment } from "../src/config.js";
 
 const NOW = Date.parse("2026-08-26T03:00:00.000Z");
 
@@ -171,10 +171,14 @@ function configFixture() {
   return { root, env, eventConfigPath, tokenManifestPath, hmacPath, catalogPath, eventConfig, tokenManifest };
 }
 
+function loadSyntheticConfig(env: NasConfigEnvironment) {
+  return loadNasConfig(env, process.platform === "win32" ? { windowsAclVerifier: () => true } : {});
+}
+
 test("loads strict NAS configuration from only the four approved environment paths", (context) => {
   const fixture = configFixture();
   context.after(() => rmSync(fixture.root, { recursive: true, force: true }));
-  const loaded = loadNasConfig(fixture.env);
+  const loaded = loadSyntheticConfig(fixture.env);
   assert.equal(loaded.schemaVersion, 1);
   assert.equal(loaded.dataRoot, fixture.env.NAS_DATA_ROOT);
   assert.deepEqual(loaded.aiRanges.official, [[150, 200], [200, 250], [250, 300]]);
@@ -187,18 +191,18 @@ test("rejects unknown configuration keys and short HMAC material", (context) => 
   const fixture = configFixture();
   context.after(() => rmSync(fixture.root, { recursive: true, force: true }));
   writeFileSync(fixture.eventConfigPath, JSON.stringify({ ...fixture.eventConfig, unexpected: true }), "utf8");
-  assert.throws(() => loadNasConfig(fixture.env), /CONFIG_UNKNOWN_KEY/);
+  assert.throws(() => loadSyntheticConfig(fixture.env), /CONFIG_UNKNOWN_KEY/);
 
   writeFileSync(fixture.eventConfigPath, JSON.stringify(fixture.eventConfig), "utf8");
   writeFileSync(fixture.hmacPath, Buffer.alloc(31, 29));
-  assert.throws(() => loadNasConfig(fixture.env), /HMAC_KEY_INVALID/);
+  assert.throws(() => loadSyntheticConfig(fixture.env), /HMAC_KEY_INVALID/);
 });
 
 test("rejects a missing configured phrase catalog", (context) => {
   const fixture = configFixture();
   context.after(() => rmSync(fixture.root, { recursive: true, force: true }));
   rmSync(fixture.catalogPath);
-  assert.throws(() => loadNasConfig(fixture.env), /CONFIG_FILE_PERMISSION_INVALID/);
+  assert.throws(() => loadSyntheticConfig(fixture.env), /CONFIG_FILE_PERMISSION_INVALID/);
 });
 
 test("rejects duplicate token IDs and hashes without accepting plaintext token fields", (context) => {
@@ -210,19 +214,111 @@ test("rejects duplicate token IDs and hashes without accepting plaintext token f
     JSON.stringify({ ...fixture.tokenManifest, tokens: [original, { ...original }] }),
     "utf8",
   );
-  assert.throws(() => loadNasConfig(fixture.env), /TOKEN_ID_DUPLICATE/);
+  assert.throws(() => loadSyntheticConfig(fixture.env), /TOKEN_ID_DUPLICATE/);
 
   writeFileSync(
     fixture.tokenManifestPath,
     JSON.stringify({ ...fixture.tokenManifest, tokens: [original, { ...original, tokenId: "PC02-write", deviceId: "PC02" }] }),
     "utf8",
   );
-  assert.throws(() => loadNasConfig(fixture.env), /TOKEN_HASH_DUPLICATE/);
+  assert.throws(() => loadSyntheticConfig(fixture.env), /TOKEN_HASH_DUPLICATE/);
 
   writeFileSync(
     fixture.tokenManifestPath,
     JSON.stringify({ ...fixture.tokenManifest, tokens: [{ ...original, plaintextToken: syntheticToken(17) }] }),
     "utf8",
   );
-  assert.throws(() => loadNasConfig(fixture.env), /TOKEN_UNKNOWN_KEY/);
+  assert.throws(() => loadSyntheticConfig(fixture.env), /TOKEN_UNKNOWN_KEY/);
+});
+
+test("rejects impossible token dates while accepting a real leap day", (context) => {
+  const fixture = configFixture();
+  context.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+  const original = fixture.tokenManifest.tokens[0]!;
+
+  writeFileSync(
+    fixture.tokenManifestPath,
+    JSON.stringify({ ...fixture.tokenManifest, tokens: [{ ...original, expiresAt: "2025-02-29T00:00:00.000Z" }] }),
+    "utf8",
+  );
+  assert.throws(() => loadSyntheticConfig(fixture.env), /TOKEN_EXPIRY_INVALID/);
+
+  writeFileSync(
+    fixture.tokenManifestPath,
+    JSON.stringify({ ...fixture.tokenManifest, tokens: [{ ...original, expiresAt: "2028-02-29T00:00:00.000Z" }] }),
+    "utf8",
+  );
+  assert.equal(loadSyntheticConfig(fixture.env).tokenManifest.tokens[0]?.expiresAt, "2028-02-29T00:00:00.000Z");
+
+  writeFileSync(
+    fixture.tokenManifestPath,
+    JSON.stringify({ ...fixture.tokenManifest, tokens: [{ ...original, revokedAt: "2025-02-29T00:00:00.000Z" }] }),
+    "utf8",
+  );
+  assert.throws(() => loadSyntheticConfig(fixture.env), /TOKEN_REVOCATION_INVALID/);
+
+  writeFileSync(
+    fixture.tokenManifestPath,
+    JSON.stringify({ ...fixture.tokenManifest, tokens: [{ ...original, revokedAt: "2028-02-29T00:00:00.000Z" }] }),
+    "utf8",
+  );
+  assert.equal(loadSyntheticConfig(fixture.env).tokenManifest.tokens[0]?.revokedAt, "2028-02-29T00:00:00.000Z");
+});
+
+test("enforces Linux owner and replacement permissions for leaves and parent directories", () => {
+  const validChain = [
+    { type: "file" as const, uid: 1000, mode: 0o100600 },
+    { type: "directory" as const, uid: 1000, mode: 0o40700 },
+    { type: "directory" as const, uid: 0, mode: 0o40755 },
+  ];
+  assert.doesNotThrow(() => validateLinuxProtectionChain(validChain, [0, 1000]));
+  assert.throws(
+    () => validateLinuxProtectionChain([{ ...validChain[0]!, uid: 2000 }, ...validChain.slice(1)], [0, 1000]),
+    /CONFIG_FILE_OWNER_INVALID/,
+  );
+  assert.throws(
+    () => validateLinuxProtectionChain([{ ...validChain[0]!, mode: 0o100620 }, ...validChain.slice(1)], [0, 1000]),
+    /CONFIG_FILE_PERMISSION_INVALID/,
+  );
+  assert.throws(
+    () => validateLinuxProtectionChain([validChain[0]!, { ...validChain[1]!, mode: 0o40770 }, validChain[2]!], [0, 1000]),
+    /CONFIG_FILE_PERMISSION_INVALID/,
+  );
+  assert.doesNotThrow(() => validateLinuxProtectionChain([
+    validChain[0]!,
+    validChain[1]!,
+    { type: "directory", uid: 0, mode: 0o41777 },
+    validChain[2]!,
+  ], [0, 1000]));
+});
+
+test("requires an explicit Windows ACL trust decision", { skip: process.platform !== "win32" }, (context) => {
+  const fixture = configFixture();
+  context.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+  assert.throws(() => loadNasConfig(fixture.env), /CONFIG_FILE_TRUST_UNVERIFIED/);
+  assert.throws(
+    () => loadNasConfig(fixture.env, { windowsAclVerifier: () => false }),
+    /CONFIG_FILE_PERMISSION_INVALID/,
+  );
+  assert.equal(loadNasConfig(fixture.env, { windowsAclVerifier: () => true }).schemaVersion, 1);
+});
+
+test("rejects configuration files reached through a directory junction", { skip: process.platform !== "win32" }, (context) => {
+  const fixture = configFixture();
+  const junctionRoot = `${fixture.root}-junction`;
+  symlinkSync(fixture.root, junctionRoot, "junction");
+  context.after(() => {
+    rmdirSync(junctionRoot);
+    rmSync(fixture.root, { recursive: true, force: true });
+  });
+  const throughJunction: NasConfigEnvironment = {
+    NAS_EVENT_CONFIG: join(junctionRoot, "event.json"),
+    NAS_TOKEN_MANIFEST: join(junctionRoot, "tokens.json"),
+    NAS_DATA_ROOT: join(junctionRoot, "data"),
+    NAS_PARTICIPANT_HMAC_KEY_FILE: join(junctionRoot, "participant-hmac.key"),
+  };
+  assert.throws(
+    () => loadNasConfig(throughJunction, { windowsAclVerifier: () => true }),
+    /CONFIG_FILE_SUBSTITUTION/,
+  );
 });
