@@ -55,3 +55,27 @@ No client, Electron renderer, release, `.serena`, real NAS, deployment configura
 - The tests use only synthetic record values and generated token material; no real token, participant, NAS hostname, or NAS path was written or logged.
 - No real NAS, SMB/NFS mount, ACL/service identity, NAS power loss, process crash, cross-host concurrency, TLS/reverse proxy, or field network test was run. The local filesystem tests prove the Node publication protocol, not real-NAS durability.
 - Node does not provide portable parent-directory `fsync` support on Windows. The implementation performs directory sync on non-Windows platforms and the readiness/atomic fault tests cover the required failure behavior; a real Synology/Linux validation remains required before claiming NAS durability.
+
+## Fix round 1/5: storage validation, path substitution, and errno mapping
+
+### Changes
+
+- Existing duplicate targets now require the complete stored-record shape: exact root, session, record, participant, and stored-stage fields plus timestamp/hash/integer checks. A same-payload-hash truncated document is `STORAGE_CORRUPT` and is not changed.
+- After creating the calculated incoming directory, the store canonicalizes the data root, lstat-checks every intended parent component, and requires the real final parent to be exactly the intended parent under that canonical root. A symlink or junction substitution is rejected as `STORAGE_PATH_SUBSTITUTION` before record publication.
+- Raw Node filesystem errno failures from publication, parent resolution, or existing-target reads are normalized at the storage boundary to `STORAGE_UNAVAILABLE`; the route therefore returns the safe `503` protocol error instead of a raw/error-derived 422.
+
+### TDD evidence
+
+1. RED: the same-hash incomplete-target test failed with `Missing expected rejection`; the substitution test likewise failed with `Missing expected rejection`; the raw `ENOSPC` route test returned `422` rather than `503`.
+2. GREEN: the amended Task 3 focused suite passed 13/13 after the minimal validation, canonical-parent, and errno-normalization changes.
+
+### Verification
+
+- Current four-file service suite (`auth`, `recordSchema`, `recordStore`, `routes`): 36 passed, 0 failed.
+- Service typecheck: passed.
+- Root `npm run test:logic`: passed.
+- `git diff --check`: passed.
+
+### Remaining boundary
+
+The substitution test created and verified a local Windows junction. Real SMB/NFS behavior, Synology ACLs, NAS-side reparse behavior, and power-loss durability remain unrun.

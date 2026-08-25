@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
 
@@ -114,4 +114,34 @@ test("treats an empty or malformed existing target as corrupt without replacing 
   writeFileSync(target, "");
   await assert.rejects(() => new RecordStore({ dataRoot: root }).put(validStoredRecord()), /STORAGE_CORRUPT/);
   assert.equal(readFileSync(target, "utf8"), "");
+});
+
+test("treats a same-hash structurally incomplete existing target as corrupt without replacing it", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "nas-store-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const targetDirectory = incoming(root);
+  mkdirSync(targetDirectory, { recursive: true });
+  const target = join(targetDirectory, `${RECORD_ID}.json`);
+  const record = validStoredRecord();
+  writeFileSync(target, JSON.stringify({ payload_sha256: record.payload_sha256, record: { received_at: record.record.received_at } }));
+  const original = readFileSync(target, "utf8");
+  await assert.rejects(() => new RecordStore({ dataRoot: root }).put(record), /STORAGE_CORRUPT/);
+  assert.equal(readFileSync(target, "utf8"), original);
+});
+
+test("rejects an incoming parent redirected through a symlink or junction before writing", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "nas-store-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const redirected = join(root, "outside");
+  const incomingDirectory = incoming(root);
+  mkdirSync(redirected);
+  mkdirSync(dirname(incomingDirectory), { recursive: true });
+  try {
+    symlinkSync(redirected, incomingDirectory, process.platform === "win32" ? "junction" : "dir");
+  } catch (error) {
+    context.skip(`symlink/junction creation unavailable: ${error instanceof Error ? (error as NodeJS.ErrnoException).code ?? error.name : "unknown"}`);
+    return;
+  }
+  await assert.rejects(() => new RecordStore({ dataRoot: root }).put(validStoredRecord()), /STORAGE_PATH_SUBSTITUTION/);
+  assert.equal(readdirSync(redirected).length, 0);
 });

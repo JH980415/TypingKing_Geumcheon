@@ -7,6 +7,7 @@ import test from "node:test";
 
 import { buildNasApp } from "../src/app.js";
 import { TokenBucketLimiter } from "../src/auth.js";
+import { RecordStore } from "../src/recordStore.js";
 import type { RecordValidationConfigV1 } from "../src/recordSchema.js";
 
 const token = "1".repeat(64);
@@ -68,4 +69,14 @@ test("health reports only availability without storage or configuration disclosu
   const unavailable = buildNasApp({ config: config(root), readiness: async () => false }); context.after(() => unavailable.close());
   const down = await unavailable.inject({ method: "GET", url: "/health" });
   assert.equal(down.statusCode, 503); assert.deepEqual(down.json(), { status: "unavailable" }); assert.equal(down.body.includes(root), false);
+});
+
+test("maps raw storage errno failures to a safe unavailable response", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "nas-routes-")); context.after(() => rmSync(root, { recursive: true, force: true }));
+  const diskFull = Object.assign(new Error("synthetic disk full"), { code: "ENOSPC" });
+  const app = buildNasApp({ config: config(root), now: () => "2026-08-26T03:10:00.000Z", recordStore: new RecordStore({ dataRoot: root, atomicHooks: { beforeWrite: () => { throw diskFull; } } }) }); context.after(() => app.close());
+  const response = await app.inject({ method: "POST", url: "/api/v1/records", headers: headers(), payload: body() });
+  assert.equal(response.statusCode, 503, response.body);
+  assert.deepEqual(response.json(), { schema_version: 1, code: "STORAGE_UNAVAILABLE", message: "STORAGE_UNAVAILABLE" });
+  assert.equal(response.body.includes("disk full"), false);
 });
