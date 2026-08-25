@@ -25,6 +25,7 @@ import {
   pickRotatingStageText,
   STAGE_TEXT_ROTATION_STORAGE_KEY
 } from "../../../shared/utils/stageTextRotation";
+import { mergeRuntimeConfigWithEventProfile } from "../../../shared/events/bootstrapData";
 import { AIChallengeGame } from "./AIChallengeGame";
 import { StageTextAdmin } from "./StageTextAdmin";
 
@@ -142,7 +143,12 @@ export function TypingGameApp({ bootstrap }: Props) {
     async function refreshSettings() {
       const result = await window.typingKing.getOneDriveSettings();
       if (alive && result.ok && result.data) {
-        setConfig((current) => (sameGameConfig(current, result.data!) ? current : result.data!));
+        const refreshed = mergeRuntimeConfigWithEventProfile(
+          result.data,
+          bootstrap.eventProfile,
+          bootstrap.variantPolicy.sessionKind
+        );
+        setConfig((current) => (sameGameConfig(current, refreshed) ? current : refreshed));
       }
     }
     void refreshSettings();

@@ -1,5 +1,5 @@
 import type { AppConfig, AppMode, AppVariant, BootstrapData } from "../types";
-import type { EventProfile } from "./types";
+import type { EventProfile, SessionKind } from "./types";
 import { validateDeviceProfile, validateEventProfile, variantPolicyFor } from "./eventProfile";
 
 type BootstrapInput = {
@@ -11,6 +11,20 @@ type BootstrapInput = {
   eventProfile: EventProfile;
   deviceProfile?: unknown;
 };
+
+export function mergeRuntimeConfigWithEventProfile(
+  runtimeConfig: AppConfig,
+  eventProfile: EventProfile,
+  sessionKind: SessionKind
+): AppConfig {
+  if (eventProfile.profileId !== "geumcheon-2026") return runtimeConfig;
+  return {
+    ...runtimeConfig,
+    eventName: eventProfile.eventName,
+    theme: eventProfile.theme,
+    aiChallenge: eventProfile.aiChallenge[sessionKind]
+  };
+}
 
 export function createBootstrapData(input: BootstrapInput): BootstrapData {
   const eventProfile = validateEventProfile(input.eventProfile);
@@ -24,12 +38,7 @@ export function createBootstrapData(input: BootstrapInput): BootstrapData {
     : validateDeviceProfile(input.deviceProfile);
 
   return {
-    config: {
-      ...input.config,
-      eventName: eventProfile.eventName,
-      theme: eventProfile.theme,
-      aiChallenge: eventProfile.aiChallenge[variantPolicy.sessionKind]
-    },
+    config: mergeRuntimeConfigWithEventProfile(input.config, eventProfile, variantPolicy.sessionKind),
     assetBaseUrl: input.assetBaseUrl,
     notices: [...input.notices],
     mode: input.mode,

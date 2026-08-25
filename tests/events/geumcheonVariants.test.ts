@@ -7,7 +7,8 @@ import {
   resolveApplicationResourcePaths,
   resolvePackagedMetadata
 } from "../../electron/startupProfile";
-import { createBootstrapData } from "../../shared/events/bootstrapData";
+import { createBootstrapData, mergeRuntimeConfigWithEventProfile } from "../../shared/events/bootstrapData";
+import { DEFAULT_CONFIG } from "../../shared/constants/defaults";
 import { loadEventProfile, variantPolicyFor } from "../../shared/events/eventProfile";
 
 const geumcheonProfile = loadEventProfile(
@@ -120,4 +121,51 @@ test("packaged Geumcheon launch resolves profiles and assets from resourcesPath"
   const policy = variantPolicyFor(profile, metadata.variant!);
   assert.equal(policy.windowTitle, "G-Science AI 타자왕 연습모드 리더보드");
   assert.deepEqual(policy.gameModes, ["ai_challenge"]);
+});
+
+for (const [variant, sessionKind] of [["ai", "official"], ["practice", "practice"]] as const) {
+  test(`Geumcheon ${sessionKind} runtime refresh keeps profile-owned settings`, () => {
+    const bootstrap = createBootstrapData({
+      config: DEFAULT_CONFIG,
+      assetBaseUrl: "file:///assets",
+      notices: [],
+      mode: "game",
+      variant,
+      eventProfile: geumcheonProfile
+    });
+    const runtimeRefresh = {
+      ...DEFAULT_CONFIG,
+      eventName: "raw runtime event name",
+      theme: { ...DEFAULT_CONFIG.theme, primaryColor: "#000000" },
+      aiChallenge: DEFAULT_CONFIG.aiChallenge,
+      oneDriveRoot: "C:/temporary/onedrive",
+      recordBaseFolderName: "FreshRecords",
+      dayNo: 2,
+      roundNo: 3
+    };
+
+    const refreshed = mergeRuntimeConfigWithEventProfile(runtimeRefresh, bootstrap.eventProfile, sessionKind);
+
+    assert.equal(refreshed.eventName, geumcheonProfile.eventName);
+    assert.deepEqual(refreshed.theme, geumcheonProfile.theme);
+    assert.deepEqual(refreshed.aiChallenge, geumcheonProfile.aiChallenge[sessionKind]);
+    assert.equal(refreshed.oneDriveRoot, runtimeRefresh.oneDriveRoot);
+    assert.equal(refreshed.recordBaseFolderName, runtimeRefresh.recordBaseFolderName);
+    assert.equal(refreshed.dayNo, runtimeRefresh.dayNo);
+    assert.equal(refreshed.roundNo, runtimeRefresh.roundNo);
+  });
+}
+
+test("SkillUp runtime refresh remains raw settings", () => {
+  const skillupProfile = loadEventProfile(path.resolve("events/skillup-2026/event.config.json"));
+  const runtimeRefresh = {
+    ...DEFAULT_CONFIG,
+    eventName: "runtime SkillUp name",
+    theme: { ...DEFAULT_CONFIG.theme, primaryColor: "#123456" },
+    oneDriveRoot: "C:/temporary/skillup",
+    dayNo: 4,
+    roundNo: 5
+  };
+
+  assert.deepEqual(mergeRuntimeConfigWithEventProfile(runtimeRefresh, skillupProfile, "official"), runtimeRefresh);
 });
