@@ -219,4 +219,8 @@ export function variantPolicyFor(profile: EventProfile, variant: AppVariant): Ev
   return profile.variants[variant];
 }
 
+export function resolveAiChallengeConfig(profile: EventProfile, sessionKind: SessionKind): AiChallengeConfig {
+  return profile.aiChallenge[sessionKind];
+}
+
 export type { DeviceProfile, EventProfile, EventProfileId, EventVariantPolicy, SessionKind } from "./types";

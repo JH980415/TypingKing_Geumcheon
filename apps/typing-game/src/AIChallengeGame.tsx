@@ -1,12 +1,13 @@
 ﻿import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { AppConfig, EventProfile, RecordRow, SaveRecordInput, StageTextSelection } from "../../../shared/types";
+import type { AppConfig, EventProfile, GeumcheonFairnessInput, RecordRow, SaveRecordInput, StageTextSelection } from "../../../shared/types";
 import { formatBirthdate } from "../../../shared/utils/date";
 import { buildPhoneFull } from "../../../shared/utils/masking";
 import {
   calculateAccuracy,
   calculateCurrentCpm,
   calculateFinalCpm,
+  calculateTotalUserTimeMs,
   applyTargetLineBreaks,
   countConvertedTypingUnits,
   countMatchingPrefixTypingUnits,
@@ -14,6 +15,8 @@ import {
   getTextPrefixByTypingUnits,
   isExactMatch,
   isLineProgressAllowed,
+  finalizeUserStageTimeMs,
+  resumeStageTimerAfterControl,
   splitChars,
   splitTypeableChars,
   stripDisplayLineBreaks
@@ -60,6 +63,37 @@ type AiPlan = {
   averageCpm: number;
 };
 
+function createGeumcheonFairness(
+  battles: readonly StageBattle[],
+  selections: readonly [StageTextSelection, StageTextSelection, StageTextSelection] | undefined,
+  interruptionAction: ChallengeControlAction | undefined,
+  terminalStage: number
+): GeumcheonFairnessInput {
+  if (!selections) throw new Error("금천 AI 기록에는 선택 문구가 필요합니다.");
+  const stages = battles.map((battle) => {
+    const selection = selections[battle.stage - 1];
+    if (!selection || selection.stageNumber !== battle.stage || selection.text !== battle.text) {
+      throw new Error("금천 AI 기록의 선택 문구가 일치하지 않습니다.");
+    }
+    return {
+      stageNumber: selection.stageNumber,
+      textId: selection.id,
+      catalogVersion: selection.catalogVersion,
+      targetText: selection.text,
+      typedText: battle.userInput,
+      userTimeMs: battle.userTimeMs,
+      typingUnits: countConvertedTypingUnits(battle.userInput),
+      aiCpm: battle.aiCpm,
+      result: interruptionAction && battle.stage === terminalStage ? "INTERRUPTED" : battle.result
+    };
+  });
+  return {
+    catalogVersion: selections[0].catalogVersion,
+    totalUserTimeMs: calculateTotalUserTimeMs(stages.map((stage) => stage.userTimeMs)),
+    stages
+  };
+}
+
 type Props = {
   config: AppConfig;
   participant: Participant;
@@ -104,6 +138,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
   const controlSavingRef = useRef(false);
 
   const target = stageTexts[stageIndex];
+  const includesControlDwell = eventProfile.profileId === "geumcheon-2026";
   const targetLength = countTypeableChars(target);
   const targetTypingUnits = countConvertedTypingUnits(target);
   const elapsedMs = running ? performance.now() - stageStartRef.current : 0;
@@ -134,7 +169,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
       setTick((value) => value + 1);
       const nowElapsed = performance.now() - stageStartRef.current;
       if (!finishedRef.current && nowElapsed >= aiTimeMs) {
-        void finishStage("AI_WIN", aiTimeMs);
+        void finishStage("AI_WIN", finalizeUserStageTimeMs(stageStartRef.current, performance.now()));
       }
     }, 80);
     return () => window.clearInterval(timer);
@@ -146,7 +181,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
 
   useEffect(() => {
     if (!running || composing || finishedRef.current || !isExactMatch(input, target)) return;
-    const userTime = performance.now() - stageStartRef.current;
+    const userTime = finalizeUserStageTimeMs(stageStartRef.current, performance.now());
     void finishStage(userTime <= aiTimeMs ? "USER_WIN" : "AI_WIN", userTime);
   }, [aiTimeMs, composing, input, running, target]);
 
@@ -252,10 +287,15 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
 
   function cancelChallengeControl() {
     if (controlSavingRef.current) return;
-    const pausedMs = performance.now() - controlPausedAtRef.current;
+    const controlClosedAt = performance.now();
     setPendingControlAction(null);
     if (controlWasRunningRef.current) {
-      stageStartRef.current += pausedMs;
+      stageStartRef.current = resumeStageTimerAfterControl(
+        stageStartRef.current,
+        controlPausedAtRef.current,
+        controlClosedAt,
+        includesControlDwell
+      );
       setRunning(true);
       queueChallengeInputFocus();
     }
@@ -264,7 +304,10 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
   async function saveInterruptedChallenge(action: ChallengeControlAction) {
     if (savedRow != null || saveError !== "") return;
     const currentElapsed = controlWasRunningRef.current
-      ? Math.max(0, controlPausedAtRef.current - stageStartRef.current)
+      ? finalizeUserStageTimeMs(
+          stageStartRef.current,
+          includesControlDwell ? performance.now() : controlPausedAtRef.current
+        )
       : 0;
     const currentInput = inputValueRef.current;
     const currentAiSnapshot = getAiSnapshot(aiPlan, currentElapsed, targetTypingUnits);
@@ -330,7 +373,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
     inputValueRef.current = nextInput;
     setInput(nextInput);
     if (!finishedRef.current && isExactMatch(nextInput, target)) {
-      const userTime = performance.now() - stageStartRef.current;
+      const userTime = finalizeUserStageTimeMs(stageStartRef.current, performance.now());
       void finishStage(userTime <= aiTimeMs ? "USER_WIN" : "AI_WIN", userTime);
     }
   }
@@ -427,7 +470,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
       results[index] = battle.result;
       diffs[index] = battle.userTimeMs - battle.aiTimeMs;
     });
-    const userTotal = userTimes.reduce((sum, value) => sum + value, 0);
+    const userTotal = calculateTotalUserTimeMs(userTimes);
     const aiTotal = aiTimes.reduce<number>((sum, value) => sum + (value ?? 0), 0);
     const lastAccuracy = battleRows.at(-1)?.userAccuracy ?? 0;
     const aiDisplay = buildChallengeDisplayMetrics(battleRows, status, failedStage, Boolean(interruptionAction));
@@ -440,6 +483,9 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
         ? countConvertedTypingUnits(battle.text)
         : countMatchingPrefixTypingUnits(battle.userInput, battle.text));
     }, 0);
+    const fairness = eventProfile.profileId === "geumcheon-2026"
+      ? createGeumcheonFairness(battleRows, stageTextSelections, interruptionAction, stageIndex + 1)
+      : undefined;
     const saveInput: SaveRecordInput = {
       participant_name: participant.name,
       phone_part1: participant.phone1,
@@ -453,6 +499,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
       stageTexts,
       stageTextSelections,
       stageTimesMs: userTimes,
+      fairness,
       game_mode: "ai_challenge",
       final_accuracy: status === "SUCCESS" ? 100 : Math.round(lastAccuracy),
       ai: {

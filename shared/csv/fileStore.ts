@@ -25,6 +25,7 @@ import type {
   DrawStageTextsInput,
   DrawStageTextsResult,
   GameStartReadiness,
+  GeumcheonFairnessInput,
   LeaderboardSyncStatus,
   OneDriveCleanupResult,
   PcRole,
@@ -35,7 +36,7 @@ import type {
 import { formatBirthdate, formatMs, nowIso, timestampForFile } from "../utils/date";
 import { buildPhoneFull, maskBirthdate, maskPhone, validatePhoneParts } from "../utils/masking";
 import { compareRecords, isInterruptedRecord } from "../utils/ranking";
-import { calculateFinalCpm, countConvertedTypingUnits, countTypeableChars } from "../utils/typing";
+import { calculateFinalCpm, calculateTotalUserTimeMs, countConvertedTypingUnits, countTypeableChars } from "../utils/typing";
 import { parseStageTextCatalog, validateStageTextCatalog } from "../events/stageTextCatalog";
 import { drawStageTextFromBag, stageTextBagKey, type StageTextShuffleState } from "../utils/stageTextShuffle";
 
@@ -1625,7 +1626,7 @@ function normalizeCsvHeader(header: string): string {
   return CSV_HEADER_KEYS[value] ?? value;
 }
 
-function readCsv<T extends Record<string, string>>(
+function readCsv<T extends object>(
   filePath: string,
   headers: readonly string[],
   respectLock = true
@@ -1642,10 +1643,10 @@ function readCsv<T extends Record<string, string>>(
     columns: (headers: string[]) => headers.map((header) => normalizeCsvHeader(header)),
     skip_empty_lines: true,
     relax_quotes: false
-  }) as T[];
+  }) as unknown as T[];
 }
 
-function csvText<T extends Record<string, string>>(rows: T[], headers: readonly string[]): string {
+function csvText<T extends object>(rows: T[], headers: readonly string[]): string {
   const labels = labelMapFor(headers);
   return (
     BOM +
@@ -1669,7 +1670,7 @@ function labelMapFor(headers: readonly string[]): Record<string, string> {
   return CSV_HEADER_LABELS;
 }
 
-function writeCsvAtomic<T extends Record<string, string>>(
+function writeCsvAtomic<T extends object>(
   filePath: string,
   rows: T[],
   headers: readonly string[]
@@ -1772,13 +1773,54 @@ export function checkGameStartReadiness(
   return { ready: true };
 }
 
+function normalizeGeumcheonFairness(value: unknown): GeumcheonFairnessInput | undefined {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  const totalUserTimeMs = source.totalUserTimeMs;
+  if (typeof source.catalogVersion !== "string" || typeof totalUserTimeMs !== "number" || !Number.isSafeInteger(totalUserTimeMs) || totalUserTimeMs < 0 || !Array.isArray(source.stages) || source.stages.length < 1 || source.stages.length > 3) {
+    return undefined;
+  }
+  const stages = source.stages.map((value, index) => {
+    if (value == null || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const stage = value as Record<string, unknown>;
+    if (
+      stage.stageNumber !== index + 1 ||
+      typeof stage.textId !== "string" ||
+      typeof stage.catalogVersion !== "string" ||
+      stage.catalogVersion !== source.catalogVersion ||
+      typeof stage.targetText !== "string" ||
+      typeof stage.typedText !== "string" ||
+      typeof stage.userTimeMs !== "number" || !Number.isSafeInteger(stage.userTimeMs) || stage.userTimeMs < 0 ||
+      typeof stage.typingUnits !== "number" || !Number.isSafeInteger(stage.typingUnits) || stage.typingUnits < 0 ||
+      typeof stage.aiCpm !== "number" || !Number.isSafeInteger(stage.aiCpm) || stage.aiCpm < 1 ||
+      (stage.result !== "USER_WIN" && stage.result !== "AI_WIN" && stage.result !== "INTERRUPTED")
+    ) return undefined;
+    return {
+      stageNumber: stage.stageNumber as 1 | 2 | 3,
+      textId: stage.textId,
+      catalogVersion: stage.catalogVersion,
+      targetText: stage.targetText,
+      typedText: stage.typedText,
+      userTimeMs: Number(stage.userTimeMs),
+      typingUnits: Number(stage.typingUnits),
+      aiCpm: Number(stage.aiCpm),
+      result: stage.result
+    };
+  });
+  if (stages.some((stage) => stage === undefined)) return undefined;
+  const validStages = stages as GeumcheonFairnessInput["stages"];
+  if (calculateTotalUserTimeMs(validStages.map((stage) => stage.userTimeMs)) !== totalUserTimeMs) return undefined;
+  return { catalogVersion: source.catalogVersion, totalUserTimeMs, stages: validStages };
+}
+
 function normalizeJsonRecord(value: unknown): RecordRow | null {
   if (value == null || typeof value !== "object") return null;
   const source = value as Record<string, unknown>;
   const row = Object.fromEntries(
     RECORD_HEADERS.map((header) => [header, source[header] == null ? "" : String(source[header])])
-  ) as RecordRow;
-  return row.record_id ? row : null;
+  ) as unknown as RecordRow;
+  const fairness = normalizeGeumcheonFairness(source.fairness);
+  return row.record_id ? { ...row, ...(fairness ? { fairness } : {}) } : null;
 }
 
 function isSupportedRecordMode(value: string): value is RecordMode {
@@ -2489,6 +2531,8 @@ export async function saveRecord(ctx: RuntimeContext, input: SaveRecordInput): P
   if (phoneError) throw new Error(phoneError);
 
   const phoneFull = buildPhoneFull(input.phone_part1, input.phone_part2, input.phone_part3);
+  const fairness = input.fairness == null ? undefined : normalizeGeumcheonFairness(input.fairness);
+  if (input.fairness != null && !fairness) throw new Error("금천 공정성 기록이 올바르지 않습니다.");
   const birthdate = formatBirthdate(input.birth_year, input.birth_month, input.birth_day);
   const [stage1Text, stage2Text, stage3Text] = input.stageTexts;
   const [stage1Selection, stage2Selection, stage3Selection] = input.stageTextSelections ?? [];
@@ -2604,7 +2648,8 @@ export async function saveRecord(ctx: RuntimeContext, input: SaveRecordInput): P
           ? String(input.interruption.resultStage)
           : "",
     original_record_id: "",
-    is_admin_edited: "false"
+    is_admin_edited: "false",
+    ...(fairness ? { fairness } : {})
   };
 
   if (usesOneDriveJson(ctx)) {

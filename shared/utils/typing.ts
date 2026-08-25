@@ -170,3 +170,36 @@ export function calculateFinalCpm(totalTypingUnits: number, totalTimeMs: number)
   if (totalTimeMs <= 0) return 0;
   return Math.max(0, Math.round(totalTypingUnits / (totalTimeMs / 60000)));
 }
+
+export function calculateTotalUserTimeMs(stageTimesMs: readonly number[]): number {
+  let total = 0;
+  for (const value of stageTimesMs) {
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error("Invalid user time");
+    total += value;
+    if (!Number.isSafeInteger(total)) throw new Error("Invalid user time");
+  }
+  return total;
+}
+
+export function finalizeUserStageTimeMs(startedAtMs: number, endedAtMs: number): number {
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(endedAtMs) || endedAtMs < startedAtMs) {
+    throw new Error("Invalid user time");
+  }
+  const elapsedMs = Math.round(endedAtMs - startedAtMs);
+  if (!Number.isSafeInteger(elapsedMs)) throw new Error("Invalid user time");
+  return elapsedMs;
+}
+
+export function resumeStageTimerAfterControl(
+  stageStartedAtMs: number,
+  controlOpenedAtMs: number,
+  controlClosedAtMs: number,
+  includeControlDwell: boolean
+): number {
+  if (![stageStartedAtMs, controlOpenedAtMs, controlClosedAtMs].every(Number.isFinite) || controlClosedAtMs < controlOpenedAtMs) {
+    throw new Error("Invalid user time");
+  }
+  return includeControlDwell
+    ? stageStartedAtMs
+    : stageStartedAtMs + (controlClosedAtMs - controlOpenedAtMs);
+}

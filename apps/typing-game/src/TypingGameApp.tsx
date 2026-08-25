@@ -8,12 +8,14 @@ import {
   calculateAccuracy,
   calculateCurrentCpm,
   calculateFinalCpm,
+  finalizeUserStageTimeMs,
   applyTargetLineBreaks,
   countConvertedTypingUnits,
   countMatchingPrefixTypingUnits,
   countTypeableChars,
   isExactMatch,
   isLineProgressAllowed,
+  resumeStageTimerAfterControl,
   splitChars,
   splitTypeableChars,
   stripDisplayLineBreaks
@@ -453,15 +455,14 @@ export function TypingGameApp({ bootstrap }: Props) {
     setInput(nextInput);
     if (!stageCompleteRef.current && isExactMatch(nextInput, currentTarget)) {
       stageCompleteRef.current = true;
-      void completeStage(performance.now() - stageStartRef.current);
+      void completeStage();
     }
   }
 
-  async function completeStage(elapsedOverride?: number) {
+  async function completeStage() {
     if (!stageTexts) return;
     setGameRunning(false);
-    const now = performance.now();
-    const elapsed = elapsedOverride ?? now - stageStartRef.current;
+    const elapsed = finalizeUserStageTimeMs(stageStartRef.current, performance.now());
     const nextTimes = [...stageTimes, elapsed];
     if (stageIndex < 2) {
       setStageTimes(nextTimes);
@@ -590,10 +591,15 @@ export function TypingGameApp({ bootstrap }: Props) {
 
   function cancelGameControl() {
     if (gameControlSavingRef.current) return;
-    const pausedMs = performance.now() - gameControlPausedAtRef.current;
+    const controlClosedAt = performance.now();
     setPendingGameAction(null);
     if (screen === "game" && gameControlWasRunningRef.current) {
-      stageStartRef.current += pausedMs;
+      stageStartRef.current = resumeStageTimerAfterControl(
+        stageStartRef.current,
+        gameControlPausedAtRef.current,
+        controlClosedAt,
+        bootstrap.eventProfile.profileId === "geumcheon-2026"
+      );
       setGameRunning(true);
       window.setTimeout(() => inputRef.current?.focus(), 0);
     }
@@ -602,7 +608,12 @@ export function TypingGameApp({ bootstrap }: Props) {
   async function saveInterruptedNormalGame(action: GameControlAction) {
     if (!stageTexts) return;
     const currentElapsed = gameControlWasRunningRef.current
-      ? Math.max(0, gameControlPausedAtRef.current - stageStartRef.current)
+      ? finalizeUserStageTimeMs(
+          stageStartRef.current,
+          bootstrap.eventProfile.profileId === "geumcheon-2026"
+            ? performance.now()
+            : gameControlPausedAtRef.current
+        )
       : 0;
     const interruptedTimes: [number, number, number] = [0, 0, 0];
     stageTimes.forEach((value, index) => {

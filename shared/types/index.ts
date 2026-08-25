@@ -107,6 +107,24 @@ export type DrawStageTextsResult = {
   selections: readonly [StageTextSelection, StageTextSelection, StageTextSelection];
 };
 
+export type GeumcheonStageResultInput = {
+  stageNumber: 1 | 2 | 3;
+  textId: string;
+  catalogVersion: string;
+  targetText: string;
+  typedText: string;
+  userTimeMs: number;
+  typingUnits: number;
+  aiCpm: number;
+  result: "USER_WIN" | "AI_WIN" | "INTERRUPTED";
+};
+
+export type GeumcheonFairnessInput = {
+  catalogVersion: string;
+  totalUserTimeMs: number;
+  stages: readonly GeumcheonStageResultInput[];
+};
+
 export type RecordRow = {
   record_id: string;
   created_at: string;
@@ -182,6 +200,7 @@ export type RecordRow = {
   result_stage: string;
   original_record_id: string;
   is_admin_edited: string;
+  fairness?: GeumcheonFairnessInput;
 };
 
 export type SaveRecordInput = {
@@ -197,6 +216,7 @@ export type SaveRecordInput = {
   stageTexts: [string, string, string];
   stageTextSelections?: readonly [StageTextSelection, StageTextSelection, StageTextSelection];
   stageTimesMs: [number, number, number];
+  fairness?: GeumcheonFairnessInput;
   game_mode?: "normal" | "ai_challenge";
   final_accuracy?: number;
   ai?: {
