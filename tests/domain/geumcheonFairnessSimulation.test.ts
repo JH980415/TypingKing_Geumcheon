@@ -55,10 +55,10 @@ test("keeps every Geumcheon phrase within one display CPM of the same latent spe
   }
 });
 
-test("never ranks a typist that is at least five percent faster below a slower typist", () => {
+test("never ranks a typist that is at least five percent faster below a slower typist at every integer CPM", () => {
   for (const phrase of phrases) {
     const units = countConvertedTypingUnits(phrase.text);
-    for (let slowerCpm = 150; slowerCpm <= 760; slowerCpm += 10) {
+    for (let slowerCpm = 150; slowerCpm <= 800; slowerCpm += 1) {
       const fasterCpm = Math.ceil(slowerCpm * 1.05);
       const slower = completed("01", units, Math.max(1, Math.round((units * 60000) / slowerCpm)));
       const faster = completed("02", units, Math.max(1, Math.round((units * 60000) / fasterCpm)));
@@ -67,11 +67,15 @@ test("never ranks a typist that is at least five percent faster below a slower t
   }
 });
 
-test("keeps sorted record IDs stable across phrase order and deterministic shuffle seeds", () => {
-  const baseline = phrases.slice(0, 12).map((phrase, index) => {
+test("keeps all sixty phrase IDs stable across phrase order and deterministic shuffle seeds", () => {
+  const baseline = phrases.map((phrase, index) => {
     const units = countConvertedTypingUnits(phrase.text);
-    return completed(String(index + 1), units, Math.max(1, Math.round((units * 60000) / (300 + index * 7))));
+    return {
+      ...completed(String(index + 1), units, Math.max(1, Math.round((units * 60000) / (300 + index * 7)))),
+      phraseId: phrase.id
+    };
   });
+  assert.equal(new Set(baseline.map((record) => record.phraseId)).size, 60);
   const expected = baseline.toSorted(compareGeumcheonRecords).map((record) => record.recordId);
 
   for (const seed of [1, 7, 42, 20260825]) {

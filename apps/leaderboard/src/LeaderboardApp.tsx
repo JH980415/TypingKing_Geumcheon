@@ -66,6 +66,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
   const leaderboardVariant = bootstrap.variant;
   const isPracticeBoard = bootstrap.variantPolicy.sessionKind === "practice";
   const isGeumcheonOfficialBoard = bootstrap.eventProfile.profileId === "geumcheon-2026" && !isPracticeBoard;
+  const isGeumcheonPracticeBoard = bootstrap.eventProfile.profileId === "geumcheon-2026" && isPracticeBoard;
   const showNormalLeaderboard = bootstrap.variantPolicy.gameModes.includes("normal");
   const showAiLeaderboard = bootstrap.variantPolicy.gameModes.includes("ai_challenge");
   const isDualPracticeBoard = isPracticeBoard && showNormalLeaderboard && showAiLeaderboard;
@@ -145,7 +146,10 @@ export function LeaderboardApp({ bootstrap }: Props) {
       .map(normalizeFinalCpmForLeaderboard)
       .map((record) => ({ record, display: buildAiLeaderboardDisplayV2(record) }))
       .sort(isGeumcheonOfficialBoard ? sortGeumcheonAiEntries : sortAiEntriesV2);
-    const visibleRanked = isGeumcheonOfficialBoard ? selectGeumcheonOfficialAiEntries(ranked) : ranked;
+    const visibleRanked = selectGeumcheonAiLeaderboardEntriesForMode(ranked, {
+      isGeumcheonOfficialBoard,
+      isGeumcheonPracticeBoard
+    });
     const needle = search.trim().toLowerCase();
     if (!needle) return visibleRanked;
     return visibleRanked.filter(({ record, display }) =>
@@ -165,7 +169,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
         .toLowerCase()
         .includes(needle)
     );
-  }, [authorized, includeDebug, includeTest, isGeumcheonOfficialBoard, records, search]);
+  }, [authorized, includeDebug, includeTest, isGeumcheonOfficialBoard, isGeumcheonPracticeBoard, records, search]);
 
   const selected = records.find((record) => record.record_id === selectedId);
 
@@ -695,6 +699,15 @@ function normalizeFinalCpmForLeaderboard(record: RecordRow): RecordRow {
 
 type GeumcheonAiLeaderboardEntry = AiLeaderboardEntry & OfficialAttemptCandidate & AttemptEligibility;
 
+export function selectGeumcheonAiLeaderboardEntriesForMode(
+  entries: AiLeaderboardEntry[],
+  mode: { isGeumcheonOfficialBoard: boolean; isGeumcheonPracticeBoard: boolean }
+): AiLeaderboardEntry[] {
+  if (mode.isGeumcheonOfficialBoard) return selectGeumcheonOfficialAiEntries(entries);
+  if (mode.isGeumcheonPracticeBoard) return selectGeumcheonPracticeAiEntries(entries);
+  return entries;
+}
+
 function selectGeumcheonOfficialAiEntries(entries: AiLeaderboardEntry[]): AiLeaderboardEntry[] {
   return selectBestEligibleRecordPerParticipant(
     entries
@@ -710,12 +723,30 @@ function sortGeumcheonAiEntries(a: AiLeaderboardEntry, b: AiLeaderboardEntry): n
   return sortAiEntriesV2(a, b);
 }
 
+function selectGeumcheonPracticeAiEntries(entries: AiLeaderboardEntry[]): AiLeaderboardEntry[] {
+  const best = new Map<string, AiLeaderboardEntry>();
+  for (const entry of entries) {
+    const key = practiceParticipantKey(entry.record);
+    const current = best.get(key);
+    if (!current || sortAiEntriesV2(entry, current) < 0) best.set(key, entry);
+  }
+  return [...best.values()].sort(sortAiEntriesV2);
+}
+
+function practiceParticipantKey(record: RecordRow): string {
+  return [
+    String(record.participant_name ?? "").trim(),
+    String(record.phone_full || record.phone_masked || "").trim()
+  ].join("|");
+}
+
 function toGeumcheonOfficialEntry(entry: AiLeaderboardEntry): GeumcheonAiLeaderboardEntry | null {
   const { record, display } = entry;
   const attemptNumber = positiveIntegerMetadata(record.attemptNumber);
   const rankingEligible = booleanMetadata(record.rankingEligible);
   const participantKey = stringMetadata(record.participantKey);
   const serverReceivedAt = stringMetadata(record.serverReceivedAt);
+  const completionStatus = completionStatusMetadata(record.completionStatus);
   const totalUserTimeMs = positiveIntegerMetadata(record.totalUserTimeMs ?? record.fairness?.totalUserTimeMs);
   const totalTypingUnits = nonnegativeIntegerMetadata(
     record.totalTypingUnits ?? record.fairness?.stages.reduce((sum, stage) => sum + stage.typingUnits, 0)
@@ -725,6 +756,7 @@ function toGeumcheonOfficialEntry(entry: AiLeaderboardEntry): GeumcheonAiLeaderb
     rankingEligible == null ||
     !participantKey ||
     !serverReceivedAt ||
+    completionStatus == null ||
     totalUserTimeMs == null ||
     totalTypingUnits == null
   ) {
@@ -737,7 +769,7 @@ function toGeumcheonOfficialEntry(entry: AiLeaderboardEntry): GeumcheonAiLeaderb
     participantKey,
     serverReceivedAt,
     completedAt: record.completed_at,
-    completionStatus: completionStatusMetadata(record.completionStatus, display),
+    completionStatus,
     completedStages: display.resultStage,
     progressPercent: display.participantProgressPercent ?? 0,
     totalTypingUnits,
@@ -749,11 +781,9 @@ function toGeumcheonOfficialEntry(entry: AiLeaderboardEntry): GeumcheonAiLeaderb
   };
 }
 
-function completionStatusMetadata(value: string | undefined, display: AiLeaderboardDisplay): CompletionStatus {
+function completionStatusMetadata(value: string | undefined): CompletionStatus | null {
   if (value === "completed" || value === "failed" || value === "interrupted") return value;
-  if (display.resultLabel === "참여자 승리") return "completed";
-  if (display.resultLabel.includes("중단")) return "interrupted";
-  return "failed";
+  return null;
 }
 
 function stringMetadata(value: string | undefined): string | null {
