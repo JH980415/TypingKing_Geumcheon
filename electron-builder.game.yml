@@ -1,0 +1,18 @@
+appId: com.skillupfesta.typingking.typing
+productName: 일잘러 타자왕은 누구
+directories:
+  output: release-build/typing
+files:
+  - dist-renderer/**
+  - dist-electron/**
+  - package.json
+asar: true
+win:
+  icon: assets/icons/typing_app_icon.ico
+  signExecutable: false
+  target:
+    - target: portable
+      arch:
+        - x64
+portable:
+  artifactName: 일잘러 타자왕은 누구.exe

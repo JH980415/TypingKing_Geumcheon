@@ -1,0 +1,51 @@
+{
+  "name": "typingking",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Offline Windows typing event program",
+  "author": "2026 일잘러 페스타",
+  "main": "dist-electron/electron/main.js",
+  "scripts": {
+    "postinstall": "node node_modules/electron/install.js",
+    "build": "vite build && tsc -p tsconfig.node.json",
+    "build:renderer": "vite build",
+    "build:main": "tsc -p tsconfig.node.json",
+    "dist:game": "vite build && tsc -p tsconfig.node.json && electron-builder --config electron-builder.game.yml --publish=never",
+    "dist:leaderboard": "vite build && tsc -p tsconfig.node.json && electron-builder --config electron-builder.leaderboard.yml --publish=never",
+    "dist:ai": "vite build && tsc -p tsconfig.node.json && electron-builder --config electron-builder.ai.yml --publish=never",
+    "dist:ai-leaderboard": "vite build && tsc -p tsconfig.node.json && electron-builder --config electron-builder.ai-leaderboard.yml --publish=never",
+    "dist:practice": "vite build && tsc -p tsconfig.node.json && electron-builder --config electron-builder.practice.yml --publish=never",
+    "dist:practice-leaderboard": "vite build && tsc -p tsconfig.node.json && electron-builder --config electron-builder.practice-leaderboard.yml --publish=never",
+    "dist": "vite build && tsc -p tsconfig.node.json && electron-builder --config electron-builder.game.yml --publish=never && electron-builder --config electron-builder.leaderboard.yml --publish=never && electron-builder --config electron-builder.ai.yml --publish=never && electron-builder --config electron-builder.ai-leaderboard.yml --publish=never && electron-builder --config electron-builder.practice.yml --publish=never && electron-builder --config electron-builder.practice-leaderboard.yml --publish=never && node scripts/prepare-release.mjs",
+    "test:logic": "tsx scripts/logic-tests.ts",
+    "clean:release": "node scripts/clean-release.mjs",
+    "scan:pii": "node scripts/scan-pii.mjs",
+    "test:e2e:multi-pc": "tsx scripts/e2e-multi-pc-check.ts",
+    "test:e2e:ui": "tsx scripts/e2e-ui-screenshots.ts",
+    "test:e2e:play-ui": "tsx scripts/e2e-play-flow-screenshots.ts",
+    "test:e2e:interruption": "tsx scripts/e2e-interruption-check.ts",
+    "test:e2e:large-session": "tsx scripts/e2e-large-session-check.ts",
+    "test:e2e:packaged": "tsx scripts/e2e-packaged-runtime-check.ts"
+  },
+  "dependencies": {
+    "csv-parse": "^5.6.0",
+    "csv-stringify": "^6.5.2",
+    "proper-lockfile": "^4.1.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "@types/proper-lockfile": "^4.1.4",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.0.12",
+    "electron-winstaller": "^5.4.0",
+    "playwright-core": "^1.62.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.4"
+  }
+}

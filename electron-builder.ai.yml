@@ -1,0 +1,18 @@
+appId: com.skillupfesta.typingking.ai
+productName: AI 타자왕을 이겨라
+directories:
+  output: release-build/ai
+files:
+  - dist-renderer/**
+  - dist-electron/**
+  - package.json
+asar: true
+win:
+  icon: assets/icons/typing_app_icon.ico
+  signExecutable: false
+  target:
+    - target: portable
+      arch:
+        - x64
+portable:
+  artifactName: AI 타자왕을 이겨라.exe

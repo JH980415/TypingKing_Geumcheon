@@ -1,0 +1,18 @@
+appId: com.skillupfesta.typingking.typing-leaderboard
+productName: 일잘러 타자왕은 누구 리더보드
+directories:
+  output: release-build/typing-leaderboard
+files:
+  - dist-renderer/**
+  - dist-electron/**
+  - package.json
+asar: true
+win:
+  icon: assets/icons/leaderboard_app_icon.ico
+  signExecutable: false
+  target:
+    - target: portable
+      arch:
+        - x64
+portable:
+  artifactName: 일잘러 타자왕은 누구_리더보드.exe

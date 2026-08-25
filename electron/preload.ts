@@ -1,0 +1,57 @@
+import { contextBridge, ipcRenderer } from "electron";
+import type { AppConfig, RecordRow, SaveRecordInput, StageText } from "../shared/types";
+
+contextBridge.exposeInMainWorld("typingKing", {
+  getBootstrap: () => ipcRenderer.invoke("app:getBootstrap"),
+  validateAdmin: (password: string, adminName?: string) =>
+    ipcRenderer.invoke("admin:validate", password, adminName),
+  listStageTexts: () => ipcRenderer.invoke("stage:list"),
+  getStageReadiness: (gameMode?: string) => ipcRenderer.invoke("stage:readiness", gameMode),
+  addStageText: (stageNumber: string, text: string, gameMode?: string) =>
+    ipcRenderer.invoke("stage:add", stageNumber, text, gameMode),
+  updateStageText: (id: string, patch: Partial<StageText>) =>
+    ipcRenderer.invoke("stage:update", id, patch),
+  softDeleteStageText: (id: string) => ipcRenderer.invoke("stage:softDelete", id),
+  hardDeleteStageText: (id: string) => ipcRenderer.invoke("stage:hardDelete", id),
+  publishStageTextsToOneDrive: () => ipcRenderer.invoke("stage:publishShared"),
+  saveRecord: (input: SaveRecordInput) => ipcRenderer.invoke("records:save", input),
+  checkGameStartReadiness: (gameMode: "normal" | "ai_challenge") =>
+    ipcRenderer.invoke("records:checkStartReady", gameMode),
+  listRecords: () => ipcRenderer.invoke("records:list"),
+  updateRecord: (recordId: string, patch: Partial<RecordRow>, adminName: string) =>
+    ipcRenderer.invoke("records:update", recordId, patch, adminName),
+  deleteRecord: (recordId: string, adminName: string) =>
+    ipcRenderer.invoke("records:delete", recordId, adminName),
+  clearRecords: (adminName: string) => ipcRenderer.invoke("records:clear", adminName),
+  exportRecords: (rows: RecordRow[], scope: "all" | "filtered" | "leaderboard") =>
+    ipcRenderer.invoke("records:export", rows, scope),
+  exportCurrentSessionBackup: () => ipcRenderer.invoke("records:exportSessionBackup"),
+  getLeaderboardSyncStatus: () => ipcRenderer.invoke("records:syncStatus"),
+  getCsvBackupStatus: () => ipcRenderer.invoke("records:backupStatus"),
+  getQueuedRecordStatus: () => ipcRenderer.invoke("queue:status"),
+  flushQueuedRecords: () => ipcRenderer.invoke("queue:flush"),
+  listBackups: () => ipcRenderer.invoke("backups:list"),
+  restoreBackup: (backupName: string, adminName: string) =>
+    ipcRenderer.invoke("backups:restore", backupName, adminName),
+  getOneDriveSettings: () => ipcRenderer.invoke("sync:getSettings"),
+  updateOneDriveSettings: (
+    patch: Partial<
+      Pick<
+        AppConfig,
+        | "syncMode"
+        | "pcRole"
+        | "pcId"
+        | "oneDriveRoot"
+        | "recordBaseFolderName"
+        | "dayNo"
+        | "roundNo"
+        | "isPracticeSession"
+      >
+    >
+  ) => ipcRenderer.invoke("sync:updateSettings", patch),
+  validateOneDriveSetup: () => ipcRenderer.invoke("sync:validateSetup"),
+  pokeOneDriveSync: (reason?: string) => ipcRenderer.invoke("sync:poke", reason),
+  cleanupLegacyOneDriveArtifacts: () => ipcRenderer.invoke("sync:cleanupLegacyArtifacts"),
+  chooseOneDriveRoot: () => ipcRenderer.invoke("sync:chooseRoot"),
+  openSessionFolder: () => ipcRenderer.invoke("sync:openSessionFolder")
+});
