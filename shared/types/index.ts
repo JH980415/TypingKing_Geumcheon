@@ -1,4 +1,5 @@
 export type AppMode = "game" | "leaderboard";
+export type { DeviceProfile, EventProfile, EventProfileId, EventVariantPolicy, SessionKind } from "../events/types";
 export type AppVariant =
   | "typing"
   | "typing-leaderboard"

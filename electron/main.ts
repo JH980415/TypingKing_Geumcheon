@@ -33,8 +33,10 @@ import {
   validateStageReadiness
 } from "../shared/csv/fileStore";
 import type { AppMode, AppVariant, LeaderboardSyncStatus, PcRole, RecordRow, SaveRecordInput, StageText } from "../shared/types";
+import { resolveStartupProfile } from "./startupProfile";
 
 let mainWindow: BrowserWindow | null = null;
+let startupRuntimeRoot: string | undefined;
 
 const WINDOW_TITLES: Record<AppVariant, string> = {
   typing: "일잘러 타자왕은 누구!?",
@@ -119,6 +121,7 @@ function resolveRoot(): string {
 }
 
 function resolveRuntimeRoot(): string {
+  if (startupRuntimeRoot) return startupRuntimeRoot;
   if (process.env.TYPINGKING_RUNTIME_ROOT) {
     return process.env.TYPINGKING_RUNTIME_ROOT;
   }
@@ -127,6 +130,18 @@ function resolveRuntimeRoot(): string {
     if (localBase) return path.join(localBase, "ThePMD", "TypingKing2026");
   }
   return resolveRoot();
+}
+
+function packagedEventProfile(): string | undefined {
+  if (!app.isPackaged) return undefined;
+  try {
+    const packageJson = JSON.parse(fs.readFileSync(path.join(app.getAppPath(), "package.json"), "utf8")) as {
+      typingKingEventProfile?: unknown;
+    };
+    return typeof packageJson.typingKingEventProfile === "string" ? packageJson.typingKingEventProfile : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function copyFileIfMissing(sourcePath: string, targetPath: string): boolean {
@@ -482,6 +497,23 @@ async function safeAsync<T>(task: () => Promise<T>, fallback?: string) {
 }
 
 void app.whenReady().then(() => {
+  try {
+    const startup = resolveStartupProfile({
+      isPackaged: app.isPackaged,
+      projectRoot: resolveRoot(),
+      executableDirectory: process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath),
+      localAppData: process.env.LOCALAPPDATA || process.env.APPDATA,
+      eventProfile: process.env.EVENT_PROFILE,
+      packagedEventProfile: packagedEventProfile(),
+      runtimeRootOverride: process.env.TYPINGKING_RUNTIME_ROOT
+    });
+    startupRuntimeRoot = startup.runtimeRoot;
+    if (startup.userDataPath) app.setPath("userData", startup.userDataPath);
+  } catch (error) {
+    dialog.showErrorBox("시작할 수 없습니다", error instanceof Error ? error.message : String(error));
+    app.exit(1);
+    return;
+  }
   const variant = resolveVariant();
   app.setAppUserModelId(appUserModelId(variant));
   registerIpc(variant);
