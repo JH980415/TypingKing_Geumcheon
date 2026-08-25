@@ -36,6 +36,7 @@ import type { AppMode, AppVariant, LeaderboardSyncStatus, PcRole, RecordRow, Sav
 import { createBootstrapData } from "../shared/events/bootstrapData";
 import type { EventProfile, EventVariantPolicy } from "../shared/events/types";
 import {
+  recordModeFromPolicy,
   resolveApplicationResourcePaths,
   resolveLaunchPolicy,
   resolvePackagedMetadata,
@@ -108,10 +109,6 @@ function resolveVariant(metadataVariant?: AppVariant): AppVariant {
 
 function appModeFromVariant(variant: AppVariant): AppMode {
   return variant.endsWith("leaderboard") ? "leaderboard" : "game";
-}
-
-function recordModeFromPolicy(policy: EventVariantPolicy): "normal" | "ai_challenge" {
-  return policy.gameModes[0] || "normal";
 }
 
 function resolveRoot(): string {

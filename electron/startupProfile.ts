@@ -2,7 +2,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadDeviceProfile, loadEventProfile } from "../shared/events/eventProfile";
 import type { AppVariant, PcRole } from "../shared/types";
-import type { DeviceProfile, EventProfile, EventProfileId } from "../shared/events/types";
+import type { DeviceProfile, EventProfile, EventProfileId, EventVariantPolicy } from "../shared/events/types";
 
 export type StartupProfile = {
   eventProfile: EventProfile;
@@ -50,6 +50,10 @@ export function resolvePackagedMetadata(value: unknown): PackagedMetadata {
   return { eventProfileId, variant };
 }
 
+export function recordModeFromPolicy(policy: EventVariantPolicy): "normal" | "ai_challenge" {
+  return policy.gameModes[0] || "normal";
+}
+
 export function resolveApplicationResourcePaths(input: {
   isPackaged: boolean;
   projectRoot: string;
@@ -57,10 +61,11 @@ export function resolveApplicationResourcePaths(input: {
   eventProfileId: EventProfileId;
   role: PcRole;
 }): ApplicationResourcePaths {
-  if (input.isPackaged && !input.resourcesPath) {
+  const usesPackagedResources = input.isPackaged && input.eventProfileId === "geumcheon-2026";
+  if (usesPackagedResources && !input.resourcesPath) {
     throw new Error("Packaged application resources path is required");
   }
-  const resourceRoot = input.isPackaged ? input.resourcesPath! : input.projectRoot;
+  const resourceRoot = usesPackagedResources ? input.resourcesPath! : input.projectRoot;
   const assetsRoot = path.join(resourceRoot, "assets");
   return {
     resourceRoot,

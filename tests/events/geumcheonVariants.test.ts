@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import test from "node:test";
-import { resolveApplicationResourcePaths, resolvePackagedMetadata } from "../../electron/startupProfile";
+import {
+  recordModeFromPolicy,
+  resolveApplicationResourcePaths,
+  resolvePackagedMetadata
+} from "../../electron/startupProfile";
 import { createBootstrapData } from "../../shared/events/bootstrapData";
 import { loadEventProfile, variantPolicyFor } from "../../shared/events/eventProfile";
 
@@ -51,6 +55,34 @@ for (const variant of ["ai", "ai-leaderboard", "practice", "practice-leaderboard
 test("normal variants are disabled", () => {
   assert.equal(variantPolicyFor(geumcheonProfile, "typing").enabled, false);
   assert.equal(variantPolicyFor(geumcheonProfile, "typing-leaderboard").enabled, false);
+});
+
+for (const variant of ["ai", "practice"] as const) {
+  test(`${variant} production record mode is AI challenge`, () => {
+    assert.equal(recordModeFromPolicy(variantPolicyFor(geumcheonProfile, variant)), "ai_challenge");
+  });
+}
+
+test("packaged SkillUp keeps executable-adjacent sidecar assets", () => {
+  const executableDirectory = path.resolve("test_artifacts", "legacy-skillup-portable");
+  const resourcesPath = path.resolve("test_artifacts", "electron-resources");
+  const resources = resolveApplicationResourcePaths({
+    isPackaged: true,
+    projectRoot: executableDirectory,
+    resourcesPath,
+    eventProfileId: "skillup-2026",
+    role: "player"
+  });
+
+  assert.equal(resources.resourceRoot, executableDirectory);
+  assert.equal(
+    resources.iconPath,
+    path.join(executableDirectory, "assets", "icons", "typing_app_icon.ico")
+  );
+  assert.equal(
+    resources.rendererAssetBaseUrl,
+    pathToFileURL(path.join(executableDirectory, "assets")).toString()
+  );
 });
 
 test("packaged Geumcheon launch resolves profiles and assets from resourcesPath", () => {
