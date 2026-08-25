@@ -81,6 +81,13 @@ test("canonicalizes key order while preserving array order", () => {
   assert.throws(() => canonicalStringify({ value: Number.NaN }));
 });
 
+test("keeps an own __proto__ key distinct from an empty object", () => {
+  const ownProto = JSON.parse('{"__proto__":{"source":"fixture"}}');
+
+  assert.equal(canonicalStringify(ownProto), '{"__proto__":{"source":"fixture"}}');
+  assert.notEqual(payloadSha256(ownProto), payloadSha256({}));
+});
+
 test("rejects an acknowledgement for another payload", () => {
   assert.throws(
     () => assertNasRecordAck(ack({ payload_sha256: "0".repeat(64) }), RECORD_ID, HASH),
@@ -126,6 +133,21 @@ test("rejects NAS envelopes without fairness data or valid stage timing", () => 
   );
 });
 
+test("rejects empty and non-contiguous NAS stage attempts", () => {
+  assert.throws(() => buildNasRecordEnvelope(profile, "official", row, { ...fairness, stages: [] }), /stage/i);
+  assert.throws(
+    () => buildNasRecordEnvelope(profile, "official", row, { ...fairness, stages: [fairness.stages[0], fairness.stages[2]] }),
+    /stage/i,
+  );
+});
+
+test("rejects a success status that does not contain three user-win stages", () => {
+  assert.throws(
+    () => buildNasRecordEnvelope(profile, "official", row, { ...fairness, stages: [fairness.stages[0]] }),
+    /status|stage/i,
+  );
+});
+
 test("rejects public leaderboard snapshots containing raw participant data", () => {
   assert.throws(
     () => assertNasLeaderboardSnapshot({
@@ -150,4 +172,19 @@ test("rejects a leaderboard phone mask containing a raw mobile number", () => {
     }),
     /PUBLIC_SNAPSHOT_INVALID/,
   );
+});
+
+test("rejects raw display names and formatted or international phone values", () => {
+  for (const [displayName, phoneMasked] of [["홍길동", "010-****-5678"], ["홍*동", "010-1234-5678"], ["홍*동", "+82-10-1234-5678"]]) {
+    assert.throws(
+      () => assertNasLeaderboardSnapshot({
+        schema_version: 1,
+        event_id: "geumcheon-science-festival-2026",
+        session: { kind: "practice", session_id: "practice-1" },
+        generated_at: "2026-09-18T01:01:01.000Z",
+        entries: [{ rank: 1, record_id: RECORD_ID, display_name: displayName, phone_masked: phoneMasked, display_cpm: 700, total_user_time_ms: 6_000, completed_at: "2026-09-18T01:01:00.000Z", result_stage: 3, attempt_number: 1 }],
+      }),
+      /PUBLIC_SNAPSHOT_INVALID/,
+    );
+  }
 });

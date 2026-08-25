@@ -87,6 +87,8 @@ const RECORD_ID = new RegExp(`^gsc26-pc(?:0[1-9]|10)-${UUID_V4}$`);
 const ACTION_ID = new RegExp(`^gsc26-action-${UUID_V4}$`);
 const SHA256 = /^[0-9a-f]{64}$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/;
+const DISPLAY_NAME_MASK = /^[^\s*]\*+(?:[^\s*])?$/u;
+const PHONE_MASK = /^010-\*{4}-\d{4}$/;
 
 export function canonicalStringify(value: unknown): string {
   return JSON.stringify(canonicalize(value));
@@ -129,8 +131,9 @@ export function buildNasRecordEnvelope(
   }
 
   const session = sessionFor(profile, kind);
-  const status = statusFor(row, fairness.stages);
   const stages = fairness.stages.map((stage, index) => mapStage(stage, index));
+  const status = statusFor(row, stages);
+  assertStageStatus(status, stages);
   const action = interruptionAction(row.memo, status);
 
   return {
@@ -202,7 +205,7 @@ function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalize);
   if (!isPlainObject(value)) throw new Error("CANONICAL_VALUE_INVALID");
 
-  const output: Record<string, unknown> = {};
+  const output = Object.create(null) as Record<string, unknown>;
   for (const key of Object.keys(value).sort()) output[key] = canonicalize(value[key]);
   return output;
 }
@@ -244,12 +247,23 @@ function mapStage(stage: GeumcheonStageResultInput, index: number): NasStageAtte
   };
 }
 
-function statusFor(row: RecordRow, stages: readonly GeumcheonStageResultInput[]): "success" | "failed" | "interrupted" {
+function statusFor(row: RecordRow, stages: readonly NasStageAttemptV1[]): "success" | "failed" | "interrupted" {
   if (row.completionStatus === "success" || row.completionStatus === "completed") return "success";
   if (row.completionStatus === "failed") return "failed";
   if (row.completionStatus === "interrupted") return "interrupted";
   if (stages.some((stage) => stage.result === "INTERRUPTED")) return "interrupted";
   return stages.length === 3 && stages.every((stage) => stage.result === "USER_WIN") ? "success" : "failed";
+}
+
+function assertStageStatus(status: "success" | "failed" | "interrupted", stages: readonly NasStageAttemptV1[]): void {
+  if (stages.length < 1 || stages.length > 3) throw new Error("NAS_RECORD_STAGE_INVALID");
+  const finalResult = stages[stages.length - 1]?.result;
+  const precedingStages = stages.slice(0, -1);
+  if (precedingStages.some((stage) => stage.result !== "USER_WIN")) throw new Error("NAS_RECORD_STATUS_INVALID");
+  if (status === "success" && stages.length === 3 && stages.every((stage) => stage.result === "USER_WIN")) return;
+  if (status === "failed" && finalResult === "AI_WIN") return;
+  if (status === "interrupted" && finalResult === "INTERRUPTED") return;
+  throw new Error("NAS_RECORD_STATUS_INVALID");
 }
 
 function interruptionAction(memo: string | undefined, status: "success" | "failed" | "interrupted"): "home" | "retry" | undefined {
@@ -287,7 +301,8 @@ function assertLeaderboardEntry(value: unknown): void {
   assertRecordId(entry.record_id);
   assertNonEmptyString(entry.display_name, "display_name");
   assertNonEmptyString(entry.phone_masked, "phone_masked");
-  if (/^01[016789]\d{7,8}$/.test(entry.phone_masked as string)) throw new Error("phone_masked");
+  if (!DISPLAY_NAME_MASK.test(entry.display_name as string)) throw new Error("display_name");
+  if (!PHONE_MASK.test(entry.phone_masked as string)) throw new Error("phone_masked");
   assertNonNegativeInteger(entry.display_cpm, "display_cpm");
   assertPositiveInteger(entry.total_user_time_ms, "total_user_time_ms");
   assertIsoTimestamp(entry.completed_at, "completed_at");
