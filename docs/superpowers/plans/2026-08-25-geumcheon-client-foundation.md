@@ -666,7 +666,7 @@ export function selectBestEligibleRecordPerParticipant<
 >(records: readonly T[]): T[];
 ```
 
-- [ ] **Step 1: Write the failing dispute and eligibility tests**
+- [x] **Step 1: Write the failing dispute and eligibility tests**
 
 ```ts
 import assert from "node:assert/strict";
@@ -717,21 +717,21 @@ test("excludes the fourth official attempt", () => {
 });
 ```
 
-- [ ] **Step 2: Run tests and verify failure**
+- [x] **Step 2: Run tests and verify failure**
 
 Run: `npx tsx --test tests/domain/geumcheonRanking.test.ts tests/domain/geumcheonFairnessSimulation.test.ts`
 
 Expected: FAIL because the Geumcheon comparator does not exist.
 
-- [ ] **Step 3: Implement exact rational comparison**
+- [x] **Step 3: Implement exact rational comparison**
 
 Validate all unit/time inputs as nonnegative safe integers and require positive time before converting them to `BigInt`. Compare `unitsA * timeB` against `unitsB * timeA`; do not sort on rounded display CPM. Rank completed attempts first. Among non-completed attempts, compare reached stage, progress, and the same exact CPM ratio; place interrupted attempts after ordinary failures. Apply final tie-breakers: more units, less user time, earlier completed time, lexical record ID.
 
-- [ ] **Step 4: Implement first-three eligibility**
+- [x] **Step 4: Implement first-three eligibility**
 
 Group by server-generated participant key, exclude test/debug rows from attempt counting, order by `serverReceivedAt` then `recordId`, mark only the first three, and select one best eligible record per participant. Never expose the participant key in display rows.
 
-- [ ] **Step 5: Run the required fairness simulation**
+- [x] **Step 5: Run the required fairness simulation**
 
 Simulate all 60 phrase unit counts at each integer latent speed from 150 through 800 CPM. For each phrase, derive ideal elapsed time as `typingUnits * 60000 / latentCpm`, then compare with exact rational logic. Exercise deterministic seeded orders, while separately asserting that every one of the 60 phrase IDs produces the same result regardless of its position. Assert same-speed deviation is at most 1 display CPM, every 5%-faster exact typist remains ahead, the 600/700 dispute case passes, and ordering a fixed record set differently cannot change its sorted record IDs.
 
@@ -749,7 +749,7 @@ Run: `npx tsx --test tests/domain/geumcheonRanking.test.ts tests/domain/geumcheo
 
 Expected: all deterministic fairness gates PASS. The five-person phrase difficulty pilot remains a separately reported field/content gate.
 
-- [ ] **Step 6: Wire the comparator to Geumcheon leaderboards**
+- [x] **Step 6: Wire the comparator to Geumcheon leaderboards**
 
 Official board shows the best of the first three eligible attempts; practice board shows the best practice record. Display all participant rows with vertical scrolling and keep all raw attempts outside the public view. Consume server-returned `attemptNumber` and `rankingEligible`; do not derive a participant HMAC or authoritative attempt number in the renderer.
 

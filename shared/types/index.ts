@@ -201,6 +201,13 @@ export type RecordRow = {
   original_record_id: string;
   is_admin_edited: string;
   fairness?: GeumcheonFairnessInput;
+  attemptNumber?: number | string | null;
+  rankingEligible?: boolean | string | null;
+  participantKey?: string;
+  serverReceivedAt?: string;
+  completionStatus?: string;
+  totalTypingUnits?: number | string;
+  totalUserTimeMs?: number | string;
 };
 
 export type SaveRecordInput = {

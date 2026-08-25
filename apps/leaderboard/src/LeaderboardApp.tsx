@@ -1,6 +1,13 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { AppConfig, BootstrapData, CsvBackupStatus, LeaderboardSyncStatus, RecordRow } from "../../../shared/types";
+import {
+  compareGeumcheonRecords,
+  selectBestEligibleRecordPerParticipant,
+  type AttemptEligibility,
+  type CompletionStatus,
+  type OfficialAttemptCandidate
+} from "../../../shared/utils/geumcheonRanking";
 import { bestRecordOnly, isInterruptedRecord, sortRecords } from "../../../shared/utils/ranking";
 import { calculateFinalCpm, countConvertedTypingUnits, countTypeableChars } from "../../../shared/utils/typing";
 import { OneDriveSettingsPanel } from "../../shell/src/OneDriveSettingsPanel";
@@ -58,6 +65,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
   const [config, setConfig] = useState<AppConfig>(bootstrap.config);
   const leaderboardVariant = bootstrap.variant;
   const isPracticeBoard = bootstrap.variantPolicy.sessionKind === "practice";
+  const isGeumcheonOfficialBoard = bootstrap.eventProfile.profileId === "geumcheon-2026" && !isPracticeBoard;
   const showNormalLeaderboard = bootstrap.variantPolicy.gameModes.includes("normal");
   const showAiLeaderboard = bootstrap.variantPolicy.gameModes.includes("ai_challenge");
   const isDualPracticeBoard = isPracticeBoard && showNormalLeaderboard && showAiLeaderboard;
@@ -136,10 +144,11 @@ export function LeaderboardApp({ bootstrap }: Props) {
     const ranked = source
       .map(normalizeFinalCpmForLeaderboard)
       .map((record) => ({ record, display: buildAiLeaderboardDisplayV2(record) }))
-      .sort(sortAiEntriesV2);
+      .sort(isGeumcheonOfficialBoard ? sortGeumcheonAiEntries : sortAiEntriesV2);
+    const visibleRanked = isGeumcheonOfficialBoard ? selectGeumcheonOfficialAiEntries(ranked) : ranked;
     const needle = search.trim().toLowerCase();
-    if (!needle) return ranked;
-    return ranked.filter(({ record, display }) =>
+    if (!needle) return visibleRanked;
+    return visibleRanked.filter(({ record, display }) =>
       [
         authorized ? record.participant_name : maskParticipantName(record.participant_name),
         authorized ? record.phone_full : record.phone_masked,
@@ -156,7 +165,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
         .toLowerCase()
         .includes(needle)
     );
-  }, [authorized, includeDebug, includeTest, records, search]);
+  }, [authorized, includeDebug, includeTest, isGeumcheonOfficialBoard, records, search]);
 
   const selected = records.find((record) => record.record_id === selectedId);
 
@@ -684,6 +693,90 @@ function normalizeFinalCpmForLeaderboard(record: RecordRow): RecordRow {
   };
 }
 
+type GeumcheonAiLeaderboardEntry = AiLeaderboardEntry & OfficialAttemptCandidate & AttemptEligibility;
+
+function selectGeumcheonOfficialAiEntries(entries: AiLeaderboardEntry[]): AiLeaderboardEntry[] {
+  return selectBestEligibleRecordPerParticipant(
+    entries
+      .map(toGeumcheonOfficialEntry)
+      .filter((entry): entry is GeumcheonAiLeaderboardEntry => entry != null)
+  );
+}
+
+function sortGeumcheonAiEntries(a: AiLeaderboardEntry, b: AiLeaderboardEntry): number {
+  const left = toGeumcheonOfficialEntry(a);
+  const right = toGeumcheonOfficialEntry(b);
+  if (left && right) return compareGeumcheonRecords(left, right);
+  return sortAiEntriesV2(a, b);
+}
+
+function toGeumcheonOfficialEntry(entry: AiLeaderboardEntry): GeumcheonAiLeaderboardEntry | null {
+  const { record, display } = entry;
+  const attemptNumber = positiveIntegerMetadata(record.attemptNumber);
+  const rankingEligible = booleanMetadata(record.rankingEligible);
+  const participantKey = stringMetadata(record.participantKey);
+  const serverReceivedAt = stringMetadata(record.serverReceivedAt);
+  const totalUserTimeMs = positiveIntegerMetadata(record.totalUserTimeMs ?? record.fairness?.totalUserTimeMs);
+  const totalTypingUnits = nonnegativeIntegerMetadata(
+    record.totalTypingUnits ?? record.fairness?.stages.reduce((sum, stage) => sum + stage.typingUnits, 0)
+  );
+  if (
+    attemptNumber == null ||
+    rankingEligible == null ||
+    !participantKey ||
+    !serverReceivedAt ||
+    totalUserTimeMs == null ||
+    totalTypingUnits == null
+  ) {
+    return null;
+  }
+
+  return {
+    ...entry,
+    recordId: record.record_id,
+    participantKey,
+    serverReceivedAt,
+    completedAt: record.completed_at,
+    completionStatus: completionStatusMetadata(record.completionStatus, display),
+    completedStages: display.resultStage,
+    progressPercent: display.participantProgressPercent ?? 0,
+    totalTypingUnits,
+    totalUserTimeMs,
+    isTest: record.is_test === "true",
+    isDebug: record.is_debug === "true",
+    attemptNumber,
+    rankingEligible
+  };
+}
+
+function completionStatusMetadata(value: string | undefined, display: AiLeaderboardDisplay): CompletionStatus {
+  if (value === "completed" || value === "failed" || value === "interrupted") return value;
+  if (display.resultLabel === "참여자 승리") return "completed";
+  if (display.resultLabel.includes("중단")) return "interrupted";
+  return "failed";
+}
+
+function stringMetadata(value: string | undefined): string | null {
+  const trimmed = String(value ?? "").trim();
+  return trimmed ? trimmed : null;
+}
+
+function booleanMetadata(value: boolean | string | null | undefined): boolean | null {
+  if (value === true || value === "true") return true;
+  if (value === false || value === "false") return false;
+  return null;
+}
+
+function positiveIntegerMetadata(value: number | string | null | undefined): number | null {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+function nonnegativeIntegerMetadata(value: number | string | null | undefined): number | null {
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
 function enrichRecordForExport(record: RecordRow): RecordRow {
   return enrichAiRecordForExportV2(normalizeFinalCpmForLeaderboard(record));
 }
@@ -1063,6 +1156,14 @@ function sameRecordSnapshot(a: RecordRow[], b: RecordRow[]): boolean {
       left.participant_avg_cpm !== right.participant_avg_cpm ||
       left.ai_avg_cpm !== right.ai_avg_cpm ||
       left.duel_time_ms !== right.duel_time_ms ||
+      left.attemptNumber !== right.attemptNumber ||
+      left.rankingEligible !== right.rankingEligible ||
+      left.participantKey !== right.participantKey ||
+      left.serverReceivedAt !== right.serverReceivedAt ||
+      left.completionStatus !== right.completionStatus ||
+      left.totalTypingUnits !== right.totalTypingUnits ||
+      left.totalUserTimeMs !== right.totalUserTimeMs ||
+      left.fairness?.totalUserTimeMs !== right.fairness?.totalUserTimeMs ||
       left.memo !== right.memo ||
       left.is_test !== right.is_test ||
       left.is_debug !== right.is_debug
