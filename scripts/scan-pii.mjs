@@ -54,7 +54,7 @@ function shouldScanFile(filePath) {
 
 function scanText(text, label, findings) {
   for (const needle of exactNeedles) {
-    if (text.includes(needle)) findings.push({ file: label, value: needle });
+    if (text.includes(needle)) findings.push({ file: label, category: "exact secret needle" });
   }
 
   for (const match of text.matchAll(phonePattern)) {
@@ -62,7 +62,7 @@ function scanText(text, label, findings) {
     const compact = value.replace(/\D/g, "");
     if (allowedPhones.has(value) || allowedPhones.has(compact)) continue;
     if (/^0100{7,8}$/.test(compact)) continue;
-    findings.push({ file: label, value });
+    findings.push({ file: label, category: "phone pattern" });
   }
 }
 
@@ -80,8 +80,8 @@ async function scanTextFile(filePath, label, findings) {
 
 async function scanExecutable(filePath, label, findings) {
   const binaryNeedles = exactNeedles.flatMap((value) => [
-    { value, bytes: Buffer.from(value, "utf8") },
-    { value, bytes: Buffer.from(value, "utf16le") }
+    { value, bytes: Buffer.from(value, "utf8"), encoding: "utf-8" },
+    { value, bytes: Buffer.from(value, "utf16le"), encoding: "utf-16le" }
   ]);
   if (binaryNeedles.length === 0) return;
   const overlapBytes = Math.max(
@@ -92,10 +92,10 @@ async function scanExecutable(filePath, label, findings) {
   const seen = new Set();
   for await (const chunk of createReadStream(filePath, { highWaterMark: 1024 * 1024 })) {
     const combined = carry.length > 0 ? Buffer.concat([carry, chunk]) : chunk;
-    for (const { value, bytes } of binaryNeedles) {
+    for (const { value, bytes, encoding } of binaryNeedles) {
       if (combined.indexOf(bytes) >= 0 && !seen.has(value)) {
         seen.add(value);
-        findings.push({ file: label, value });
+        findings.push({ file: label, category: "exact secret needle", encoding });
       }
     }
     carry = combined.subarray(Math.max(0, combined.length - overlapBytes));
@@ -146,6 +146,13 @@ function targetLabel(target) {
   return relative && !relative.startsWith("..") ? relative.replaceAll(path.sep, "/") : target;
 }
 
+function safeFindingPath(file) {
+  const relative = path.isAbsolute(file) ? path.basename(file) : file.replaceAll(path.sep, "/");
+  if (exactNeedles.some((needle) => relative.includes(needle))) return "[redacted-file]";
+  if (/010[-\s]?\d{3,4}[-\s]?\d{4}/.test(relative)) return "[redacted-file]";
+  return relative;
+}
+
 async function main() {
   const findings = [];
   const { targets, usesDefaultTargets } = parseTargets(process.argv.slice(2));
@@ -166,9 +173,10 @@ async function main() {
   }
 
   if (findings.length > 0) {
-    console.error("개인정보 의심 문자열이 발견되었습니다.");
+    console.error(`개인정보 의심 문자열이 ${findings.length}건 발견되었습니다.`);
     for (const finding of findings) {
-      console.error(`- ${finding.file}: ${finding.value}`);
+      const encoding = finding.encoding ? ` (${finding.encoding})` : "";
+      console.error(`- ${safeFindingPath(finding.file)}: ${finding.category}${encoding}`);
     }
     process.exit(1);
   }

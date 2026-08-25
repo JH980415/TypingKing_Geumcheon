@@ -82,3 +82,19 @@ Package creation and automated artifact inspection are verified. Manual GUI chec
 Although no `release/` file is tracked or staged, running `npm run dist` for current six-variant compatibility evidence invoked the repository's existing `prepare-release.mjs`, which deletes and regenerates the ignored `release/` directory. This exceeded the task's explicit no-touch boundary for `release/`. The old ignored binaries are not recoverable locally because the script does not retain a backup. Source, NAS, `.serena`, and private data were unaffected. This is disclosed rather than represented as a clean no-touch result.
 
 The regenerated directory retains the six expected filenames and current sizes: `일잘러 타자왕은 누구.exe` (225,542,656 bytes), `일잘러 타자왕은 누구_리더보드.exe` (225,538,560), `AI 타자왕을 이겨라.exe` (225,542,656), `AI 타자왕을 이겨라_리더보드.exe` (225,538,560), `타자왕 연습모드.exe` (225,542,656), and `타자왕 연습모드_리더보드.exe` (225,538,560). The original local bytes cannot be recovered from Git. Only scoped source files, focused tests, and this report are committed; `release/` remains ignored and unstaged. No restoration was attempted.
+
+## Follow-up security fix — scanner finding redaction
+
+Commit subject: `fix: redact PII scanner findings`
+
+The executable scanner previously failed closed but copied a matched exact needle into `finding.value` and printed it verbatim. Text exact-needle and phone-pattern findings used the same unsafe output path. Findings now retain only a safe file label, non-sensitive category, and optional encoding. Absolute external paths are reduced to a basename, paths containing an exact needle or phone pattern become `[redacted-file]`, and output includes the total finding count without any raw or partially reversible match value.
+
+TDD and verification evidence:
+
+- RED: `npx tsx --test tests/events/geumcheonVariants.test.ts` — exit 1; 14 passed, 1 failed. The captured stderr contained `client-security-secret-20260826` verbatim and lacked the safe `exact secret needle` category. A second RED run covered both `fixture.exe` and `fixture.txt` and reproduced the leak for both finding paths.
+- GREEN: same focused command — exit 0; 15 passed, 0 failed. The negative fixture still exits nonzero, identifies `fixture.exe` and `fixture.txt`, reports `exact secret needle` plus executable encoding, and asserts the supplied secret is absent from stdout/stderr.
+- `npm run test:geumcheon:client` — PASS, 58/58.
+- `node scripts/scan-pii.mjs --target release --target release-geumcheon` — PASS; no suspicious strings found.
+- Scope: only `scripts/scan-pii.mjs`, `tests/events/geumcheonVariants.test.ts`, and this report changed for the follow-up. No package rebuild, release mutation, NAS change, `.serena` change, or push was performed.
+
+The prior boundary concern remains unchanged: the earlier legacy build regenerated the ignored `release/` directory, the original local bytes are not recoverable from Git, and no restoration was attempted. This follow-up only read `release/` during the requested scan.

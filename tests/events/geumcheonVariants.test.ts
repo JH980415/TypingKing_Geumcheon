@@ -257,15 +257,16 @@ test("client build gate rejects an unexpected secret-bearing packaged event reso
   }
 });
 
-test("PII scanner inspects executables for supplied secret needles", () => {
+test("PII scanner rejects executable and text secrets without echoing their values", () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-pii-exe-"));
   const secret = "client-security-secret-20260826";
   try {
     const executable = path.join(fixtureRoot, "fixture.exe");
     fs.writeFileSync(executable, Buffer.from(`binary-prefix\0${secret}\0binary-suffix`, "utf8"));
+    fs.writeFileSync(path.join(fixtureRoot, "fixture.txt"), `text-prefix ${secret} text-suffix`, "utf8");
     const result = spawnSync(
       process.execPath,
-      [path.resolve("scripts/scan-pii.mjs"), "--target", executable],
+      [path.resolve("scripts/scan-pii.mjs"), "--target", fixtureRoot],
       {
         cwd: path.resolve(),
         encoding: "utf8",
@@ -273,8 +274,12 @@ test("PII scanner inspects executables for supplied secret needles", () => {
       }
     );
 
-    assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
-    assert.match(`${result.stdout}\n${result.stderr}`, new RegExp(secret));
+    const output = `${result.stdout}\n${result.stderr}`;
+    assert.notEqual(result.status, 0, output);
+    assert.match(output, /fixture\.exe/i);
+    assert.match(output, /fixture\.txt/i);
+    assert.match(output, /exact secret needle/i);
+    assert.doesNotMatch(output, new RegExp(secret));
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
