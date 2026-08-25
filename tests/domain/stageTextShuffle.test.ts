@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { drawGeumcheonStageTexts, type RuntimeContext } from "../../shared/csv/fileStore";
 import { parseStageTextCatalog } from "../../shared/events/stageTextCatalog";
 import {
   drawStageTextFromBag,
@@ -57,4 +60,28 @@ test("separates official and practice bags", () => {
   assert.notEqual(official, otherStage);
   assert.match(official, /geumcheon-science-festival-2026/);
   assert.match(official, /geumcheon-draft-20260825-v1/);
+});
+
+test("rejects leaderboard draws before it can persist a shuffle bag", () => {
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-stage-draw-"));
+  try {
+    assert.throws(
+      () =>
+        drawGeumcheonStageTexts(
+          { paths: { root: runtimeRoot } } as RuntimeContext,
+          {
+            eventId: "geumcheon-science-festival-2026",
+            catalogVersion: "geumcheon-draft-20260825-v1",
+            catalogPath: path.resolve("events/geumcheon-2026/stage_texts.csv"),
+            sessionKind: "official",
+            gameMode: "ai_challenge",
+            role: "leaderboard"
+          }
+        ),
+      /player/
+    );
+    assert.equal(fs.existsSync(path.join(runtimeRoot, "state", "stage-text-shuffle.json")), false);
+  } finally {
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+  }
 });

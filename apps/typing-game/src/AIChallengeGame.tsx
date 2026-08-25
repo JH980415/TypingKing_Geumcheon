@@ -1,6 +1,6 @@
 ﻿import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { AppConfig, EventProfile, RecordRow, SaveRecordInput } from "../../../shared/types";
+import type { AppConfig, EventProfile, RecordRow, SaveRecordInput, StageTextSelection } from "../../../shared/types";
 import { formatBirthdate } from "../../../shared/utils/date";
 import { buildPhoneFull } from "../../../shared/utils/masking";
 import {
@@ -64,6 +64,7 @@ type Props = {
   config: AppConfig;
   participant: Participant;
   stageTexts: [string, string, string];
+  stageTextSelections?: readonly [StageTextSelection, StageTextSelection, StageTextSelection];
   assetBaseUrl: string;
   eventProfile: EventProfile;
   debugModeType?: "" | "normal_typing_debug" | "ai_challenge_debug";
@@ -75,7 +76,7 @@ const MAIN_CONFIRM_MESSAGE = "진행 중인 게임을 종료하고 메인 화면
 const RETRY_CONFIRM_MESSAGE = "현재 게임을 처음부터 다시 시작하시겠습니까? 중단 시점까지 참여자 패배 기록으로 저장됩니다.";
 type ChallengeControlAction = "home" | "retry";
 
-export function AIChallengeGame({ config, participant, stageTexts, assetBaseUrl, eventProfile, debugModeType = "", onHome, onRetry }: Props) {
+export function AIChallengeGame({ config, participant, stageTexts, stageTextSelections, assetBaseUrl, eventProfile, debugModeType = "", onHome, onRetry }: Props) {
   const profileAsset = (configuredPath: string) => `${assetBaseUrl}/${configuredPath.replace(/^assets\//, "")}`;
   const [stageIndex, setStageIndex] = useState(0);
   const [countdown, setCountdown] = useState<string>(String(config.aiChallenge.countdownSeconds));
@@ -450,6 +451,7 @@ export function AIChallengeGame({ config, participant, stageTexts, assetBaseUrl,
       privacy_agreed: true,
       privacy_agreed_at: participant.privacyAgreedAt,
       stageTexts,
+      stageTextSelections,
       stageTimesMs: userTimes,
       game_mode: "ai_challenge",
       final_accuracy: status === "SUCCESS" ? 100 : Math.round(lastAccuracy),

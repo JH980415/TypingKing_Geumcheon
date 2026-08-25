@@ -1305,8 +1305,9 @@ function readStageTextShuffleState(filePath: string): StageTextShuffleState {
 
 export function drawGeumcheonStageTexts(
   ctx: RuntimeContext,
-  input: DrawStageTextsInput & { eventId: string; catalogVersion: string; catalogPath: string }
+  input: DrawStageTextsInput & { eventId: string; catalogVersion: string; catalogPath: string; role: "player" | "leaderboard" }
 ): DrawStageTextsResult {
+  if (input.role !== "player") throw new Error("Stage catalog draws require player role");
   const rows = parseStageTextCatalog(fs.readFileSync(input.catalogPath, "utf8"));
   validateStageTextCatalog(rows, {
     expectedVersion: input.catalogVersion,
@@ -2490,6 +2491,8 @@ export async function saveRecord(ctx: RuntimeContext, input: SaveRecordInput): P
   const phoneFull = buildPhoneFull(input.phone_part1, input.phone_part2, input.phone_part3);
   const birthdate = formatBirthdate(input.birth_year, input.birth_month, input.birth_day);
   const [stage1Text, stage2Text, stage3Text] = input.stageTexts;
+  const [stage1Selection, stage2Selection, stage3Selection] = input.stageTextSelections ?? [];
+  const stageTextCatalogVersion = stage1Selection?.catalogVersion ?? "";
   const [stage1Time, stage2Time, stage3Time] = input.stageTimesMs;
   const charCounts = input.interruption?.stageCharCounts ?? input.stageTexts.map((text) => countTypeableChars(text));
   const totalCharCount = charCounts.reduce((sum, count) => sum + count, 0);
@@ -2520,6 +2523,10 @@ export async function saveRecord(ctx: RuntimeContext, input: SaveRecordInput): P
     stage1_text: stage1Text,
     stage2_text: stage2Text,
     stage3_text: stage3Text,
+    stage_text_catalog_version: stageTextCatalogVersion,
+    stage1_text_id: stage1Selection?.id ?? "",
+    stage2_text_id: stage2Selection?.id ?? "",
+    stage3_text_id: stage3Selection?.id ?? "",
     stage1_char_count: String(charCounts[0]),
     stage2_char_count: String(charCounts[1]),
     stage3_char_count: String(charCounts[2]),

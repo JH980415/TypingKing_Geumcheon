@@ -1,6 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { BootstrapData, RecordRow, SaveRecordInput, StageText } from "../../../shared/types";
+import type { BootstrapData, RecordRow, SaveRecordInput, StageText, StageTextSelection } from "../../../shared/types";
 import { daysInMonth, formatBirthdate, isValidBirthdate } from "../../../shared/utils/date";
 import { buildPhoneFull, onlyDigits, validatePhoneParts } from "../../../shared/utils/masking";
 import { bestRecordOnly, sortRecords } from "../../../shared/utils/ranking";
@@ -114,6 +114,7 @@ export function TypingGameApp({ bootstrap }: Props) {
   const [blockingModalMessage, setBlockingModalMessage] = useState("");
   const [toast, setToast] = useState("");
   const [stageTexts, setStageTexts] = useState<[string, string, string] | null>(null);
+  const [stageTextSelections, setStageTextSelections] = useState<readonly [StageTextSelection, StageTextSelection, StageTextSelection] | null>(null);
   const [stageIndex, setStageIndex] = useState(0);
   const [input, setInput] = useState("");
   const [composing, setComposing] = useState(false);
@@ -375,6 +376,7 @@ export function TypingGameApp({ bootstrap }: Props) {
         return;
       }
       setStageTexts(drawn.data.selections.map((selection) => selection.text) as [string, string, string]);
+      setStageTextSelections(drawn.data.selections);
       setStageIndex(0);
       setInput("");
       setStageTimes([]);
@@ -404,6 +406,7 @@ export function TypingGameApp({ bootstrap }: Props) {
     }
 
     setStageTexts(selected.texts);
+    setStageTextSelections(null);
     setStageIndex(0);
     setInput("");
     setStageTimes([]);
@@ -571,6 +574,7 @@ export function TypingGameApp({ bootstrap }: Props) {
     setGameCountdown("");
     setGameRunning(false);
     setStageTexts(null);
+    setStageTextSelections(null);
     setStageTimes([]);
     setResult(null);
     setDebugModeType("");
@@ -777,6 +781,7 @@ export function TypingGameApp({ bootstrap }: Props) {
           config={config}
           participant={participant}
           stageTexts={stageTexts}
+          stageTextSelections={stageTextSelections ?? undefined}
           assetBaseUrl={assetBaseUrl}
           eventProfile={bootstrap.eventProfile}
           debugModeType={debugModeType}

@@ -127,6 +127,10 @@ export type RecordRow = {
   stage1_text: string;
   stage2_text: string;
   stage3_text: string;
+  stage_text_catalog_version: string;
+  stage1_text_id: string;
+  stage2_text_id: string;
+  stage3_text_id: string;
   stage1_char_count: string;
   stage2_char_count: string;
   stage3_char_count: string;
@@ -191,6 +195,7 @@ export type SaveRecordInput = {
   privacy_agreed: boolean;
   privacy_agreed_at: string;
   stageTexts: [string, string, string];
+  stageTextSelections?: readonly [StageTextSelection, StageTextSelection, StageTextSelection];
   stageTimesMs: [number, number, number];
   game_mode?: "normal" | "ai_challenge";
   final_accuracy?: number;

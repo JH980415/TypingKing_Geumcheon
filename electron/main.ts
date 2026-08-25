@@ -307,14 +307,15 @@ function registerIpc(
   ipcMain.handle("stage:draw", (_event, input: DrawStageTextsInput) =>
     safe(() => {
       if (eventProfile.profileId !== "geumcheon-2026") throw new Error("Stage catalog draw is unavailable for this event");
-      if (!input || input.gameMode !== "ai_challenge" || input.sessionKind !== variantPolicy.sessionKind) {
+      if (!input || variantPolicy.role !== "player" || input.gameMode !== "ai_challenge" || input.sessionKind !== variantPolicy.sessionKind) {
         throw new Error("Invalid stage catalog draw request");
       }
       return drawGeumcheonStageTexts(ctx, {
         ...input,
         eventId: eventProfile.eventId,
         catalogVersion: eventProfile.stageTextCatalogVersion,
-        catalogPath: path.join(applicationResources.resourceRoot, "events", eventProfile.profileId, "stage_texts.csv")
+        catalogPath: path.join(applicationResources.resourceRoot, "events", eventProfile.profileId, "stage_texts.csv"),
+        role: variantPolicy.role
       });
     })
   );
