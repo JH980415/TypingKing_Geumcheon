@@ -152,7 +152,6 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
   const controlSavingRef = useRef(false);
 
   const target = stageTexts[stageIndex];
-  const includesControlDwell = eventProfile.profileId === "geumcheon-2026";
   const targetLength = countTypeableChars(target);
   const targetTypingUnits = countConvertedTypingUnits(target);
   const elapsedMs = running ? performance.now() - stageStartRef.current : 0;
@@ -310,7 +309,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
         stageStartRef.current,
         controlPausedAtRef.current,
         controlClosedAt,
-        includesControlDwell
+        false
       );
       setRunning(true);
       queueChallengeInputFocus();
@@ -322,7 +321,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
     const currentElapsed = controlWasRunningRef.current
       ? finalizeUserStageTimeMs(
           stageStartRef.current,
-          includesControlDwell ? performance.now() : controlPausedAtRef.current
+          controlPausedAtRef.current
         )
       : 0;
     const currentInput = inputValueRef.current;

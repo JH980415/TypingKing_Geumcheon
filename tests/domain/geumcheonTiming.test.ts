@@ -56,7 +56,7 @@ test("sums stored integer per-stage user time instead of re-rounding a total", (
   assert.throws(() => calculateTotalUserTimeMs([-1]), /Invalid user time/);
 });
 
-test("keeps Geumcheon control dwell in a fake-clock stage duration while SkillUp excludes it", () => {
+test("uses SkillUp control-dialog resume timing for Geumcheon too", () => {
   const stageStartedAt = 1_000;
   const controlOpenedAt = 1_500;
   const controlClosedAt = 2_300;
@@ -68,15 +68,8 @@ test("keeps Geumcheon control dwell in a fake-clock stage duration while SkillUp
     controlClosedAt,
     true
   );
-  const skillupStart = resumeStageTimerAfterControl(
-    stageStartedAt,
-    controlOpenedAt,
-    controlClosedAt,
-    false
-  );
 
-  assert.equal(finalizeUserStageTimeMs(geumcheonStart, finishedAt), 2401);
-  assert.equal(finalizeUserStageTimeMs(skillupStart, finishedAt), 1601);
+  assert.equal(finalizeUserStageTimeMs(geumcheonStart, finishedAt), 1601);
 });
 
 const selections = [

@@ -123,7 +123,7 @@ function entry(row: RecordRow) {
   };
 }
 
-test("Geumcheon practice AI leaderboard shows only each participant's best practice record", () => {
+test("Geumcheon practice AI leaderboard keeps repeated participant attempts", () => {
   const visible = selectGeumcheonAiLeaderboardEntriesForMode(
     [
       entry(record({ record_id: "first", participant_avg_cpm: "500" })),
@@ -133,39 +133,39 @@ test("Geumcheon practice AI leaderboard shows only each participant's best pract
     { isGeumcheonOfficialBoard: false, isGeumcheonPracticeBoard: true }
   );
 
-  assert.deepEqual(visible.map(({ record: row }) => row.record_id), ["best", "other"]);
+  assert.deepEqual(visible.map(({ record: row }) => row.record_id), ["best", "other", "first"]);
 });
 
-test("Geumcheon official AI leaderboard excludes rows missing authoritative completionStatus", () => {
+test("Geumcheon official AI leaderboard keeps fourth attempts without server-only metadata", () => {
   const visible = selectGeumcheonAiLeaderboardEntriesForMode(
     [
-      entry(record({ record_id: "fallback-only", completionStatus: undefined, challenge_result_label: "참여자 승리" })),
+      entry(record({ record_id: "fallback-only", attemptNumber: 4, rankingEligible: false, participantKey: undefined, serverReceivedAt: undefined, completionStatus: undefined, challenge_result_label: "참여자 승리" })),
       entry(record({ record_id: "trusted", participantKey: "server-hmac-b", completionStatus: "completed" }))
     ],
     { isGeumcheonOfficialBoard: true, isGeumcheonPracticeBoard: false }
   );
 
-  assert.deepEqual(visible.map(({ record: row }) => row.record_id), ["trusted"]);
+  assert.deepEqual(visible.map(({ record: row }) => row.record_id), ["fallback-only", "trusted"]);
 });
 
-test("Geumcheon official AI leaderboard keeps zero-elapsed interruptions below finishers", () => {
+test("Geumcheon official AI leaderboard puts a shorter winning duel ahead of higher CPM", () => {
   const visible = selectGeumcheonAiLeaderboardEntriesForMode(
     [
       entry(record({
-        record_id: "interrupted-at-countdown",
-        participant_name: "중단참가자",
-        participantKey: "server-hmac-interrupted",
-        completionStatus: "interrupted",
-        result_stage: "0",
-        participant_progress_percent: "0",
-        totalTypingUnits: 0,
-        totalUserTimeMs: 0
+        record_id: "higher-cpm",
+        participant_name: "고CPM참가자",
+        participantKey: "server-hmac-higher-cpm",
+        completionStatus: "completed",
+        result_stage: "3",
+        participant_progress_percent: "100",
+        participant_avg_cpm: "900",
+        duel_time_ms: "30000"
       })),
       entry(record({
-        record_id: "completed",
-        participant_name: "완주참가자",
-        participantKey: "server-hmac-completed",
-        completionStatus: "completed"
+        record_id: "shorter-duel",
+        participant_name: "빠른참가자",
+        duel_time_ms: "28000",
+        participant_avg_cpm: "500"
       }))
     ],
     { isGeumcheonOfficialBoard: true, isGeumcheonPracticeBoard: false }
@@ -173,6 +173,6 @@ test("Geumcheon official AI leaderboard keeps zero-elapsed interruptions below f
 
   assert.deepEqual(
     visible.map(({ record: row }) => row.record_id),
-    ["completed", "interrupted-at-countdown"]
+    ["shorter-duel", "higher-cpm"]
   );
 });

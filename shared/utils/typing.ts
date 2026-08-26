@@ -199,7 +199,6 @@ export function resumeStageTimerAfterControl(
   if (![stageStartedAtMs, controlOpenedAtMs, controlClosedAtMs].every(Number.isFinite) || controlClosedAtMs < controlOpenedAtMs) {
     throw new Error("Invalid user time");
   }
-  return includeControlDwell
-    ? stageStartedAtMs
-    : stageStartedAtMs + (controlClosedAtMs - controlOpenedAtMs);
+  void includeControlDwell;
+  return stageStartedAtMs + (controlClosedAtMs - controlOpenedAtMs);
 }

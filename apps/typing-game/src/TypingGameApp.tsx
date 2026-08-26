@@ -604,7 +604,7 @@ export function TypingGameApp({ bootstrap }: Props) {
         stageStartRef.current,
         gameControlPausedAtRef.current,
         controlClosedAt,
-        bootstrap.eventProfile.profileId === "geumcheon-2026"
+        false
       );
       setGameRunning(true);
       window.setTimeout(() => inputRef.current?.focus(), 0);
@@ -616,9 +616,7 @@ export function TypingGameApp({ bootstrap }: Props) {
     const currentElapsed = gameControlWasRunningRef.current
       ? finalizeUserStageTimeMs(
           stageStartRef.current,
-          bootstrap.eventProfile.profileId === "geumcheon-2026"
-            ? performance.now()
-            : gameControlPausedAtRef.current
+          gameControlPausedAtRef.current
         )
       : 0;
     const interruptedTimes: [number, number, number] = [0, 0, 0];

@@ -1,13 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { AppConfig, BootstrapData, CsvBackupStatus, LeaderboardSyncStatus, RecordRow } from "../../../shared/types";
-import {
-  compareGeumcheonRecords,
-  selectBestEligibleRecordPerParticipant,
-  type AttemptEligibility,
-  type CompletionStatus,
-  type OfficialAttemptCandidate
-} from "../../../shared/utils/geumcheonRanking";
 import { bestRecordOnly, isInterruptedRecord, sortRecords } from "../../../shared/utils/ranking";
 import { calculateFinalCpm, countConvertedTypingUnits, countTypeableChars } from "../../../shared/utils/typing";
 import { OneDriveSettingsPanel } from "../../shell/src/OneDriveSettingsPanel";
@@ -145,7 +138,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
     const ranked = source
       .map(normalizeFinalCpmForLeaderboard)
       .map((record) => ({ record, display: buildAiLeaderboardDisplayV2(record) }))
-      .sort(isGeumcheonOfficialBoard ? sortGeumcheonAiEntries : sortAiEntriesV2);
+      .sort(sortAiEntriesV2);
     const visibleRanked = selectGeumcheonAiLeaderboardEntriesForMode(ranked, {
       isGeumcheonOfficialBoard,
       isGeumcheonPracticeBoard
@@ -697,114 +690,11 @@ function normalizeFinalCpmForLeaderboard(record: RecordRow): RecordRow {
   };
 }
 
-type GeumcheonAiLeaderboardEntry = AiLeaderboardEntry & OfficialAttemptCandidate & AttemptEligibility;
-
 export function selectGeumcheonAiLeaderboardEntriesForMode(
   entries: AiLeaderboardEntry[],
-  mode: { isGeumcheonOfficialBoard: boolean; isGeumcheonPracticeBoard: boolean }
+  _mode: { isGeumcheonOfficialBoard: boolean; isGeumcheonPracticeBoard: boolean }
 ): AiLeaderboardEntry[] {
-  if (mode.isGeumcheonOfficialBoard) return selectGeumcheonOfficialAiEntries(entries);
-  if (mode.isGeumcheonPracticeBoard) return selectGeumcheonPracticeAiEntries(entries);
-  return entries;
-}
-
-function selectGeumcheonOfficialAiEntries(entries: AiLeaderboardEntry[]): AiLeaderboardEntry[] {
-  return selectBestEligibleRecordPerParticipant(
-    entries
-      .map(toGeumcheonOfficialEntry)
-      .filter((entry): entry is GeumcheonAiLeaderboardEntry => entry != null)
-  );
-}
-
-function sortGeumcheonAiEntries(a: AiLeaderboardEntry, b: AiLeaderboardEntry): number {
-  const left = toGeumcheonOfficialEntry(a);
-  const right = toGeumcheonOfficialEntry(b);
-  if (left && right) return compareGeumcheonRecords(left, right);
-  return sortAiEntriesV2(a, b);
-}
-
-function selectGeumcheonPracticeAiEntries(entries: AiLeaderboardEntry[]): AiLeaderboardEntry[] {
-  const best = new Map<string, AiLeaderboardEntry>();
-  for (const entry of entries) {
-    const key = practiceParticipantKey(entry.record);
-    const current = best.get(key);
-    if (!current || sortAiEntriesV2(entry, current) < 0) best.set(key, entry);
-  }
-  return [...best.values()].sort(sortAiEntriesV2);
-}
-
-function practiceParticipantKey(record: RecordRow): string {
-  return [
-    String(record.participant_name ?? "").trim(),
-    String(record.phone_full || record.phone_masked || "").trim()
-  ].join("|");
-}
-
-function toGeumcheonOfficialEntry(entry: AiLeaderboardEntry): GeumcheonAiLeaderboardEntry | null {
-  const { record, display } = entry;
-  const attemptNumber = positiveIntegerMetadata(record.attemptNumber);
-  const rankingEligible = booleanMetadata(record.rankingEligible);
-  const participantKey = stringMetadata(record.participantKey);
-  const serverReceivedAt = stringMetadata(record.serverReceivedAt);
-  const completionStatus = completionStatusMetadata(record.completionStatus);
-  const totalUserTimeMs = nonnegativeIntegerMetadata(record.totalUserTimeMs ?? record.fairness?.totalUserTimeMs);
-  const totalTypingUnits = nonnegativeIntegerMetadata(
-    record.totalTypingUnits ?? record.fairness?.stages.reduce((sum, stage) => sum + stage.typingUnits, 0)
-  );
-  if (
-    attemptNumber == null ||
-    rankingEligible == null ||
-    !participantKey ||
-    !serverReceivedAt ||
-    completionStatus == null ||
-    totalUserTimeMs == null ||
-    totalTypingUnits == null
-  ) {
-    return null;
-  }
-
-  return {
-    ...entry,
-    recordId: record.record_id,
-    participantKey,
-    serverReceivedAt,
-    completedAt: record.completed_at,
-    completionStatus,
-    completedStages: display.resultStage,
-    progressPercent: display.participantProgressPercent ?? 0,
-    totalTypingUnits,
-    totalUserTimeMs,
-    isTest: record.is_test === "true",
-    isDebug: record.is_debug === "true",
-    attemptNumber,
-    rankingEligible
-  };
-}
-
-function completionStatusMetadata(value: string | undefined): CompletionStatus | null {
-  if (value === "completed" || value === "failed" || value === "interrupted") return value;
-  return null;
-}
-
-function stringMetadata(value: string | undefined): string | null {
-  const trimmed = String(value ?? "").trim();
-  return trimmed ? trimmed : null;
-}
-
-function booleanMetadata(value: boolean | string | null | undefined): boolean | null {
-  if (value === true || value === "true") return true;
-  if (value === false || value === "false") return false;
-  return null;
-}
-
-function positiveIntegerMetadata(value: number | string | null | undefined): number | null {
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-function nonnegativeIntegerMetadata(value: number | string | null | undefined): number | null {
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  return [...entries].sort(sortAiEntriesV2);
 }
 
 function enrichRecordForExport(record: RecordRow): RecordRow {
