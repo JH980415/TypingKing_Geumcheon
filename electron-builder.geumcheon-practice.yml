@@ -1,0 +1,54 @@
+appId: com.thepmd.gscience.typingking.practice
+productName: G-Science AI 타자왕 연습모드
+extraMetadata:
+  typingKingEventProfile: geumcheon-2026
+  typingKingVariant: practice
+directories:
+  output: release-build/geumcheon/practice
+files:
+  - dist-renderer/**
+  - dist-electron/**
+  - package.json
+extraResources:
+  - from: assets/ai_challenge
+    to: assets/ai_challenge
+    filter:
+      - ai_boss_typing.png
+      - ai_boss_victory.png
+      - ai_boss_defeat.png
+      - vs_badge.png
+      - stage_badge_1.png
+      - stage_badge_2.png
+      - stage_badge_3.png
+      - ai_title_compact.png
+      - ai_title_oneline_trimmed.png
+      - ai_challenge_title.png
+  - from: events/geumcheon-2026
+    to: events/geumcheon-2026
+    filter:
+      - event.config.json
+      - stage_texts.csv
+      - assets/event-title.png
+      - assets/key-visual.png
+      - assets/bg_leaderboard_03_typing_hall_of_fame.png
+      - assets/bg_main_03_geumcheon_data_city.png
+      - assets/robot_03_speed_champion.png
+      - assets/robot_04_science_lab.png
+      - assets/robot_05_festival_victory.png
+      - assets/robot_defeat_01_geumnarae_typer.png
+      - assets/stage_01_03_science_classroom.png
+      - assets/title_04_science_hologram.png
+      - assets/vs_03_science_portal.png
+      - assets/ai_challenge/stage_badge_1.png
+      - assets/ai_challenge/stage_badge_2.png
+      - assets/ai_challenge/stage_badge_3.png
+asar: true
+win:
+  icon: assets/icons/typing_app_icon.ico
+  signExecutable: false
+  target:
+    - target: portable
+      arch:
+        - x64
+portable:
+  artifactName: G-Science AI 타자왕_연습모드.exe

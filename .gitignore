@@ -1,0 +1,55 @@
+# Dependencies and build outputs
+node_modules/
+dist/
+dist-electron/
+dist-renderer/
+release-build/
+release-geumcheon/
+deployment-private/
+deployment-output/
+release/
+test_artifacts/
+coverage/
+
+# Local runtime data and exports
+exports/
+logs/
+data/backups/
+data/recovery/
+data/processed/
+data/local_queue/
+data/local_queue_practice/
+data/logs/
+data/records.csv
+data/admin_audit.csv
+
+# Per-PC runtime settings contain the event admin password
+config/config.json
+config/config.practice.json
+
+# Local-only tools, reports, and references
+.claude/
+.serena/
+qa_reports/
+design_reference/
+essential_documents/
+output/
+tmp/
+ui-concepts/
+Codex/
+GPT/
+reports/*
+!reports/제8회_금천과학축제_AI타자왕_1회차검토보고서_20260828.md
+*.log
+*.zip
+
+# Credential and private-key material
+*.pem
+*.pfx
+bootstrap-credentials.json
+device-profile.json
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+desktop.ini

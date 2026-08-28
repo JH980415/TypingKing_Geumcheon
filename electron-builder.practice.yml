@@ -1,0 +1,18 @@
+appId: com.skillupfesta.typingking.practice
+productName: 타자왕 연습모드
+directories:
+  output: release-build/practice
+files:
+  - dist-renderer/**
+  - dist-electron/**
+  - package.json
+asar: true
+win:
+  icon: assets/icons/typing_app_icon.ico
+  signExecutable: false
+  target:
+    - target: portable
+      arch:
+        - x64
+portable:
+  artifactName: 타자왕 연습모드.exe

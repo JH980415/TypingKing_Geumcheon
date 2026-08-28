@@ -1,0 +1,18 @@
+appId: com.skillupfesta.typingking.practice-leaderboard
+productName: 타자왕 연습모드 리더보드
+directories:
+  output: release-build/practice-leaderboard
+files:
+  - dist-renderer/**
+  - dist-electron/**
+  - package.json
+asar: true
+win:
+  icon: assets/icons/leaderboard_app_icon.ico
+  signExecutable: false
+  target:
+    - target: portable
+      arch:
+        - x64
+portable:
+  artifactName: 타자왕 연습모드_리더보드.exe

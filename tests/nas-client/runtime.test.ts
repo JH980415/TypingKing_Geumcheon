@@ -1,0 +1,212 @@
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import { access, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { createGeumcheonNasRuntime } from "../../electron/nas/runtime";
+import { payloadSha256 } from "../../shared/nas/protocol";
+import type { DeviceProfile, EventProfile, RecordRow, SaveRecordInput } from "../../shared/types";
+import type { SafeStorageAdapter } from "../../electron/nas/credentialStore";
+import type { FetchLike } from "../../electron/nas/apiClient";
+
+const recordId = "gsc26-pc01-123e4567-e89b-42d3-a456-426614174000";
+
+function safeStorage(): SafeStorageAdapter {
+  const key = crypto.randomBytes(32);
+  return {
+    isEncryptionAvailable: () => true,
+    encryptString(value) {
+      const iv = crypto.randomBytes(12);
+      const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+      const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
+      return Buffer.concat([iv, cipher.getAuthTag(), encrypted]);
+    },
+    decryptString(value) {
+      const decipher = crypto.createDecipheriv("aes-256-gcm", key, value.subarray(0, 12));
+      decipher.setAuthTag(value.subarray(12, 28));
+      return Buffer.concat([decipher.update(value.subarray(28)), decipher.final()]).toString("utf8");
+    },
+  };
+}
+
+function event(): EventProfile {
+  return { profileId: "geumcheon-2026", nasEventId: "geumcheon-science-festival-2026" } as EventProfile;
+}
+
+function device(role: "player" | "leaderboard" = "player"): DeviceProfile {
+  return {
+    schemaVersion: 1,
+    eventProfileId: "geumcheon-2026",
+    eventId: "geumcheon-science-festival-2026",
+    deviceId: role === "player" ? "PC01" : "LEADERBOARD01",
+    role,
+    apiBaseUrl: "https://records.example.test",
+    sessions: { official: { sessionId: "official-1", dayNo: 1, roundNo: 2 }, practice: { sessionId: "practice-1" } },
+    requestTimeoutMs: 1_000,
+    retry: { initialDelayMs: 10, maxDelayMs: 40 },
+  };
+}
+
+function input(): SaveRecordInput {
+  return {
+    participant_name: "합성참가자",
+    phone_part1: "010",
+    phone_part2: "0000",
+    phone_part3: "0001",
+    birth_year: "2014",
+    birth_month: "1",
+    birth_day: "2",
+    privacy_agreed: true,
+    privacy_agreed_at: "2026-09-18T01:00:00.000Z",
+    stageTexts: ["첫 문장", "둘째 문장", "셋째 문장"],
+    stageTimesMs: [1_000, 0, 0],
+    game_mode: "ai_challenge",
+    interruption: { action: "retry", resultStage: 1, participantProgressPercent: 40, stageCharCounts: [4, 0, 0], totalTypingUnits: 8 },
+  };
+}
+
+function row(id = recordId): RecordRow {
+  return { record_id: id, participant_name: "합성참가자", phone_full: "01000000001", final_cpm: "321", game_mode: "ai_challenge" } as RecordRow;
+}
+
+function localCallbacks(persistLocal: (value: SaveRecordInput, id: string) => Promise<RecordRow>) {
+  let readCalls = 0;
+  let adminCalls = 0;
+  return {
+    callbacks: {
+      persist: persistLocal,
+      read: async () => { readCalls += 1; return []; },
+      admin: {
+        edit: async () => { adminCalls += 1; },
+        hide: async () => { adminCalls += 1; },
+        resetSession: async () => { adminCalls += 1; },
+      },
+    },
+    get readCalls() { return readCalls; },
+    get adminCalls() { return adminCalls; },
+  };
+}
+
+test("checkpoints and saves one official RecordRow into encrypted outbox, then flushes it", async (context) => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "typingking-nas-runtime-"));
+  context.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+  const encryption = safeStorage();
+  const persistedIds: string[] = [];
+  let uploaded: any;
+  const fetch: FetchLike = async (_url, init) => {
+    uploaded = JSON.parse(String(init?.body));
+    const hash = payloadSha256(uploaded);
+    return new Response(JSON.stringify({ schema_version: 1, disposition: "stored", record_id: uploaded.row.record_id, payload_sha256: hash, stored_sha256: hash, received_at: "2026-09-18T01:03:00.000Z" }), { status: 201, headers: { "content-type": "application/json" } });
+  };
+  const local = localCallbacks(async (_value, id) => { persistedIds.push(id); return row(id); });
+  const runtime = createGeumcheonNasRuntime({
+    event: event(), device: device(), sessionKind: "official", runtimeRoot, safeStorage: encryption, fetch,
+    local: local.callbacks, createRecordId: () => recordId, createActionId: () => "gsc26-action-123e4567-e89b-42d3-a456-426614174000",
+    now: () => "2026-09-18T01:02:00.000Z", sleep: async () => undefined,
+  });
+  await runtime.importToken(crypto.randomBytes(32).toString("hex"));
+
+  const checkpoint = await runtime.checkpoint(input());
+  const saved = await runtime.save(input());
+
+  assert.equal(saved.record_id, checkpoint.recordId);
+  assert.deepEqual(persistedIds, [recordId]);
+  const pendingDir = path.join(runtimeRoot, "nas", "outbox", "official", "pending");
+  assert.deepEqual(await readdir(pendingDir), [`${recordId}.bin`]);
+  assert.equal((await readFile(path.join(pendingDir, `${recordId}.bin`))).includes(Buffer.from("합성참가자")), false);
+  assert.deepEqual(await runtime.queueStatus(), { pending: 1, blocked: 0 });
+  const flush = await runtime.flush();
+  assert.equal(flush.sent, 1);
+  assert.equal(uploaded.row.record_id, recordId);
+  assert.deepEqual(uploaded.session, { kind: "official", session_id: "official-1", day_no: 1, round_no: 2 });
+  assert.deepEqual(await readdir(pendingDir), []);
+  assert.deepEqual(await runtime.queueStatus(), { pending: 0, blocked: 0 });
+});
+
+test("recovers a practice checkpoint into practice outbox with the same stable record ID", async (context) => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "typingking-nas-runtime-"));
+  context.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+  const encryption = safeStorage();
+  const local = localCallbacks(async (_value, id) => row(id));
+  const common = { event: event(), device: device(), sessionKind: "practice" as const, runtimeRoot, safeStorage: encryption, fetch: (async () => { throw new Error("unused"); }) as FetchLike, local: local.callbacks, now: () => "2026-09-18T01:02:00.000Z", sleep: async () => undefined };
+  const first = createGeumcheonNasRuntime({ ...common, createRecordId: () => recordId, createActionId: () => "gsc26-action-123e4567-e89b-42d3-a456-426614174000" });
+  await first.checkpoint(input());
+  const restarted = createGeumcheonNasRuntime({ ...common, createRecordId: () => { throw new Error("must reuse checkpoint ID"); }, createActionId: () => "gsc26-action-123e4567-e89b-42d3-a456-426614174000" });
+
+  const recovered = await restarted.recover();
+
+  assert.equal(recovered?.record_id, recordId);
+  assert.deepEqual(await readdir(path.join(runtimeRoot, "nas", "outbox", "practice", "pending")), [`${recordId}.bin`]);
+});
+
+test("isolates simultaneous official and practice active checkpoints under one device runtime root", async (context) => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "typingking-nas-runtime-"));
+  context.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+  const encryption = safeStorage();
+  const local = localCallbacks(async (_value, id) => row(id));
+  const common = { event: event(), device: device(), runtimeRoot, safeStorage: encryption, fetch: (async () => { throw new Error("unused"); }) as FetchLike, local: local.callbacks, createActionId: () => "gsc26-action-123e4567-e89b-42d3-a456-426614174000", now: () => "2026-09-18T01:02:00.000Z", sleep: async () => undefined };
+  const official = createGeumcheonNasRuntime({ ...common, sessionKind: "official", createRecordId: () => recordId });
+  const practice = createGeumcheonNasRuntime({ ...common, sessionKind: "practice", createRecordId: () => "gsc26-pc01-123e4567-e89b-42d3-a456-426614174001" });
+
+  await official.checkpoint(input());
+  await practice.checkpoint(input());
+
+  await Promise.all([
+    access(path.join(runtimeRoot, "nas", "active-attempt-official.bin")),
+    access(path.join(runtimeRoot, "nas", "active-attempt-practice.bin")),
+  ]);
+});
+
+test("leaderboard reads only NAS full RecordRow snapshot and falls back to last-known-good without exposing token", async (context) => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "typingking-nas-runtime-"));
+  context.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+  let requests = 0;
+  const fetch: FetchLike = async () => {
+    requests += 1;
+    if (requests > 1) throw new Error("offline");
+    return new Response(JSON.stringify({ schema_version: 1, event_id: "geumcheon-science-festival-2026", session: { kind: "official", session_id: "official-1", day_no: 1, round_no: 2 }, generated_at: "2026-09-18T01:03:00.000Z", rows: [row()] }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const local = localCallbacks(async () => { throw new Error("leaderboard must not persist"); });
+  const runtime = createGeumcheonNasRuntime({ event: event(), device: device("leaderboard"), sessionKind: "official", runtimeRoot, safeStorage: safeStorage(), fetch, local: local.callbacks, createRecordId: () => recordId, createActionId: () => "gsc26-action-123e4567-e89b-42d3-a456-426614174000", now: () => "2026-09-18T01:02:00.000Z", sleep: async () => undefined });
+  await runtime.importToken(crypto.randomBytes(32).toString("hex"));
+
+  const live = await runtime.loadRecords();
+  const cached = await runtime.loadRecords();
+
+  assert.equal(live.rows[0].phone_full, "01000000001");
+  assert.deepEqual(cached, live);
+  assert.equal(local.readCalls, 0);
+  assert.equal("getToken" in runtime, false);
+  await assert.rejects(() => runtime.checkpoint(input()), /NAS_ROLE_FORBIDDEN/);
+});
+
+test("operator sends replacement edit, hide and current-session reset only to NAS", async (context) => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "typingking-nas-runtime-"));
+  context.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+  const actions: any[] = [];
+  const fetch: FetchLike = async (_url, init) => {
+    actions.push(JSON.parse(String(init?.body)));
+    return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const local = localCallbacks(async () => { throw new Error("unused"); });
+  let actionNumber = 0;
+  const actionIds = [
+    "gsc26-action-123e4567-e89b-42d3-a456-426614174001",
+    "gsc26-action-123e4567-e89b-42d3-a456-426614174002",
+    "gsc26-action-123e4567-e89b-42d3-a456-426614174003",
+  ];
+  const runtime = createGeumcheonNasRuntime({ event: event(), device: device("leaderboard"), sessionKind: "official", runtimeRoot, safeStorage: safeStorage(), fetch, local: local.callbacks, createRecordId: () => recordId, createActionId: () => actionIds[actionNumber++], now: () => "2026-09-18T01:02:00.000Z", sleep: async () => undefined });
+  await runtime.importToken(crypto.randomBytes(32).toString("hex"));
+
+  await runtime.edit(recordId, row(), "운영자");
+  await runtime.hide(recordId, true, "운영자");
+  await runtime.resetSession("운영자");
+
+  assert.deepEqual(actions.map((value) => value.action_type), ["edit", "hide", "reset_session"]);
+  assert.equal(actions[0].target_record_id, recordId);
+  assert.equal(actions[0].changes.participant_name, "합성참가자");
+  assert.equal(actions[1].hidden, true);
+  assert.deepEqual(actions[2].session, { kind: "official", session_id: "official-1", day_no: 1, round_no: 2 });
+  assert.equal(local.adminCalls, 0);
+});

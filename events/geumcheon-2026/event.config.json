@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "profileId": "geumcheon-2026",
+  "eventId": "geumcheon-science-festival-2026",
+  "nasEventId": "geumcheon-science-festival-2026",
+  "eventName": "제8회 금천과학축제",
+  "eventNameEn": "2026 G-Science Festival",
+  "slogan": "AI와 소통하는 활기찬 미래 금천",
+  "gameName": "G-Science AI 타자왕",
+  "runtimeNamespace": "geumcheon-2026",
+  "stageTextCatalogVersion": "geumcheon-draft-20260825-v1",
+  "privacy": { "noticeVersion": null, "retentionExpiresAt": null },
+  "theme": {
+    "primaryColor": "#552D8D",
+    "accentColor": "#C40080",
+    "backgroundColor": "#FFFFFF",
+    "correctColor": "#00B3EC",
+    "wrongColor": "#C40080",
+    "cyanColor": "#00B3EC",
+    "orangeColor": "#FED900",
+    "successColor": "#552D8D"
+  },
+  "assets": {
+    "eventTitle": "assets/title_04_science_hologram.png",
+    "pageBackground": "assets/key-visual.png",
+    "startBackground": "assets/bg_leaderboard_03_typing_hall_of_fame.png",
+    "playBackground": "assets/bg_main_03_geumcheon_data_city.png",
+    "leaderboardBackground": "assets/stage_01_03_science_classroom.png",
+    "aiBossMain": "assets/robot_03_speed_champion.png",
+    "aiBossTyping": "assets/robot_04_science_lab.png",
+    "aiBossVictory": "assets/robot_05_festival_victory.png",
+    "aiBossDefeat": "assets/robot_defeat_01_geumnarae_typer.png",
+    "vsBadge": "assets/vs_03_science_portal.png",
+    "stageBadges": ["assets/ai_challenge/stage_badge_1.png", "assets/ai_challenge/stage_badge_2.png", "assets/ai_challenge/stage_badge_3.png"]
+  },
+  "variants": {
+    "typing": { "variant": "typing", "enabled": false, "role": "player", "sessionKind": "official", "gameModes": ["normal"], "displayName": "G-Science 타자왕", "windowTitle": "G-Science 타자왕", "artifactName": "" },
+    "typing-leaderboard": { "variant": "typing-leaderboard", "enabled": false, "role": "leaderboard", "sessionKind": "official", "gameModes": ["normal"], "displayName": "G-Science 타자왕 리더보드", "windowTitle": "G-Science 타자왕 리더보드", "artifactName": "" },
+    "ai": { "variant": "ai", "enabled": true, "role": "player", "sessionKind": "official", "gameModes": ["ai_challenge"], "displayName": "G-Science AI 타자왕", "windowTitle": "G-Science AI 타자왕", "artifactName": "G-Science AI 타자왕.exe" },
+    "ai-leaderboard": { "variant": "ai-leaderboard", "enabled": true, "role": "leaderboard", "sessionKind": "official", "gameModes": ["ai_challenge"], "displayName": "G-Science AI 타자왕 리더보드", "windowTitle": "G-Science AI 타자왕 리더보드", "artifactName": "G-Science AI 타자왕_리더보드.exe" },
+    "practice": { "variant": "practice", "enabled": true, "role": "player", "sessionKind": "practice", "gameModes": ["ai_challenge"], "displayName": "G-Science AI 타자왕 연습모드", "windowTitle": "G-Science AI 타자왕 연습모드", "artifactName": "G-Science AI 타자왕_연습모드.exe" },
+    "practice-leaderboard": { "variant": "practice-leaderboard", "enabled": true, "role": "leaderboard", "sessionKind": "practice", "gameModes": ["ai_challenge"], "displayName": "G-Science AI 타자왕 연습모드 리더보드", "windowTitle": "G-Science AI 타자왕 연습모드 리더보드", "artifactName": "G-Science AI 타자왕_연습모드_리더보드.exe" }
+  },
+  "aiChallenge": {
+    "official": { "enabled": true, "stageSpeedRanges": { "stage1": { "min": 150, "max": 200 }, "stage2": { "min": 200, "max": 250 }, "stage3": { "min": 250, "max": 300 } }, "countdownSeconds": 3, "aiEnterDelayMs": 150, "aiSpeedChangeIntervalMs": 500 },
+    "practice": { "enabled": true, "stageSpeedRanges": { "stage1": { "min": 100, "max": 150 }, "stage2": { "min": 150, "max": 200 }, "stage3": { "min": 200, "max": 250 } }, "countdownSeconds": 3, "aiEnterDelayMs": 150, "aiSpeedChangeIntervalMs": 500 }
+  }
+}
