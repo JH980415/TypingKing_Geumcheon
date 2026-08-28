@@ -28,6 +28,8 @@ declare global {
       softDeleteStageText(id: string): Promise<ApiResult<StageText>>;
       hardDeleteStageText(id: string): Promise<ApiResult<void>>;
       publishStageTextsToOneDrive(): Promise<ApiResult<{ filePath: string; count: number; hash: string; updatedAt: string }>>;
+      onActiveAttemptCheckpointRequested(handler: (requestId: string) => Promise<void>): () => void;
+      checkpointActiveAttempt(input: SaveRecordInput, closeRequestId?: string): Promise<ApiResult<void>>;
       saveRecord(input: SaveRecordInput): Promise<ApiResult<RecordRow>>;
       checkGameStartReadiness(gameMode: "normal" | "ai_challenge"): Promise<ApiResult<GameStartReadiness>>;
       listRecords(): Promise<ApiResult<RecordRow[]>>;

@@ -5,6 +5,8 @@ dist-electron/
 dist-renderer/
 release-build/
 release-geumcheon/
+deployment-private/
+deployment-output/
 release/
 test_artifacts/
 coverage/
@@ -27,11 +29,25 @@ config/config.practice.json
 
 # Local-only tools, reports, and references
 .claude/
+.serena/
 qa_reports/
 design_reference/
 essential_documents/
+output/
+tmp/
+ui-concepts/
+Codex/
+GPT/
+reports/*
+!reports/제8회_금천과학축제_AI타자왕_1회차검토보고서_20260828.md
 *.log
 *.zip
+
+# Credential and private-key material
+*.pem
+*.pfx
+bootstrap-credentials.json
+device-profile.json
 
 # OS/editor files
 .DS_Store

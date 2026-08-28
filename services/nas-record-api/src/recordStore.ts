@@ -1,10 +1,34 @@
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, realpath } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import {
+  lstat,
+  mkdir,
+  readFile,
+  readdir,
+  realpath,
+  stat,
+} from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
-import { canonicalStringify, isGeumcheonRecordId } from "../../../shared/nas/protocol.js";
+import { RECORD_HEADERS } from "../../../shared/constants/defaults.js";
+import type {
+  NasAdminActionV1,
+  NasSessionV1,
+} from "../../../shared/nas/protocol.js";
+import {
+  GEUMCHEON_NAS_EVENT_ID,
+  canonicalStringify,
+  isGeumcheonRecordId,
+} from "../../../shared/nas/protocol.js";
+import type { RecordRow } from "../../../shared/types/index.js";
+import {
+  verifyWritableDirectory,
+  writeFileNoReplaceAtomic,
+  type AtomicStoreHooks,
+} from "./atomicStore.js";
 import type { StoredNasRecordV1 } from "./recordSchema.js";
-import { type AtomicStoreHooks, verifyWritableDirectory, writeFileNoReplaceAtomic } from "./atomicStore.js";
+
+const ACTION_ID = /^gsc26-action-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const MAX_STORED_BYTES = 128 * 1024;
 
 export type RecordPutResult = {
   disposition: "stored" | "duplicate";
@@ -14,13 +38,21 @@ export type RecordPutResult = {
   receivedAt: string;
 };
 
-export class StorageError extends Error {
-  readonly code: "STORAGE_CORRUPT" | "STORAGE_PATH_SUBSTITUTION" | "STORAGE_UNAVAILABLE";
+export type AdminActionPutResult = {
+  disposition: "stored" | "duplicate";
+  actionId: string;
+  receivedAt: string;
+};
 
-  constructor(code: StorageError["code"]) {
+export class StorageError extends Error {
+  constructor(
+    readonly code:
+      | "STORAGE_CORRUPT"
+      | "STORAGE_PATH_SUBSTITUTION"
+      | "STORAGE_UNAVAILABLE",
+  ) {
     super(code);
     this.name = "StorageError";
-    this.code = code;
   }
 }
 
@@ -33,108 +65,392 @@ export class RecordStore {
     this.#atomicHooks = options.atomicHooks ?? {};
   }
 
-  async put(record: StoredNasRecordV1): Promise<RecordPutResult> {
+  async ready(): Promise<boolean> {
     try {
-      const targetPath = await this.targetPath(record);
-      const bytes = Buffer.from(canonicalStringify(record), "utf8");
+      const directory = await this.ensureDirectory(["기록저장"]);
+      return verifyWritableDirectory(directory);
+    } catch {
+      return false;
+    }
+  }
+
+  async put(record: StoredNasRecordV1): Promise<RecordPutResult> {
+    const targetPath = await this.recordTarget(record.session, record.row.record_id);
+    const bytes = Buffer.from(canonicalStringify(record.row), "utf8");
+    try {
       await writeFileNoReplaceAtomic(targetPath, bytes, this.#atomicHooks);
-      return acknowledgement("stored", record, sha256(bytes));
+      return recordAcknowledgement("stored", record, sha256(bytes), record.received_at);
     } catch (error) {
       if (isAlreadyExists(error)) {
-        const targetPath = await this.targetPath(record);
-        return this.existingAcknowledgement(targetPath, record);
+        return this.existingRecordAcknowledgement(targetPath, record);
       }
       throw storageError(error);
     }
   }
 
-  async ready(): Promise<boolean> {
-    return verifyWritableDirectory(this.#dataRoot);
-  }
-
-  async targetPath(record: StoredNasRecordV1): Promise<string> {
-    if (!isGeumcheonRecordId(record.record.record_id)) throw new Error("RECORD_ID_INVALID");
-    const segments = record.session.kind === "official"
-      ? ["기록저장", `${record.session.day_no}일차`, `${record.session.round_no}회차`, "incoming", "ai"]
-      : ["기록저장", "연습회차", "incoming", "ai"];
+  async list(session: NasSessionV1): Promise<RecordRow[]> {
+    const directory = await this.recordDirectory(session);
+    let names: string[];
     try {
-      const dataRoot = await realpath(this.#dataRoot);
-      const incomingDirectory = resolve(dataRoot, ...segments);
-      if (!inside(dataRoot, incomingDirectory)) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
-      await createCanonicalDirectoryChain(dataRoot, segments);
-      await assertCanonicalDirectoryChain(dataRoot, segments, incomingDirectory);
-      const targetPath = resolve(incomingDirectory, `${record.record.record_id}.json`);
-      if (dirname(targetPath) !== incomingDirectory) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
-      return targetPath;
+      names = (await readdir(directory))
+        .filter((name) => name.endsWith(".json") && !name.includes(".tmp-"))
+        .sort();
     } catch (error) {
       throw storageError(error);
     }
+
+    const rows: RecordRow[] = [];
+    for (const name of names) {
+      const targetPath = resolve(directory, name);
+      if (dirname(targetPath) !== directory) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
+      rows.push(await readStoredRow(targetPath));
+    }
+    return rows.sort((left, right) =>
+      `${left.completed_at}_${left.record_id}`.localeCompare(
+        `${right.completed_at}_${right.record_id}`,
+      ));
   }
 
-  async existingAcknowledgement(targetPath: string, record: StoredNasRecordV1): Promise<RecordPutResult> {
-    let bytes: Buffer;
+  async putAdminAction(action: NasAdminActionV1): Promise<AdminActionPutResult> {
+    validateAdminAction(action);
+    const directory = await this.adminDirectory(action.session);
+    const targetPath = resolve(directory, `${action.action_id}.json`);
+    if (dirname(targetPath) !== directory) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
+    const bytes = Buffer.from(canonicalStringify(action), "utf8");
+    try {
+      await writeFileNoReplaceAtomic(targetPath, bytes, this.#atomicHooks);
+      return {
+        disposition: "stored",
+        actionId: action.action_id,
+        receivedAt: action.created_at,
+      };
+    } catch (error) {
+      if (!isAlreadyExists(error)) throw storageError(error);
+      const existing = await readBoundedJson(targetPath);
+      if (canonicalStringify(existing) !== canonicalStringify(action)) {
+        throw new Error("IDEMPOTENCY_CONFLICT");
+      }
+      return {
+        disposition: "duplicate",
+        actionId: action.action_id,
+        receivedAt: action.created_at,
+      };
+    }
+  }
+
+  async listEffective(session: NasSessionV1): Promise<RecordRow[]> {
+    const originals = await this.list(session);
+    const visible = new Map(originals.map((row) => [row.record_id, { ...row }]));
+    const hidden = new Map<string, RecordRow>();
+
+    for (const action of await this.listAdminActions(session)) {
+      if (action.action_type === "reset_session") {
+        visible.clear();
+        hidden.clear();
+        continue;
+      }
+
+      const targetId = action.target_record_id;
+      if (action.action_type === "edit") {
+        const current = visible.get(targetId) ?? hidden.get(targetId);
+        if (current == null) continue;
+        const edited: RecordRow = {
+          ...current,
+          ...action.changes,
+          record_id: current.record_id,
+          original_record_id: current.original_record_id || current.record_id,
+          is_admin_edited: "true",
+        };
+        if (visible.has(targetId)) visible.set(targetId, edited);
+        if (hidden.has(targetId)) hidden.set(targetId, edited);
+        continue;
+      }
+
+      if (action.hidden) {
+        const current = visible.get(targetId);
+        if (current != null) hidden.set(targetId, current);
+        visible.delete(targetId);
+      } else {
+        const current = hidden.get(targetId)
+          ?? originals.find((row) => row.record_id === targetId);
+        if (current != null) visible.set(targetId, { ...current });
+        hidden.delete(targetId);
+      }
+    }
+
+    return [...visible.values()];
+  }
+
+  private async existingRecordAcknowledgement(
+    targetPath: string,
+    record: StoredNasRecordV1,
+  ): Promise<RecordPutResult> {
+    const bytes = await readBoundedBytes(targetPath);
     let existing: unknown;
     try {
-      bytes = await readFile(targetPath);
-      if (bytes.byteLength === 0 || bytes.byteLength > 64 * 1024) throw new Error("invalid size");
       existing = JSON.parse(bytes.toString("utf8"));
-    } catch (error) {
-      if (isFilesystemError(error)) throw new StorageError("STORAGE_UNAVAILABLE");
+    } catch {
       throw new StorageError("STORAGE_CORRUPT");
     }
-    if (!isCompleteStoredRecord(existing, record)) throw new StorageError("STORAGE_CORRUPT");
-    if (existing.payload_sha256 !== record.payload_sha256) throw new Error("IDEMPOTENCY_CONFLICT");
-    return {
-      disposition: "duplicate",
-      recordId: record.record.record_id,
-      payloadSha256: record.payload_sha256,
-      storedSha256: sha256(bytes),
-      receivedAt: existing.record.received_at,
-    };
-  }
-}
-
-async function createCanonicalDirectoryChain(dataRoot: string, segments: readonly string[]): Promise<void> {
-  let current = dataRoot;
-  for (const segment of segments) {
-    const next = resolve(current, segment);
-    let stat;
-    try {
-      stat = await lstat(next);
-    } catch (error) {
-      if (!isMissingPath(error)) throw error;
-      try {
-        await mkdir(next, { mode: 0o700 });
-      } catch (mkdirError) {
-        if (!isAlreadyExists(mkdirError)) throw mkdirError;
-      }
-      stat = await lstat(next);
+    if (!isCompleteRecordRow(existing)) throw new StorageError("STORAGE_CORRUPT");
+    if (canonicalStringify(existing) !== canonicalStringify(record.row)) {
+      throw new Error("IDEMPOTENCY_CONFLICT");
     }
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
-    const canonical = await realpath(next);
-    if (canonical !== next || !inside(dataRoot, canonical)) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
-    current = next;
+    const file = await stat(targetPath).catch((error) => {
+      throw storageError(error);
+    });
+    return recordAcknowledgement(
+      "duplicate",
+      record,
+      sha256(bytes),
+      file.mtime.toISOString(),
+    );
+  }
+
+  private async recordTarget(session: NasSessionV1, recordId: string): Promise<string> {
+    if (!isGeumcheonRecordId(recordId)) throw new Error("RECORD_ID_INVALID");
+    const directory = await this.recordDirectory(session);
+    const targetPath = resolve(directory, `${recordId}.json`);
+    if (dirname(targetPath) !== directory) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
+    return targetPath;
+  }
+
+  private async recordDirectory(session: NasSessionV1): Promise<string> {
+    return this.ensureDirectory(session.kind === "official"
+      ? ["기록저장", `${session.day_no}일차`, `${session.round_no}회차`, "incoming", "ai"]
+      : ["기록저장", "연습회차", "incoming", "ai"]);
+  }
+
+  private async adminDirectory(session: NasSessionV1): Promise<string> {
+    return this.ensureDirectory(session.kind === "official"
+      ? ["기록저장", `${session.day_no}일차`, `${session.round_no}회차`, "admin_actions"]
+      : ["기록저장", "연습회차", "admin_actions"]);
+  }
+
+  private async listAdminActions(session: NasSessionV1): Promise<NasAdminActionV1[]> {
+    const directory = await this.adminDirectory(session);
+    const names = (await readdir(directory))
+      .filter((name) => name.endsWith(".json") && !name.includes(".tmp-"))
+      .sort();
+    const actions: NasAdminActionV1[] = [];
+    for (const name of names) {
+      const targetPath = resolve(directory, name);
+      if (dirname(targetPath) !== directory) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
+      const action = await readBoundedJson(targetPath);
+      validateAdminAction(action);
+      if (!sameSession(action.session, session)) {
+        throw new StorageError("STORAGE_CORRUPT");
+      }
+      actions.push(action);
+    }
+    return actions.sort((left, right) =>
+      `${left.created_at}_${left.action_id}`.localeCompare(
+        `${right.created_at}_${right.action_id}`,
+      ));
+  }
+
+  private async ensureDirectory(segments: readonly string[]): Promise<string> {
+    try {
+      await mkdir(this.#dataRoot, { recursive: true, mode: 0o700 });
+      const canonicalRoot = await realpath(this.#dataRoot);
+      let current = canonicalRoot;
+      for (const segment of segments) {
+        if (!/^[^\\/]+$/.test(segment) || segment === "." || segment === "..") {
+          throw new StorageError("STORAGE_PATH_SUBSTITUTION");
+        }
+        const next = join(current, segment);
+        try {
+          const info = await lstat(next);
+          if (info.isSymbolicLink() || !info.isDirectory()) {
+            throw new StorageError("STORAGE_PATH_SUBSTITUTION");
+          }
+        } catch (error) {
+          if (!isMissingPath(error)) throw error;
+          await mkdir(next, { mode: 0o700 }).catch((mkdirError) => {
+            if (!isAlreadyExists(mkdirError)) throw mkdirError;
+          });
+          const created = await lstat(next);
+          if (created.isSymbolicLink() || !created.isDirectory()) {
+            throw new StorageError("STORAGE_PATH_SUBSTITUTION");
+          }
+        }
+        const canonicalNext = await realpath(next);
+        if (!inside(canonicalRoot, canonicalNext)) {
+          throw new StorageError("STORAGE_PATH_SUBSTITUTION");
+        }
+        current = canonicalNext;
+      }
+      return current;
+    } catch (error) {
+      throw storageError(error);
+    }
   }
 }
 
-async function assertCanonicalDirectoryChain(dataRoot: string, segments: readonly string[], incomingDirectory: string): Promise<void> {
-  let current = dataRoot;
-  for (const segment of segments) {
-    current = resolve(current, segment);
-    const stat = await lstat(current);
-    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
+function recordAcknowledgement(
+  disposition: "stored" | "duplicate",
+  record: StoredNasRecordV1,
+  storedSha256: string,
+  receivedAt: string,
+): RecordPutResult {
+  return {
+    disposition,
+    recordId: record.row.record_id,
+    payloadSha256: record.payload_sha256,
+    storedSha256,
+    receivedAt,
+  };
+}
+
+async function readStoredRow(targetPath: string): Promise<RecordRow> {
+  const value = await readBoundedJson(targetPath);
+  if (!isCompleteRecordRow(value)) throw new StorageError("STORAGE_CORRUPT");
+  return value;
+}
+
+async function readBoundedJson(targetPath: string): Promise<unknown> {
+  const bytes = await readBoundedBytes(targetPath);
+  try {
+    return JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new StorageError("STORAGE_CORRUPT");
   }
-  const canonicalIncoming = await realpath(incomingDirectory);
-  if (canonicalIncoming !== incomingDirectory || !inside(dataRoot, canonicalIncoming)) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
 }
 
-function acknowledgement(disposition: RecordPutResult["disposition"], record: StoredNasRecordV1, storedSha256: string): RecordPutResult {
-  return { disposition, recordId: record.record.record_id, payloadSha256: record.payload_sha256, storedSha256, receivedAt: record.record.received_at };
+async function readBoundedBytes(targetPath: string): Promise<Buffer> {
+  try {
+    const bytes = await readFile(targetPath);
+    if (bytes.byteLength === 0 || bytes.byteLength > MAX_STORED_BYTES) {
+      throw new StorageError("STORAGE_CORRUPT");
+    }
+    return bytes;
+  } catch (error) {
+    throw storageError(error);
+  }
 }
 
-function inside(root: string, candidate: string): boolean {
-  const path = relative(root, candidate);
-  return path !== "" && !path.startsWith("..") && !path.includes("..\\") && !path.includes("../");
+function isCompleteRecordRow(value: unknown): value is RecordRow {
+  if (!plainObject(value) || !isGeumcheonRecordId(value.record_id)) return false;
+  return RECORD_HEADERS.every((key) => typeof value[key] === "string");
+}
+
+function validateAdminAction(value: unknown): asserts value is NasAdminActionV1 {
+  if (!plainObject(value)) throw new Error("ADMIN_ACTION_INVALID");
+  if (
+    value.schema_version !== 1
+    || value.event_id !== GEUMCHEON_NAS_EVENT_ID
+    || typeof value.action_id !== "string"
+    || !ACTION_ID.test(value.action_id)
+    || typeof value.created_at !== "string"
+    || Number.isNaN(Date.parse(value.created_at))
+    || typeof value.admin_name !== "string"
+    || value.admin_name.trim().length === 0
+    || !validSession(value.session)
+  ) {
+    throw new Error("ADMIN_ACTION_INVALID");
+  }
+
+  if (value.action_type === "reset_session") {
+    exactKeys(value, [
+      "schema_version",
+      "event_id",
+      "session",
+      "action_id",
+      "created_at",
+      "admin_name",
+      "action_type",
+    ], "ADMIN_ACTION_INVALID");
+    return;
+  }
+
+  if (!isGeumcheonRecordId(value.target_record_id)) {
+    throw new Error("ADMIN_TARGET_INVALID");
+  }
+  if (value.action_type === "hide") {
+    exactKeys(value, [
+      "schema_version",
+      "event_id",
+      "session",
+      "action_id",
+      "created_at",
+      "admin_name",
+      "action_type",
+      "target_record_id",
+      "hidden",
+    ], "ADMIN_ACTION_INVALID");
+    if (typeof value.hidden !== "boolean") throw new Error("ADMIN_ACTION_INVALID");
+    return;
+  }
+
+  if (value.action_type === "edit") {
+    exactKeys(value, [
+      "schema_version",
+      "event_id",
+      "session",
+      "action_id",
+      "created_at",
+      "admin_name",
+      "action_type",
+      "target_record_id",
+      "changes",
+    ], "ADMIN_ACTION_INVALID");
+    if (!plainObject(value.changes) || Object.keys(value.changes).length === 0) {
+      throw new Error("ADMIN_CHANGES_INVALID");
+    }
+    for (const [key, changed] of Object.entries(value.changes)) {
+      if (key === "record_id" || !RECORD_HEADERS.includes(key as (typeof RECORD_HEADERS)[number])) {
+        throw new Error("ADMIN_EDIT_FIELD_FORBIDDEN");
+      }
+      if (typeof changed !== "string") throw new Error("ADMIN_CHANGES_INVALID");
+    }
+    return;
+  }
+
+  throw new Error("ADMIN_ACTION_INVALID");
+}
+
+function validSession(value: unknown): value is NasSessionV1 {
+  if (!plainObject(value) || typeof value.session_id !== "string" || value.session_id === "") {
+    return false;
+  }
+  if (value.kind === "practice") {
+    return exactKeysBoolean(value, ["kind", "session_id"]);
+  }
+  return value.kind === "official"
+    && Number.isInteger(value.day_no)
+    && Number.isInteger(value.round_no)
+    && exactKeysBoolean(value, ["kind", "session_id", "day_no", "round_no"]);
+}
+
+function sameSession(left: NasSessionV1, right: NasSessionV1): boolean {
+  return left.kind === right.kind
+    && left.session_id === right.session_id
+    && (left.kind === "practice"
+      || right.kind === "official"
+        && left.day_no === right.day_no
+        && left.round_no === right.round_no);
+}
+
+function exactKeys(value: Record<string, unknown>, keys: readonly string[], code: string): void {
+  if (!exactKeysBoolean(value, keys)) throw new Error(code);
+}
+
+function exactKeysBoolean(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length
+    && actual.every((key, index) => key === expected[index]);
+}
+
+function plainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+function inside(root: string, target: string): boolean {
+  const difference = relative(root, target);
+  return difference === "" || (!difference.startsWith("..") && !isAbsolute(difference));
 }
 
 function sha256(bytes: Uint8Array): string {
@@ -142,58 +458,31 @@ function sha256(bytes: Uint8Array): string {
 }
 
 function isAlreadyExists(error: unknown): error is NodeJS.ErrnoException {
-  return typeof error === "object" && error != null && (error as NodeJS.ErrnoException).code === "EEXIST";
-}
-
-function isFilesystemError(error: unknown): error is NodeJS.ErrnoException {
-  return typeof error === "object" && error != null && /^E[A-Z0-9_]+$/.test(String((error as NodeJS.ErrnoException).code ?? ""));
+  return typeof error === "object"
+    && error != null
+    && (error as NodeJS.ErrnoException).code === "EEXIST";
 }
 
 function isMissingPath(error: unknown): error is NodeJS.ErrnoException {
-  return typeof error === "object" && error != null && (error as NodeJS.ErrnoException).code === "ENOENT";
+  return typeof error === "object"
+    && error != null
+    && (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function isFilesystemError(error: unknown): error is NodeJS.ErrnoException {
+  return typeof error === "object"
+    && error != null
+    && /^E[A-Z0-9_]+$/.test(String((error as NodeJS.ErrnoException).code ?? ""));
 }
 
 function storageError(error: unknown): Error {
-  if (error instanceof StorageError || error instanceof Error && /^(?:RECORD_ID_INVALID|IDEMPOTENCY_CONFLICT)$/.test(error.message)) return error;
-  return isFilesystemError(error) ? new StorageError("STORAGE_UNAVAILABLE") : error instanceof Error ? error : new StorageError("STORAGE_UNAVAILABLE");
-}
-
-function isCompleteStoredRecord(value: unknown, expected: StoredNasRecordV1): value is Pick<StoredNasRecordV1, "payload_sha256" | "record"> {
-  if (value == null || typeof value !== "object" || Array.isArray(value)) return false;
-  const candidate = value as Record<string, unknown>;
-  if (!exactKeys(candidate, ["schema_version", "event_id", "session", "payload_sha256", "record"]) || candidate.schema_version !== 1 || candidate.event_id !== expected.event_id) return false;
-  if (!sha(candidate.payload_sha256) || !sameSession(candidate.session, expected.session)) return false;
-  const record = candidate.record;
-  if (!plainObject(record) || !exactKeys(record, ["record_id", "created_at", "completed_at", "participant", "participant_key", "status", "stages", "app_version", "is_test", "is_debug", "debug_mode_type", "interruption_action", "authenticated_device_id", "total_typing_units", "total_user_time_ms", "effective_cpm_numerator", "effective_cpm_denominator", "display_cpm", "received_at"], ["interruption_action"])) return false;
-  if (record.record_id !== expected.record.record_id || !isoFields(record, ["created_at", "completed_at", "received_at"]) || !sha(record.participant_key) || typeof record.app_version !== "string" || typeof record.authenticated_device_id !== "string") return false;
-  if (typeof record.is_test !== "boolean" || typeof record.is_debug !== "boolean" || !["", "normal_typing_debug", "ai_challenge_debug"].includes(String(record.debug_mode_type))) return false;
-  if (!Number.isSafeInteger(record.total_typing_units) || !Number.isSafeInteger(record.total_user_time_ms) || !Number.isSafeInteger(record.effective_cpm_numerator) || !Number.isSafeInteger(record.effective_cpm_denominator) || !Number.isSafeInteger(record.display_cpm)) return false;
-  if (!plainObject(record.participant) || !exactKeys(record.participant, ["name", "phone", "phone_masked", "birthdate", "birthdate_masked", "privacy_agreed", "privacy_agreed_at"]) || record.participant.privacy_agreed !== true || !isoFields(record.participant, ["privacy_agreed_at"])) return false;
-  return Array.isArray(record.stages) && record.stages.length >= 1 && record.stages.length <= 3 && record.stages.every(isStoredStage);
-}
-
-function isStoredStage(value: unknown): boolean {
-  return plainObject(value) && exactKeys(value, ["stage_no", "text_id", "catalog_version", "target_text", "typed_text", "user_time_ms", "ai_cpm", "result", "typing_units"])
-    && Number.isSafeInteger(value.stage_no) && typeof value.text_id === "string" && typeof value.catalog_version === "string" && typeof value.target_text === "string" && typeof value.typed_text === "string"
-    && Number.isSafeInteger(value.user_time_ms) && Number.isSafeInteger(value.ai_cpm) && Number.isSafeInteger(value.typing_units) && ["USER_WIN", "AI_WIN", "INTERRUPTED"].includes(String(value.result));
-}
-
-function sameSession(value: unknown, expected: StoredNasRecordV1["session"]): boolean {
-  return plainObject(value) && canonicalStringify(value) === canonicalStringify(expected);
-}
-
-function plainObject(value: unknown): value is Record<string, unknown> {
-  return value != null && typeof value === "object" && !Array.isArray(value) && (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
-}
-
-function exactKeys(value: Record<string, unknown>, keys: readonly string[], optional: readonly string[] = []): boolean {
-  return Object.keys(value).every((key) => keys.includes(key)) && keys.every((key) => optional.includes(key) || key in value);
-}
-
-function isoFields(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  return keys.every((key) => typeof value[key] === "string" && Number.isFinite(Date.parse(value[key] as string)));
-}
-
-function sha(value: unknown): boolean {
-  return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+  if (
+    error instanceof StorageError
+    || error instanceof Error
+      && /^(?:RECORD_ID_INVALID|IDEMPOTENCY_CONFLICT|ADMIN_[A-Z_]+)$/.test(error.message)
+  ) {
+    return error;
+  }
+  if (isFilesystemError(error)) return new StorageError("STORAGE_UNAVAILABLE");
+  return error instanceof Error ? error : new StorageError("STORAGE_UNAVAILABLE");
 }

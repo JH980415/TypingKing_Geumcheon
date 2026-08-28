@@ -3,13 +3,12 @@ import type { DeviceProfile, EventProfile, EventVariantPolicy } from "../events/
 export type AppMode = "game" | "leaderboard";
 export type { DeviceProfile, EventProfile, EventProfileId, EventVariantPolicy, SessionKind } from "../events/types";
 export type {
-  NasLeaderboardEntryV1,
+  NasAdminActionV1,
   NasLeaderboardSnapshotV1,
   NasRecordAckV1,
   NasRecordEnvelopeV1,
+  NasRecordsSnapshotV1,
   NasSessionV1,
-  NasStageAttemptV1,
-  NasVisibilityActionV1,
 } from "../nas/protocol";
 export type AppVariant =
   | "typing"
@@ -261,7 +260,7 @@ export type SaveRecordInput = {
   debug_mode_type?: "" | "normal_typing_debug" | "ai_challenge_debug";
   memo?: string;
   interruption?: {
-    action: "home" | "retry";
+    action: "home" | "retry" | "exit";
     resultStage: number;
     participantProgressPercent: number;
     stageCharCounts: [number, number, number];

@@ -1,5 +1,7 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply } from "fastify";
 
+import type { SessionKind } from "../../../shared/events/types.js";
+import type { NasAdminActionV1, NasSessionV1 } from "../../../shared/nas/protocol.js";
 import { AuthenticationError, AuxiliaryIpLimiter, TokenBucketLimiter, authenticateRequest, type TokenManifestV1 } from "./auth.js";
 import type { RecordValidationConfigV1 } from "./recordSchema.js";
 import { validateAndNormalizeRecord } from "./recordSchema.js";
@@ -27,13 +29,13 @@ export function buildNasApp(dependencies: BuildNasAppDependencies): FastifyInsta
     schema: {
       body: {
         type: "object",
-        required: ["schema_version", "event_id", "session", "record"],
+          required: ["schema_version", "event_id", "session", "row"],
         additionalProperties: false,
         properties: {
           schema_version: { type: "integer" },
           event_id: { type: "string" },
           session: { type: "object" },
-          record: { type: "object" },
+            row: { type: "object" },
         },
       },
     },
@@ -48,10 +50,15 @@ export function buildNasApp(dependencies: BuildNasAppDependencies): FastifyInsta
       reply.header("Retry-After", String(Math.max(1, Math.ceil(limited.retryAfterMs / 1000))));
       throw new Error("RATE_LIMITED");
     }
-    const record = validateAndNormalizeRecord(request.body, principal, dependencies.config, new Date(now()).toISOString());
+      const record = validateAndNormalizeRecord(
+        request.body,
+        principal,
+        dependencies.config,
+        new Date(now()).toISOString(),
+      );
     const idempotencyKey = request.headers["idempotency-key"];
     if (typeof idempotencyKey !== "string") throw new Error("IDEMPOTENCY_KEY_REQUIRED");
-    if (idempotencyKey !== record.record.record_id) throw new Error("IDEMPOTENCY_KEY_MISMATCH");
+      if (idempotencyKey !== record.row.record_id) throw new Error("IDEMPOTENCY_KEY_MISMATCH");
     const result = await store.put(record);
     return reply.code(result.disposition === "stored" ? 201 : 200).send({
       schema_version: 1,
@@ -60,6 +67,101 @@ export function buildNasApp(dependencies: BuildNasAppDependencies): FastifyInsta
       payload_sha256: result.payloadSha256,
       stored_sha256: result.storedSha256,
       received_at: result.receivedAt,
+    });
+  });
+
+  app.get("/api/v1/records", async (request, reply) => {
+    const principal = authenticateRequest(
+      { ...request.headers, requiredRole: "operator" },
+      dependencies.config.tokenManifest,
+      now(),
+    );
+    applyRateLimit(
+      tokenLimiter,
+      ipLimiter,
+      principal.tokenId,
+      request.ip || "unknown",
+      reply,
+    );
+    const session = sessionFromQuery(
+      request.query,
+      dependencies.config,
+      principal.allowedSessions,
+    );
+    const rows = await store.listEffective(session);
+    return reply.send({
+      schema_version: 1,
+      event_id: dependencies.config.eventId,
+      session,
+      generated_at: new Date(now()).toISOString(),
+      rows,
+    });
+  });
+
+  app.post("/api/v1/admin/actions", async (request, reply) => {
+    const contentType = request.headers["content-type"];
+    if (typeof contentType !== "string" || !/^application\/json(?:;|$)/i.test(contentType)) {
+      throw new Error("CONTENT_TYPE_REQUIRED");
+    }
+    const principal = authenticateRequest(
+      { ...request.headers, requiredRole: "operator" },
+      dependencies.config.tokenManifest,
+      now(),
+    );
+    applyRateLimit(
+      tokenLimiter,
+      ipLimiter,
+      principal.tokenId,
+      request.ip || "unknown",
+      reply,
+    );
+
+    const action = request.body as NasAdminActionV1;
+    assertConfiguredSession(
+      action?.session,
+      dependencies.config,
+      principal.allowedSessions,
+    );
+    const result = await store.putAdminAction(action);
+    return reply.code(result.disposition === "stored" ? 201 : 200).send({
+      schema_version: 1,
+      disposition: result.disposition,
+      action_id: result.actionId,
+      received_at: result.receivedAt,
+    });
+  });
+
+
+  app.get("/api/v1/ready", async (request, reply) => {
+    const principal = authenticateRequest(
+      request.headers,
+      dependencies.config.tokenManifest,
+      now(),
+    );
+    applyRateLimit(
+      tokenLimiter,
+      ipLimiter,
+      principal.tokenId,
+      request.ip || "unknown",
+      reply,
+    );
+    const session = sessionFromQuery(
+      request.query,
+      dependencies.config,
+      principal.allowedSessions,
+    );
+    const configured = dependencies.config.participantHmacKey.byteLength >= 32
+      && dependencies.config.stageTextCatalog.length > 0
+      && Array.isArray(dependencies.config.tokenManifest.tokens);
+    const ready = configured && await (dependencies.readiness ?? (() => store.ready()))();
+    if (!ready) throw new Error("STORAGE_UNAVAILABLE");
+    return reply.send({
+      schema_version: 1,
+      status: "ready",
+      event_id: principal.eventId,
+      device_id: principal.deviceId,
+      role: principal.role,
+      session,
     });
   });
 
@@ -77,6 +179,97 @@ export function buildNasApp(dependencies: BuildNasAppDependencies): FastifyInsta
     reply.code(statusFor(handled, code)).send({ schema_version: 1, code, message: code });
   });
   return app;
+}
+
+function applyRateLimit(
+  tokenLimiter: TokenBucketLimiter,
+  ipLimiter: AuxiliaryIpLimiter,
+  tokenId: string,
+  ip: string,
+  reply: FastifyReply,
+): void {
+  const tokenRate = tokenLimiter.consume(tokenId, Date.now());
+  const ipRate = ipLimiter.consume(ip, Date.now());
+  const limited = !tokenRate.allowed ? tokenRate : !ipRate.allowed ? ipRate : undefined;
+  if (limited == null) return;
+  reply.header("Retry-After", String(Math.max(1, Math.ceil(limited.retryAfterMs / 1000))));
+  throw new Error("RATE_LIMITED");
+}
+
+function sessionFromQuery(
+  value: unknown,
+  config: AppConfig,
+  allowedSessions: SessionKind[],
+): NasSessionV1 {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("SESSION_INVALID");
+  }
+  const query = value as Record<string, unknown>;
+  const kind = query.session_kind;
+  let session: NasSessionV1;
+  if (kind === "practice") {
+    if (
+      typeof query.session_id !== "string"
+      || !exactQueryKeys(query, ["session_kind", "session_id"])
+    ) {
+      throw new Error("SESSION_INVALID");
+    }
+    session = { kind, session_id: query.session_id };
+  } else if (kind === "official") {
+    const dayNo = Number(query.day_no);
+    const roundNo = Number(query.round_no);
+    if (
+      typeof query.session_id !== "string"
+      || !Number.isInteger(dayNo)
+      || !Number.isInteger(roundNo)
+      || !exactQueryKeys(query, ["session_kind", "session_id", "day_no", "round_no"])
+    ) {
+      throw new Error("SESSION_INVALID");
+    }
+    session = {
+      kind,
+      session_id: query.session_id,
+      day_no: dayNo,
+      round_no: roundNo,
+    };
+  } else {
+    throw new Error("SESSION_INVALID");
+  }
+  assertConfiguredSession(session, config, allowedSessions);
+  return session;
+}
+
+function assertConfiguredSession(
+  value: unknown,
+  config: AppConfig,
+  allowedSessions: SessionKind[],
+): asserts value is NasSessionV1 {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("SESSION_INVALID");
+  }
+  const session = value as Record<string, unknown>;
+  if (session.kind !== "official" && session.kind !== "practice") {
+    throw new Error("SESSION_INVALID");
+  }
+  if (!allowedSessions.includes(session.kind)) throw new Error("SESSION_SCOPE");
+  if (session.kind === "practice") {
+    if (session.session_id !== config.allowedSessions.practice.sessionId) {
+      throw new Error("SESSION_INVALID");
+    }
+    return;
+  }
+  const matches = config.allowedSessions.official.some((configured) =>
+    configured.sessionId === session.session_id
+    && configured.dayNo === session.day_no
+    && configured.roundNo === session.round_no);
+  if (!matches) throw new Error("SESSION_INVALID");
+}
+
+function exactQueryKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return actual.length === wanted.length
+    && actual.every((key, index) => key === wanted[index]);
 }
 
 function errorCode(error: Error & { code?: string; validation?: unknown; statusCode?: number }): string {

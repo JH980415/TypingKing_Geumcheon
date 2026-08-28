@@ -26,6 +26,7 @@ import {
   STAGE_TEXT_ROTATION_STORAGE_KEY
 } from "../../../shared/utils/stageTextRotation";
 import { mergeRuntimeConfigWithEventProfile } from "../../../shared/events/bootstrapData";
+import { resolveEventAssetUrl } from "../../../shared/events/types";
 import { AIChallengeGame } from "./AIChallengeGame";
 import { StageTextAdmin } from "./StageTextAdmin";
 
@@ -36,6 +37,13 @@ type Props = {
 type GameMode = "normal" | "ai_challenge";
 type DebugModeType = "" | "normal_typing_debug" | "ai_challenge_debug";
 type GameControlAction = "home" | "retry";
+
+export function resolveTypingScreenBackground(
+  screen: "start" | "game" | "ai" | "result",
+  assets: BootstrapData["eventProfile"]["assets"]
+): string {
+  return screen === "start" ? assets.startBackground : assets.playBackground;
+}
 
 type Participant = {
   name: string;
@@ -297,15 +305,10 @@ export function TypingGameApp({ bootstrap }: Props) {
   }
 
   function profileAsset(path: string) {
-    const relativePath = path.replace(/^assets\//, "");
-    if (bootstrap.eventProfile.profileId === "geumcheon-2026" &&
-      (path === bootstrap.eventProfile.assets.eventTitle || path === bootstrap.eventProfile.assets.pageBackground)) {
-      return `${assetBaseUrl}/../events/${bootstrap.eventProfile.profileId}/assets/${relativePath}`;
-    }
-    return asset(relativePath);
+    return resolveEventAssetUrl(assetBaseUrl, bootstrap.eventProfile, path);
   }
 
-  const pageBackground = profileAsset(bootstrap.eventProfile.assets.pageBackground);
+  const screenBackground = profileAsset(resolveTypingScreenBackground(screen, bootstrap.eventProfile.assets));
 
   function updateDigits(next: string, setter: (value: string) => void, max: number) {
     if (/\D/.test(next)) setFormMessage("휴대폰번호는 숫자만 입력할 수 있습니다.");
@@ -686,7 +689,7 @@ export function TypingGameApp({ bootstrap }: Props) {
 
   if (screen === "result" && result) {
     return (
-      <main className="app game-app" style={{ backgroundImage: `url("${pageBackground}")` }}>
+      <main className="app game-app" style={{ backgroundImage: `url("${screenBackground}")` }}>
         <BrandHeader bootstrap={bootstrap} />
         <ResultScreen
           result={result}
@@ -701,7 +704,7 @@ export function TypingGameApp({ bootstrap }: Props) {
 
   if (screen === "game" && stageTexts) {
     return (
-      <main className="app game-app" style={{ backgroundImage: `url("${pageBackground}")` }}>
+      <main className="app game-app" style={{ backgroundImage: `url("${screenBackground}")` }}>
         <BrandHeader bootstrap={bootstrap} />
         <section className="game-layout">
           <div className="game-stage">
@@ -789,7 +792,7 @@ export function TypingGameApp({ bootstrap }: Props) {
       privacyAgreedAt
     };
     return (
-      <main className="app game-app" style={{ backgroundImage: `url("${pageBackground}")` }}>
+      <main className="app game-app" style={{ backgroundImage: `url("${screenBackground}")` }}>
         <BrandHeader bootstrap={bootstrap} />
         <AIChallengeGame
           key={aiRunId}
@@ -808,7 +811,7 @@ export function TypingGameApp({ bootstrap }: Props) {
   }
 
   return (
-    <main className="app game-app" style={{ backgroundImage: `url("${pageBackground}")` }}>
+    <main className="app game-app" style={{ backgroundImage: `url("${screenBackground}")` }}>
       <BrandHeader bootstrap={bootstrap} />
       <section className="start-grid" key={startFormKey}>
         <div className="hero-panel">
@@ -819,13 +822,25 @@ export function TypingGameApp({ bootstrap }: Props) {
           {gameMode === "ai_challenge" ? (
             <>
               <FallbackAssetImage
-                src={asset("ai_challenge/ai_title_oneline_trimmed.png")}
+                src={bootstrap.eventProfile.profileId === "geumcheon-2026"
+                  ? profileAsset(bootstrap.eventProfile.assets.eventTitle)
+                  : asset("ai_challenge/ai_title_oneline_trimmed.png")}
                 fallbackSrc={asset("ai_challenge/ai_challenge_title.png")}
                 alt={bootstrap.variantPolicy.displayName}
-                className="mode-title-image start-ai-title-image ai-title-image"
+                className={bootstrap.eventProfile.profileId === "geumcheon-2026"
+                  ? "mode-title-image start-ai-title-image ai-title-image geumcheon-main-title-image"
+                  : "mode-title-image start-ai-title-image ai-title-image"}
                 fallback={<h1>{bootstrap.variantPolicy.displayName}</h1>}
               />
               <p className="hero-copy">3개의 스테이지에서 가상 AI 챌린저보다 먼저 정확하게 입력하세요.</p>
+              {bootstrap.eventProfile.profileId === "geumcheon-2026" && (
+                <FallbackAssetImage
+                  src={profileAsset(bootstrap.eventProfile.assets.aiBossMain)}
+                  fallbackSrc={profileAsset(bootstrap.eventProfile.assets.aiBossTyping)}
+                  alt="금나래 AI 타자로봇"
+                  className="geumcheon-main-robot"
+                />
+              )}
             </>
           ) : (
             <>

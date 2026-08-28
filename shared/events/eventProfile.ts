@@ -115,8 +115,15 @@ export function validateEventProfile(value: unknown): EventProfile {
     if (privacy[key] !== null && typeof privacy[key] !== "string") throw new Error(`event profile.privacy.${key} must be a string or null`);
   }
   const assets = requireRecord(record.assets, "event profile.assets");
-  requireExactKeys(assets, ["eventTitle", "pageBackground", "aiBossTyping", "aiBossVictory", "aiBossDefeat", "vsBadge", "stageBadges"], "event profile.assets");
-  if (!Array.isArray(assets.stageBadges) || assets.stageBadges.length !== 3) throw new Error("event profile.assets.stageBadges must contain three paths");
+  const resolvedAssets: Record<string, unknown> = {
+    ...assets,
+    startBackground: assets.startBackground ?? assets.pageBackground,
+    playBackground: assets.playBackground ?? assets.pageBackground,
+    leaderboardBackground: assets.leaderboardBackground ?? assets.pageBackground,
+    aiBossMain: assets.aiBossMain ?? assets.aiBossTyping
+  };
+  requireExactKeys(resolvedAssets, ["eventTitle", "pageBackground", "startBackground", "playBackground", "leaderboardBackground", "aiBossMain", "aiBossTyping", "aiBossVictory", "aiBossDefeat", "vsBadge", "stageBadges"], "event profile.assets");
+  if (!Array.isArray(resolvedAssets.stageBadges) || resolvedAssets.stageBadges.length !== 3) throw new Error("event profile.assets.stageBadges must contain three paths");
   const variants = requireRecord(record.variants, "event profile.variants");
   requireExactKeys(variants, APP_VARIANTS, "event profile.variants");
   const aiChallenge = requireRecord(record.aiChallenge, "event profile.aiChallenge");
@@ -135,13 +142,17 @@ export function validateEventProfile(value: unknown): EventProfile {
     privacy: { noticeVersion: privacy.noticeVersion as string | null, retentionExpiresAt: privacy.retentionExpiresAt as string | null },
     theme: validateTheme(record.theme),
     assets: {
-      eventTitle: requireString(assets.eventTitle, "event profile.assets.eventTitle"),
-      pageBackground: requireString(assets.pageBackground, "event profile.assets.pageBackground"),
-      aiBossTyping: requireString(assets.aiBossTyping, "event profile.assets.aiBossTyping"),
-      aiBossVictory: requireString(assets.aiBossVictory, "event profile.assets.aiBossVictory"),
-      aiBossDefeat: requireString(assets.aiBossDefeat, "event profile.assets.aiBossDefeat"),
-      vsBadge: requireString(assets.vsBadge, "event profile.assets.vsBadge"),
-      stageBadges: assets.stageBadges.map((badge, index) => requireString(badge, `event profile.assets.stageBadges.${index}`)) as [string, string, string]
+      eventTitle: requireString(resolvedAssets.eventTitle, "event profile.assets.eventTitle"),
+      pageBackground: requireString(resolvedAssets.pageBackground, "event profile.assets.pageBackground"),
+      startBackground: requireString(resolvedAssets.startBackground, "event profile.assets.startBackground"),
+      playBackground: requireString(resolvedAssets.playBackground, "event profile.assets.playBackground"),
+      leaderboardBackground: requireString(resolvedAssets.leaderboardBackground, "event profile.assets.leaderboardBackground"),
+      aiBossMain: requireString(resolvedAssets.aiBossMain, "event profile.assets.aiBossMain"),
+      aiBossTyping: requireString(resolvedAssets.aiBossTyping, "event profile.assets.aiBossTyping"),
+      aiBossVictory: requireString(resolvedAssets.aiBossVictory, "event profile.assets.aiBossVictory"),
+      aiBossDefeat: requireString(resolvedAssets.aiBossDefeat, "event profile.assets.aiBossDefeat"),
+      vsBadge: requireString(resolvedAssets.vsBadge, "event profile.assets.vsBadge"),
+      stageBadges: resolvedAssets.stageBadges.map((badge, index) => requireString(badge, `event profile.assets.stageBadges.${index}`)) as [string, string, string]
     },
     variants: Object.fromEntries(APP_VARIANTS.map((variant) => [variant, validateVariant(variants[variant], variant)])) as Record<AppVariant, EventVariantPolicy>,
     aiChallenge: {

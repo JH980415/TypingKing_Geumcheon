@@ -1,5 +1,10 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 import type { AppConfig, DrawStageTextsInput, RecordRow, SaveRecordInput, StageText } from "../shared/types";
+
+const ACTIVE_ATTEMPT_CHECKPOINT_REQUEST_CHANNEL =
+  "records:requestActiveAttemptCheckpoint";
+const ACTIVE_ATTEMPT_CHECKPOINT_ACK_CHANNEL =
+  "records:activeAttemptCheckpointReady";
 
 contextBridge.exposeInMainWorld("typingKing", {
   getBootstrap: () => ipcRenderer.invoke("app:getBootstrap"),
@@ -15,6 +20,26 @@ contextBridge.exposeInMainWorld("typingKing", {
   softDeleteStageText: (id: string) => ipcRenderer.invoke("stage:softDelete", id),
   hardDeleteStageText: (id: string) => ipcRenderer.invoke("stage:hardDelete", id),
   publishStageTextsToOneDrive: () => ipcRenderer.invoke("stage:publishShared"),
+  onActiveAttemptCheckpointRequested: (handler: (requestId: string) => Promise<void>) => {
+    const listener = (_event: IpcRendererEvent, requestId: unknown) => {
+      if (
+        typeof requestId !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)
+      ) {
+        return;
+      }
+      void Promise.resolve()
+        .then(() => handler(requestId))
+        .then(
+          () => ipcRenderer.send(ACTIVE_ATTEMPT_CHECKPOINT_ACK_CHANNEL, requestId, true),
+          () => ipcRenderer.send(ACTIVE_ATTEMPT_CHECKPOINT_ACK_CHANNEL, requestId, false)
+        );
+    };
+    ipcRenderer.on(ACTIVE_ATTEMPT_CHECKPOINT_REQUEST_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(ACTIVE_ATTEMPT_CHECKPOINT_REQUEST_CHANNEL, listener);
+  },
+  checkpointActiveAttempt: (input: SaveRecordInput, closeRequestId?: string) =>
+    ipcRenderer.invoke("records:checkpointActiveAttempt", input, closeRequestId),
   saveRecord: (input: SaveRecordInput) => ipcRenderer.invoke("records:save", input),
   checkGameStartReadiness: (gameMode: "normal" | "ai_challenge") =>
     ipcRenderer.invoke("records:checkStartReady", gameMode),

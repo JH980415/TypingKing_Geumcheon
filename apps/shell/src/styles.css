@@ -3301,10 +3301,42 @@ html[data-event-profile="geumcheon-2026"] .challenge-result-panel,
 html[data-event-profile="geumcheon-2026"] .leaderboard-board,
 html[data-event-profile="geumcheon-2026"] .ranking-table,
 html[data-event-profile="geumcheon-2026"] .modal {
-  background: var(--white);
+  background: rgba(255, 255, 255, 0.92);
   border-color: var(--geumcheon-cyan);
   color: var(--deep-purple);
   box-shadow: 0 10px 0 var(--geumcheon-purple);
+}
+
+html[data-event-profile="geumcheon-2026"] .geumcheon-main-title-image {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 620px);
+  max-height: clamp(92px, 14vh, 150px);
+  margin: 0 auto 8px;
+  object-fit: contain;
+}
+
+html[data-event-profile="geumcheon-2026"] .geumcheon-main-robot {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: min(100%, 430px);
+  height: clamp(220px, 34vh, 360px);
+  margin: clamp(8px, 2vh, 22px) auto 0;
+  object-fit: contain;
+  object-position: center;
+}
+
+@media (max-width: 1400px), (max-height: 800px) {
+  html[data-event-profile="geumcheon-2026"] .geumcheon-main-title-image {
+    max-height: 95px;
+  }
+
+  html[data-event-profile="geumcheon-2026"] .geumcheon-main-robot {
+    width: min(100%, 300px);
+    height: clamp(150px, 28vh, 220px);
+    margin-top: 4px;
+  }
 }
 
 html[data-event-profile="geumcheon-2026"] .eyebrow,
@@ -3381,5 +3413,119 @@ html[data-event-profile="geumcheon-2026"] .challenge-top {
     min-height: 38px;
     gap: 8px;
     padding: 6px 10px;
+  }
+}
+
+/* Geumcheon round-1 visual review polish. Keep these overrides event-scoped. */
+html[data-event-profile="geumcheon-2026"] .leaderboard-header .eyebrow {
+  color: var(--yellow);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+
+html[data-event-profile="geumcheon-2026"] .challenge-guide {
+  width: fit-content;
+  max-width: calc(100% - 24px);
+  margin: 8px auto 10px;
+  padding: 6px 14px 7px;
+  border: 1px solid rgba(0, 179, 236, 0.72);
+  border-radius: 999px;
+  background: rgba(31, 17, 82, 0.84);
+  color: var(--white);
+  font-size: clamp(14px, 1.15vw, 18px);
+  line-height: 1.25;
+  text-align: center;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+  box-shadow: 0 4px 14px rgba(14, 6, 48, 0.24);
+}
+
+html[data-event-profile="geumcheon-2026"] .system-notice {
+  top: 14px;
+  right: 18px;
+  bottom: auto;
+  max-width: min(440px, 42vw);
+  padding: 10px 14px;
+  pointer-events: none;
+  text-align: center;
+}
+
+html[data-event-profile="geumcheon-2026"] .leader-actions {
+  flex-wrap: nowrap;
+}
+
+html[data-event-profile="geumcheon-2026"] .leader-actions button {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+@media (min-width: 1401px) and (min-height: 801px) {
+  html[data-event-profile="geumcheon-2026"] .geumcheon-main-title-image {
+    max-height: 120px;
+  }
+
+  html[data-event-profile="geumcheon-2026"] .geumcheon-main-robot {
+    width: min(100%, 360px);
+    height: min(28vh, 280px);
+    margin-top: 4px;
+  }
+
+  html[data-event-profile="geumcheon-2026"] .hero-guide-card {
+    margin-top: 8px;
+    padding: 12px 18px;
+  }
+
+  html[data-event-profile="geumcheon-2026"] .hero-guide-card h2 {
+    margin-bottom: 8px;
+    font-size: clamp(20px, 1.35vw, 24px);
+  }
+
+  html[data-event-profile="geumcheon-2026"] .hero-guide-list {
+    gap: 4px;
+  }
+
+  html[data-event-profile="geumcheon-2026"] .hero-guide-list li {
+    font-size: clamp(15px, 1vw, 18px);
+    line-height: 1.22;
+  }
+}
+
+@media (max-width: 1366px), (max-height: 768px) {
+  html[data-event-profile="geumcheon-2026"] .system-notice {
+    top: 8px;
+    right: 10px;
+    max-width: min(390px, 48vw);
+    padding: 7px 10px;
+    font-size: 13px;
+  }
+
+  html[data-event-profile="geumcheon-2026"] .practice-mode-note {
+    margin-bottom: 4px;
+    padding: 5px 10px;
+    font-size: 13px;
+    line-height: 1.2;
+  }
+
+  html[data-event-profile="geumcheon-2026"] .practice-mode-note small {
+    font-size: 11px;
+    line-height: 1.2;
+  }
+
+  html[data-event-profile="geumcheon-2026"] .entry-panel > .button-row {
+    gap: 8px;
+    flex-wrap: nowrap;
+  }
+
+  html[data-event-profile="geumcheon-2026"] .entry-panel > .button-row button {
+    min-width: 0;
+    padding-inline: 14px;
+    white-space: nowrap;
+  }
+
+  html[data-event-profile="geumcheon-2026"] .leader-actions {
+    gap: 6px;
+  }
+
+  html[data-event-profile="geumcheon-2026"] .leader-actions button {
+    padding-inline: 10px;
+    font-size: 14px;
   }
 }

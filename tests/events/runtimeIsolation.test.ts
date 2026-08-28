@@ -6,6 +6,7 @@ import { loadEventProfile } from "../../shared/events/eventProfile";
 import {
   resolveDeviceRuntimeRoot,
   resolveLaunchPolicy,
+  shouldShowStartupErrorDialog,
   resolveStartupProfile,
   type StartupProfile
 } from "../../electron/startupProfile";
@@ -119,4 +120,86 @@ test("rejects a leaderboard device launching a player variant", () => {
 test("returns the validated device role for allowed Geumcheon launches", () => {
   assert.deepEqual(resolveLaunchPolicy(geumcheonStartup("player"), "ai"), { pcRole: "player" });
   assert.deepEqual(resolveLaunchPolicy(geumcheonStartup("leaderboard"), "ai-leaderboard"), { pcRole: "leaderboard" });
+});
+
+test("suppresses startup error dialogs only for the explicit unpackaged approved UI E2E profile", () => {
+  const showDialog = shouldShowStartupErrorDialog as (
+    environment: Record<string, string | undefined>,
+    isPackaged: boolean
+  ) => boolean;
+  const approvedUiEnvironment = {
+    TYPINGKING_E2E_PROFILE: "approved-ui",
+    TYPINGKING_E2E_SUPPRESS_STARTUP_DIALOGS: "1"
+  };
+
+  assert.equal(showDialog({}, false), true);
+  assert.equal(showDialog({ TYPINGKING_E2E_SUPPRESS_STARTUP_DIALOGS: "1" }, false), true);
+  assert.equal(showDialog(approvedUiEnvironment, false), false);
+  assert.equal(showDialog(approvedUiEnvironment, true), true);
+});
+
+test("hides windows only for the explicit unpackaged approved UI E2E profile", () => {
+  const shouldHideWindow = (
+    startupProfileModule as typeof startupProfileModule & {
+      shouldHideE2eWindow?: (
+        environment: Record<string, string | undefined>,
+        isPackaged: boolean
+      ) => boolean;
+    }
+  ).shouldHideE2eWindow;
+  const approvedUiEnvironment = {
+    TYPINGKING_E2E_PROFILE: "approved-ui",
+    TYPINGKING_E2E_HIDE_WINDOW: "1"
+  };
+
+  assert.equal(typeof shouldHideWindow, "function");
+  assert.equal(shouldHideWindow?.({}, false), false);
+  assert.equal(shouldHideWindow?.({ TYPINGKING_E2E_HIDE_WINDOW: "1" }, false), false);
+  assert.equal(shouldHideWindow?.(approvedUiEnvironment, false), true);
+  assert.equal(shouldHideWindow?.(approvedUiEnvironment, true), false);
+});
+
+test("accepts an extra CA only for the explicit unpackaged approved UI E2E profile", () => {
+  const resolveExtraCaPath = (
+    startupProfileModule as typeof startupProfileModule & {
+      resolveE2eExtraCaPath?: (
+        environment: Record<string, string | undefined>,
+        isPackaged: boolean
+      ) => string | undefined;
+    }
+  ).resolveE2eExtraCaPath;
+  const approvedUiEnvironment = {
+    TYPINGKING_E2E_PROFILE: "approved-ui",
+    NODE_EXTRA_CA_CERTS: "C:\\test\\mock-ca.pem"
+  };
+
+  assert.equal(typeof resolveExtraCaPath, "function");
+  assert.equal(resolveExtraCaPath?.({}, false), undefined);
+  assert.equal(resolveExtraCaPath?.(approvedUiEnvironment, true), undefined);
+  assert.equal(resolveExtraCaPath?.(approvedUiEnvironment, false), "C:\\test\\mock-ca.pem");
+});
+
+test("removes inherited secrets and TLS overrides from the approved UI E2E child environment", () => {
+  const sanitizeEnvironment = (
+    startupProfileModule as typeof startupProfileModule & {
+      sanitizeE2eChildEnvironment?: (
+        environment: Record<string, string | undefined>
+      ) => Record<string, string | undefined>;
+    }
+  ).sanitizeE2eChildEnvironment;
+
+  assert.equal(typeof sanitizeEnvironment, "function");
+  assert.deepEqual(
+    sanitizeEnvironment?.({
+      PATH: "C:\\Windows",
+      NODE_EXTRA_CA_CERTS: "C:\\host\\ca.pem",
+      NODE_TLS_REJECT_UNAUTHORIZED: "0",
+      node_tls_reject_unauthorized: "0",
+      Node_Extra_Ca_Certs: "C:\\host\\mixed-case-ca.pem",
+      GEUMCHEON_NAS_TOKEN: "synthetic-secret",
+      TYPINGKING_TEST_ADMIN_PASSWORD: "synthetic-password",
+      THIRD_PARTY_API_KEY: "synthetic-api-key"
+    }),
+    { PATH: "C:\\Windows" }
+  );
 });

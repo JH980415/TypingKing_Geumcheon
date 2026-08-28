@@ -1,6 +1,7 @@
 ﻿import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { AppConfig, EventProfile, GeumcheonFairnessInput, RecordRow, SaveRecordInput, StageTextSelection } from "../../../shared/types";
+import { resolveEventAssetUrl } from "../../../shared/events/types";
 import { formatBirthdate } from "../../../shared/utils/date";
 import { buildPhoneFull } from "../../../shared/utils/masking";
 import {
@@ -69,6 +70,18 @@ type AiPlan = {
   averageCpm: number;
 };
 
+type ChallengeInterruptionAction = "home" | "retry" | "exit";
+type ChallengeControlAction = Exclude<ChallengeInterruptionAction, "exit">;
+
+export function requiresBattlePopupInterruption(
+  profileId: string,
+  battle: Pick<StageBattle, "stage" | "result"> | null
+): boolean {
+  return profileId === "geumcheon-2026"
+    && battle?.result === "USER_WIN"
+    && battle.stage < 3;
+}
+
 function plannedAiCpmForFairness(plan: AiPlan | null): number {
   if (!plan || !Number.isSafeInteger(plan.averageCpm) || plan.averageCpm < 1) {
     throw new Error("금천 AI 기록에는 계획된 AI 속도가 필요합니다.");
@@ -79,11 +92,11 @@ function plannedAiCpmForFairness(plan: AiPlan | null): number {
 export function createGeumcheonFairness(
   battles: readonly GeumcheonFairnessBattle[],
   selections: readonly [StageTextSelection, StageTextSelection, StageTextSelection] | undefined,
-  interruptionAction: ChallengeControlAction | undefined,
+  interruptionAction: ChallengeInterruptionAction | undefined,
   terminalStage: number
 ): GeumcheonFairnessInput {
   if (!selections) throw new Error("금천 AI 기록에는 선택 문구가 필요합니다.");
-  const stages = battles.map((battle) => {
+  const stages: GeumcheonFairnessInput["stages"] = battles.map((battle) => {
     const selection = selections[battle.stage - 1];
     if (!selection || selection.stageNumber !== battle.stage || selection.text !== battle.text) {
       throw new Error("금천 AI 기록의 선택 문구가 일치하지 않습니다.");
@@ -97,7 +110,9 @@ export function createGeumcheonFairness(
       userTimeMs: battle.userTimeMs,
       typingUnits: countConvertedTypingUnits(battle.userInput),
       aiCpm: battle.plannedAiCpm,
-      result: interruptionAction && battle.stage === terminalStage ? "INTERRUPTED" : battle.result
+      result: interruptionAction && battle.stage === terminalStage && battle.result !== "USER_WIN"
+        ? "INTERRUPTED"
+        : battle.result
     };
   });
   return {
@@ -105,6 +120,269 @@ export function createGeumcheonFairness(
     totalUserTimeMs: calculateTotalUserTimeMs(stages.map((stage) => stage.userTimeMs)),
     stages
   };
+}
+
+function createChallengeSaveInput({
+  participant,
+  stageTexts,
+  stageTextSelections,
+  battleRows,
+  status,
+  failedStage,
+  interruptionAction,
+  terminalStage,
+  isGeumcheon,
+  debugModeType
+}: {
+  participant: Participant;
+  stageTexts: [string, string, string];
+  stageTextSelections?: readonly [StageTextSelection, StageTextSelection, StageTextSelection];
+  battleRows: readonly StageBattle[];
+  status: "SUCCESS" | "FAILED";
+  failedStage: string;
+  interruptionAction?: ChallengeInterruptionAction;
+  terminalStage: number;
+  isGeumcheon: boolean;
+  debugModeType: "" | "normal_typing_debug" | "ai_challenge_debug";
+}): SaveRecordInput {
+  const userTimes: [number, number, number] = [0, 0, 0];
+  const aiTimes: [number | null, number | null, number | null] = [null, null, null];
+  const aiCpms: [number | null, number | null, number | null] = [null, null, null];
+  const results: ["" | "USER_WIN" | "AI_WIN", "" | "USER_WIN" | "AI_WIN", "" | "USER_WIN" | "AI_WIN"] = ["", "", ""];
+  const diffs: [number | null, number | null, number | null] = [null, null, null];
+  battleRows.forEach((battle) => {
+    const index = battle.stage - 1;
+    userTimes[index] = battle.userTimeMs;
+    aiTimes[index] = battle.aiTimeMs;
+    aiCpms[index] = battle.aiCpm;
+    results[index] = battle.result;
+    diffs[index] = battle.userTimeMs - battle.aiTimeMs;
+  });
+  const userTotal = calculateTotalUserTimeMs(userTimes);
+  const aiTotal = aiTimes.reduce<number>((sum, value) => sum + (value ?? 0), 0);
+  const lastAccuracy = battleRows.at(-1)?.userAccuracy ?? 0;
+  const aiDisplay = buildChallengeDisplayMetrics([...battleRows], status, failedStage, Boolean(interruptionAction));
+  const stageCharCounts = battleRows.reduce<[number, number, number]>((counts, battle) => {
+    counts[battle.stage - 1] = battleUserCharCount(battle);
+    return counts;
+  }, [0, 0, 0]);
+  const interruptedTypingUnits = battleRows.reduce((sum, battle) => {
+    return sum + (battle.result === "USER_WIN"
+      ? countConvertedTypingUnits(battle.text)
+      : countMatchingPrefixTypingUnits(battle.userInput, battle.text));
+  }, 0);
+  const fairness = isGeumcheon
+    ? createGeumcheonFairness(battleRows, stageTextSelections, interruptionAction, terminalStage)
+    : undefined;
+  return {
+    participant_name: participant.name,
+    phone_part1: participant.phone1,
+    phone_part2: participant.phone2,
+    phone_part3: participant.phone3,
+    birth_year: participant.birthYear,
+    birth_month: participant.birthMonth,
+    birth_day: participant.birthDay,
+    privacy_agreed: true,
+    privacy_agreed_at: participant.privacyAgreedAt,
+    stageTexts,
+    stageTextSelections,
+    stageTimesMs: userTimes,
+    fairness,
+    game_mode: "ai_challenge",
+    final_accuracy: status === "SUCCESS" ? 100 : Math.round(lastAccuracy),
+    ai: {
+      status,
+      failedStage,
+      stageCpms: aiCpms,
+      stageTimesMs: aiTimes,
+      stageResults: results,
+      finalResult: status === "SUCCESS" ? "USER_WIN" : "AI_WIN",
+      stageDiffsMs: diffs,
+      finalDiffMs: userTotal - aiTotal,
+      display: aiDisplay
+    },
+    is_debug: debugModeType === "ai_challenge_debug",
+    debug_mode_type: debugModeType === "ai_challenge_debug" ? debugModeType : "",
+    interruption: interruptionAction
+      ? {
+          action: interruptionAction,
+          resultStage: Number(failedStage) || terminalStage,
+          participantProgressPercent: aiDisplay.participantProgressPercent,
+          stageCharCounts,
+          totalTypingUnits: interruptedTypingUnits
+        }
+      : undefined
+  };
+}
+
+export function createInterruptedChallengeSaveInput({
+  participant,
+  stageTexts,
+  stageTextSelections,
+  battles,
+  stageIndex,
+  currentInput,
+  currentElapsedMs,
+  currentAiTypedUnits,
+  plannedAiCpm,
+  action,
+  isGeumcheon,
+  debugModeType
+}: {
+  participant: Participant;
+  stageTexts: [string, string, string];
+  stageTextSelections?: readonly [StageTextSelection, StageTextSelection, StageTextSelection];
+  battles: readonly StageBattle[];
+  stageIndex: number;
+  currentInput: string;
+  currentElapsedMs: number;
+  currentAiTypedUnits: number;
+  plannedAiCpm: number;
+  action: ChallengeInterruptionAction;
+  isGeumcheon: boolean;
+  debugModeType: "" | "normal_typing_debug" | "ai_challenge_debug";
+}): SaveRecordInput {
+  const interruptionStageIndex = resolveInterruptionStageIndex(stageIndex, battles, isGeumcheon);
+  const stage = interruptionStageIndex + 1;
+  const text = stageTexts[interruptionStageIndex];
+  const targetTypingUnits = countConvertedTypingUnits(text);
+  const safeAiTypedUnits = Math.max(0, Math.min(targetTypingUnits, currentAiTypedUnits));
+  const currentAiInput = getTextPrefixByTypingUnits(text, safeAiTypedUnits);
+  const interruptedBattle: StageBattle = {
+    stage,
+    text,
+    userTimeMs: currentElapsedMs,
+    userCpm: calculateCurrentCpm(currentInput, currentElapsedMs, text),
+    userAccuracy: calculateAccuracy(currentInput, text),
+    aiTimeMs: currentElapsedMs,
+    aiElapsedMs: currentElapsedMs,
+    aiCpm: plannedAiCpm,
+    plannedAiCpm,
+    aiTypedUnits: safeAiTypedUnits,
+    aiTypedChars: countTypeableChars(currentAiInput),
+    result: "AI_WIN",
+    userInput: currentInput
+  };
+  const battleRows = battles.some((battle) => battle.stage === stage)
+    ? battles
+    : [...battles, interruptedBattle];
+  return createChallengeSaveInput({
+    participant,
+    stageTexts,
+    stageTextSelections,
+    battleRows,
+    status: "FAILED",
+    failedStage: String(stage),
+    interruptionAction: action,
+    terminalStage: stage,
+    isGeumcheon,
+    debugModeType
+  });
+}
+
+function resolveInterruptionStageIndex(
+  stageIndex: number,
+  battles: readonly StageBattle[],
+  isGeumcheon: boolean
+): number {
+  const stage = stageIndex + 1;
+  const currentStageWon = battles.some(
+    (battle) => battle.stage === stage && battle.result === "USER_WIN"
+  );
+  return isGeumcheon && currentStageWon && stageIndex < 2
+    ? stageIndex + 1
+    : stageIndex;
+}
+
+export function startActiveAttemptCheckpointLoop<T>({
+  createInput,
+  writeCheckpoint,
+  onError,
+  setIntervalFn = (callback, delayMs) => window.setInterval(callback, delayMs),
+  clearIntervalFn = (timer) => window.clearInterval(timer)
+}: {
+  createInput: () => T;
+  writeCheckpoint: (input: T) => Promise<{ ok: boolean }>;
+  onError: () => void;
+  setIntervalFn?: (callback: () => void, delayMs: number) => number;
+  clearIntervalFn?: (timer: number) => void;
+}) {
+  let paused = false;
+  let stopped = false;
+  let pending: Promise<void> | null = null;
+
+  const write = () => {
+    if (paused || stopped || pending) return;
+    let input: T;
+    try {
+      input = createInput();
+    } catch {
+      onError();
+      return;
+    }
+    const task = (async () => {
+      try {
+        const result = await writeCheckpoint(input);
+        if (!result.ok && !stopped) onError();
+      } catch {
+        if (!stopped) onError();
+      }
+    })();
+    pending = task;
+    void task.then(
+      () => {
+        if (pending === task) pending = null;
+      },
+      () => {
+        if (pending === task) pending = null;
+      }
+    );
+  };
+
+  const timer = setIntervalFn(write, 350);
+  write();
+  return {
+    pause() {
+      paused = true;
+    },
+    resume() {
+      if (stopped) return;
+      paused = false;
+      write();
+    },
+    stop() {
+      if (stopped) return;
+      stopped = true;
+      paused = true;
+      clearIntervalFn(timer);
+    },
+    async waitForPending() {
+      await pending;
+    }
+  };
+}
+
+const INTERRUPTION_SAVE_ERROR =
+  "중단 기록을 저장하지 못했습니다. 기록이 저장될 때까지 다시 시도해 주세요.";
+
+export async function persistInterruptedChallengeBeforeLeave({
+  input,
+  saveRecord,
+  leave
+}: {
+  input: SaveRecordInput;
+  saveRecord: (input: SaveRecordInput) => Promise<{ ok: boolean; error?: string }>;
+  leave: () => void;
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  let saved: { ok: boolean };
+  try {
+    saved = await saveRecord(input);
+  } catch {
+    return { ok: false, error: INTERRUPTION_SAVE_ERROR };
+  }
+  if (!saved.ok) return { ok: false, error: INTERRUPTION_SAVE_ERROR };
+  leave();
+  return { ok: true };
 }
 
 type Props = {
@@ -121,10 +399,9 @@ type Props = {
 
 const MAIN_CONFIRM_MESSAGE = "진행 중인 게임을 종료하고 메인 화면으로 이동하시겠습니까? 중단 시점까지 참여자 패배 기록으로 저장됩니다.";
 const RETRY_CONFIRM_MESSAGE = "현재 게임을 처음부터 다시 시작하시겠습니까? 중단 시점까지 참여자 패배 기록으로 저장됩니다.";
-type ChallengeControlAction = "home" | "retry";
 
 export function AIChallengeGame({ config, participant, stageTexts, stageTextSelections, assetBaseUrl, eventProfile, debugModeType = "", onHome, onRetry }: Props) {
-  const profileAsset = (configuredPath: string) => `${assetBaseUrl}/${configuredPath.replace(/^assets\//, "")}`;
+  const profileAsset = (configuredPath: string) => resolveEventAssetUrl(assetBaseUrl, eventProfile, configuredPath);
   const [stageIndex, setStageIndex] = useState(0);
   const [countdown, setCountdown] = useState<string>(String(config.aiChallenge.countdownSeconds));
   const [running, setRunning] = useState(false);
@@ -137,6 +414,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
   const [modalBattle, setModalBattle] = useState<StageBattle | null>(null);
   const [pendingControlAction, setPendingControlAction] = useState<ChallengeControlAction | null>(null);
   const [controlSaving, setControlSaving] = useState(false);
+  const [controlSaveError, setControlSaveError] = useState("");
   const [savedRow, setSavedRow] = useState<RecordRow | null>(null);
   const [saveError, setSaveError] = useState("");
   const [autoHomeSeconds, setAutoHomeSeconds] = useState(10);
@@ -150,6 +428,20 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
   const aiPlanRef = useRef<AiPlan | null>(null);
   const controlWasRunningRef = useRef(false);
   const controlSavingRef = useRef(false);
+  const stageIndexRef = useRef(stageIndex);
+  const runningRef = useRef(running);
+  const battlesRef = useRef(battles);
+  const checkpointLoopRef = useRef<{
+    pause: () => void;
+    resume: () => void;
+    stop: () => void;
+    waitForPending: () => Promise<void>;
+  } | null>(null);
+  const checkpointErrorShownRef = useRef(false);
+
+  stageIndexRef.current = stageIndex;
+  runningRef.current = running;
+  battlesRef.current = battles;
 
   const target = stageTexts[stageIndex];
   const targetLength = countTypeableChars(target);
@@ -175,6 +467,40 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
     beginStage(stageIndex);
     return () => clearCountdownTimers();
   }, [stageIndex]);
+
+  useEffect(() => {
+    if (eventProfile.profileId !== "geumcheon-2026") return;
+    const checkpointActiveAttempt = window.typingKing.checkpointActiveAttempt;
+    if (typeof checkpointActiveAttempt !== "function") return;
+    const loop = startActiveAttemptCheckpointLoop({
+      createInput: () => createCurrentInterruptedInput("exit", performance.now(), runningRef.current),
+      writeCheckpoint: (saveInput) => checkpointActiveAttempt(saveInput),
+      onError: () => {
+        if (checkpointErrorShownRef.current) return;
+        checkpointErrorShownRef.current = true;
+        setToast("중단 대비 기록을 임시 저장하지 못했습니다. 게임은 계속할 수 있습니다.");
+      }
+    });
+    checkpointLoopRef.current = loop;
+    const unsubscribeCloseCheckpoint = window.typingKing.onActiveAttemptCheckpointRequested(
+      async (closeRequestId) => {
+        if (checkpointLoopRef.current !== loop) return;
+        const finalInput = createCurrentInterruptedInput(
+          "exit",
+          performance.now(),
+          runningRef.current
+        );
+        loop.pause();
+        const result = await checkpointActiveAttempt(finalInput, closeRequestId);
+        if (!result.ok) throw new Error("Close-time checkpoint failed");
+      }
+    );
+    return () => {
+      unsubscribeCloseCheckpoint();
+      loop.stop();
+      if (checkpointLoopRef.current === loop) checkpointLoopRef.current = null;
+    };
+  }, [eventProfile.profileId]);
 
   useEffect(() => {
     if (!running) return;
@@ -264,9 +590,11 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
     setAiPlan(nextAiPlan);
     setInput("");
     inputValueRef.current = "";
+    runningRef.current = false;
     setRunning(false);
     setModalBattle(null);
     finishedRef.current = false;
+    checkpointLoopRef.current?.resume();
     const seconds = Math.max(1, Math.floor(config.aiChallenge.countdownSeconds || 3));
     let current = seconds;
     setCountdown(String(current));
@@ -281,6 +609,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
         countdownIntervalRef.current = 0;
         setCountdown("START");
         stageStartRef.current = performance.now();
+        runningRef.current = true;
         setRunning(true);
         queueChallengeInputFocus();
         countdownClearRef.current = window.setTimeout(() => {
@@ -294,9 +623,14 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
 
   function requestChallengeControl(action: ChallengeControlAction) {
     if (controlSavingRef.current) return;
+    setControlSaveError("");
+    checkpointLoopRef.current?.pause();
     controlPausedAtRef.current = performance.now();
-    controlWasRunningRef.current = running;
-    if (running) setRunning(false);
+    controlWasRunningRef.current = runningRef.current;
+    if (runningRef.current) {
+      runningRef.current = false;
+      setRunning(false);
+    }
     setPendingControlAction(action);
   }
 
@@ -304,6 +638,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
     if (controlSavingRef.current) return;
     const controlClosedAt = performance.now();
     setPendingControlAction(null);
+    setControlSaveError("");
     if (controlWasRunningRef.current) {
       stageStartRef.current = resumeStageTimerAfterControl(
         stageStartRef.current,
@@ -311,42 +646,54 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
         controlClosedAt,
         false
       );
+      runningRef.current = true;
       setRunning(true);
       queueChallengeInputFocus();
     }
+    checkpointLoopRef.current?.resume();
   }
 
-  async function saveInterruptedChallenge(action: ChallengeControlAction) {
-    if (savedRow != null || saveError !== "") return;
-    const currentElapsed = controlWasRunningRef.current
-      ? finalizeUserStageTimeMs(
-          stageStartRef.current,
-          controlPausedAtRef.current
-        )
+  function createCurrentInterruptedInput(
+    action: ChallengeInterruptionAction,
+    capturedAt: number,
+    wasRunning: boolean
+  ): SaveRecordInput {
+    const displayedStageIndex = stageIndexRef.current;
+    const isGeumcheon = eventProfile.profileId === "geumcheon-2026";
+    const currentStageIndex = resolveInterruptionStageIndex(
+      displayedStageIndex,
+      battlesRef.current,
+      isGeumcheon
+    );
+    const isBetweenStages = currentStageIndex !== displayedStageIndex;
+    const currentText = stageTexts[currentStageIndex];
+    const currentTargetTypingUnits = countConvertedTypingUnits(currentText);
+    const currentElapsedMs = wasRunning && !isBetweenStages
+      ? finalizeUserStageTimeMs(stageStartRef.current, capturedAt)
       : 0;
-    const currentInput = inputValueRef.current;
-    const currentAiSnapshot = getAiSnapshot(aiPlan, currentElapsed, targetTypingUnits);
-    const currentAiInput = getTextPrefixByTypingUnits(target, currentAiSnapshot.typedUnits);
-    const plannedAiCpm = plannedAiCpmForFairness(aiPlanRef.current);
-    const interruptedBattle: StageBattle = {
-      stage: stageIndex + 1,
-      text: target,
-      userTimeMs: currentElapsed,
-      userCpm: calculateCurrentCpm(currentInput, currentElapsed, target),
-      userAccuracy: calculateAccuracy(currentInput, target),
-      aiTimeMs: currentElapsed,
-      aiElapsedMs: currentElapsed,
-      aiCpm: calculateFinalCpm(currentAiSnapshot.typedUnits, currentElapsed),
-      plannedAiCpm,
-      aiTypedUnits: currentAiSnapshot.typedUnits,
-      aiTypedChars: countTypeableChars(currentAiInput),
-      result: "AI_WIN",
-      userInput: currentInput
-    };
-    const battleRows = battles.some((battle) => battle.stage === interruptedBattle.stage)
-      ? battles
-      : [...battles, interruptedBattle];
-    await saveChallenge(battleRows, "FAILED", String(stageIndex + 1), action);
+    const currentPlan = isBetweenStages
+      ? createAiPlan(
+          currentStageIndex + 1,
+          currentTargetTypingUnits,
+          config,
+          debugModeType === "ai_challenge_debug"
+        )
+      : aiPlanRef.current;
+    const currentAiSnapshot = getAiSnapshot(currentPlan, currentElapsedMs, currentTargetTypingUnits);
+    return createInterruptedChallengeSaveInput({
+      participant,
+      stageTexts,
+      stageTextSelections,
+      battles: battlesRef.current,
+      stageIndex: displayedStageIndex,
+      currentInput: isBetweenStages ? "" : inputValueRef.current,
+      currentElapsedMs,
+      currentAiTypedUnits: currentAiSnapshot.typedUnits,
+      plannedAiCpm: plannedAiCpmForFairness(currentPlan),
+      action,
+      isGeumcheon,
+      debugModeType
+    });
   }
 
   async function confirmChallengeControl() {
@@ -354,14 +701,41 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
     const action = pendingControlAction;
     controlSavingRef.current = true;
     setControlSaving(true);
-    await saveInterruptedChallenge(action);
-    setPendingControlAction(null);
+    setControlSaveError("");
+    try {
+      await checkpointLoopRef.current?.waitForPending();
+      const leave = () => {
+        setPendingControlAction(null);
+        controlSavingRef.current = false;
+        setControlSaving(false);
+        leaveChallenge(action);
+      };
+      if (savedRow != null) {
+        leave();
+        return;
+      }
+      const saveInput = createCurrentInterruptedInput(
+        action,
+        controlPausedAtRef.current,
+        controlWasRunningRef.current
+      );
+      const result = await persistInterruptedChallengeBeforeLeave({
+        input: saveInput,
+        saveRecord: (input) => window.typingKing.saveRecord(input),
+        leave
+      });
+      if (result.ok) return;
+      setControlSaveError(result.error);
+    } catch {
+      setControlSaveError(INTERRUPTION_SAVE_ERROR);
+    }
     controlSavingRef.current = false;
     setControlSaving(false);
-    leaveChallenge(action);
   }
 
   function leaveChallenge(action: ChallengeControlAction) {
+    checkpointLoopRef.current?.stop();
+    checkpointLoopRef.current = null;
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     inputRef.current = null;
     inputValueRef.current = "";
@@ -369,6 +743,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
     clearCountdownTimers();
     setToast("");
     setCountdown("");
+    runningRef.current = false;
     setRunning(false);
     setModalBattle(null);
     if (action === "home") {
@@ -376,6 +751,14 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
       return;
     }
     onRetry();
+  }
+
+  function leaveFromBattlePopup(action: ChallengeControlAction) {
+    if (requiresBattlePopupInterruption(eventProfile.profileId, modalBattle)) {
+      requestChallengeControl(action);
+      return;
+    }
+    leaveChallenge(action);
   }
 
   function handleInput(next: string) {
@@ -413,7 +796,10 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
   async function finishStage(result: "USER_WIN" | "AI_WIN", userElapsedMs: number) {
     if (finishedRef.current) return;
     finishedRef.current = true;
+    checkpointLoopRef.current?.pause();
+    runningRef.current = false;
     setRunning(false);
+    await checkpointLoopRef.current?.waitForPending();
     const userInput = inputValueRef.current;
     const aiElapsedMs = result === "AI_WIN" ? aiTimeMs : userElapsedMs;
     const aiTypedUnitsAtFinish = result === "AI_WIN"
@@ -437,6 +823,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
       userInput
     };
     const nextBattles = [...battles, stageBattle];
+    battlesRef.current = nextBattles;
     setBattles(nextBattles);
     if (result === "USER_WIN") {
       if (stageIndex === 2) {
@@ -445,6 +832,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
         setSaveError(saved.error ?? "");
       }
       setModalBattle(stageBattle);
+      if (stageIndex < 2) checkpointLoopRef.current?.resume();
       return;
     }
     setModalBattle(stageBattle);
@@ -455,6 +843,8 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
 
   async function continueAfterWin() {
     if (!modalBattle) return;
+    checkpointLoopRef.current?.pause();
+    await checkpointLoopRef.current?.waitForPending();
     if (stageIndex < 2) {
       setStageIndex((value) => value + 1);
       return;
@@ -476,76 +866,24 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
     failedStage: string,
     interruptionAction?: ChallengeControlAction
   ): Promise<{ row?: RecordRow; error?: string }> {
-    const userTimes: [number, number, number] = [0, 0, 0];
-    const aiTimes: [number | null, number | null, number | null] = [null, null, null];
-    const aiCpms: [number | null, number | null, number | null] = [null, null, null];
-    const results: ["" | "USER_WIN" | "AI_WIN", "" | "USER_WIN" | "AI_WIN", "" | "USER_WIN" | "AI_WIN"] = ["", "", ""];
-    const diffs: [number | null, number | null, number | null] = [null, null, null];
-    battleRows.forEach((battle) => {
-      const index = battle.stage - 1;
-      userTimes[index] = battle.userTimeMs;
-      aiTimes[index] = battle.aiTimeMs;
-      aiCpms[index] = battle.aiCpm;
-      results[index] = battle.result;
-      diffs[index] = battle.userTimeMs - battle.aiTimeMs;
-    });
-    const userTotal = calculateTotalUserTimeMs(userTimes);
-    const aiTotal = aiTimes.reduce<number>((sum, value) => sum + (value ?? 0), 0);
-    const lastAccuracy = battleRows.at(-1)?.userAccuracy ?? 0;
-    const aiDisplay = buildChallengeDisplayMetrics(battleRows, status, failedStage, Boolean(interruptionAction));
-    const stageCharCounts = battleRows.reduce<[number, number, number]>((counts, battle) => {
-      counts[battle.stage - 1] = battleUserCharCount(battle);
-      return counts;
-    }, [0, 0, 0]);
-    const interruptedTypingUnits = battleRows.reduce((sum, battle) => {
-      return sum + (battle.result === "USER_WIN"
-        ? countConvertedTypingUnits(battle.text)
-        : countMatchingPrefixTypingUnits(battle.userInput, battle.text));
-    }, 0);
-    const fairness = eventProfile.profileId === "geumcheon-2026"
-      ? createGeumcheonFairness(battleRows, stageTextSelections, interruptionAction, stageIndex + 1)
-      : undefined;
-    const saveInput: SaveRecordInput = {
-      participant_name: participant.name,
-      phone_part1: participant.phone1,
-      phone_part2: participant.phone2,
-      phone_part3: participant.phone3,
-      birth_year: participant.birthYear,
-      birth_month: participant.birthMonth,
-      birth_day: participant.birthDay,
-      privacy_agreed: true,
-      privacy_agreed_at: participant.privacyAgreedAt,
+    const saveInput = createChallengeSaveInput({
+      participant,
       stageTexts,
       stageTextSelections,
-      stageTimesMs: userTimes,
-      fairness,
-      game_mode: "ai_challenge",
-      final_accuracy: status === "SUCCESS" ? 100 : Math.round(lastAccuracy),
-      ai: {
-        status,
-        failedStage,
-        stageCpms: aiCpms,
-        stageTimesMs: aiTimes,
-        stageResults: results,
-        finalResult: status === "SUCCESS" ? "USER_WIN" : "AI_WIN",
-        stageDiffsMs: diffs,
-        finalDiffMs: userTotal - aiTotal,
-        display: aiDisplay
-      },
-      is_debug: debugModeType === "ai_challenge_debug",
-      debug_mode_type: debugModeType === "ai_challenge_debug" ? debugModeType : "",
-      interruption: interruptionAction
-        ? {
-            action: interruptionAction,
-            resultStage: Number(failedStage) || stageIndex + 1,
-            participantProgressPercent: aiDisplay.participantProgressPercent,
-            stageCharCounts,
-            totalTypingUnits: interruptedTypingUnits
-          }
-        : undefined
-    };
+      battleRows,
+      status,
+      failedStage,
+      interruptionAction,
+      terminalStage: stageIndex + 1,
+      isGeumcheon: eventProfile.profileId === "geumcheon-2026",
+      debugModeType
+    });
     const saved = await window.typingKing.saveRecord(saveInput);
-    if (saved.ok && saved.data) return { row: saved.data };
+    if (saved.ok && saved.data) {
+      checkpointLoopRef.current?.stop();
+      checkpointLoopRef.current = null;
+      return { row: saved.data };
+    }
     return { error: saved.error || "기록 저장에 실패했습니다. 복구 파일에 임시 저장합니다." };
   }
 
@@ -581,7 +919,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
           <AiTitle assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} className="challenge-title-image" />
         </div>
         <div className="challenge-stage-center">
-          <StageBadges assetBaseUrl={assetBaseUrl} badgePaths={eventProfile.assets.stageBadges} currentStage={stageIndex + 1} completedStages={battles.map((battle) => battle.stage)} />
+          <StageBadges assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} badgePaths={eventProfile.assets.stageBadges} currentStage={stageIndex + 1} completedStages={battles.map((battle) => battle.stage)} />
           <p className="eyebrow">{eventProfile.profileId === "geumcheon-2026" ? eventProfile.gameName : "AI 타자왕을 이겨라"}</p>
         </div>
         <strong>{countdown || (running ? "대결 중" : "결과 확인")}</strong>
@@ -673,21 +1011,22 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
       {countdown && <div className="countdown-overlay">{countdown}</div>}
       {toast && <div className="toast">{toast}</div>}
       {pendingControlAction && (
-        <ChallengeControlConfirmModal
-          action={pendingControlAction}
-          saving={controlSaving}
-          onCancel={cancelChallengeControl}
-          onConfirm={() => void confirmChallengeControl()}
+      <ChallengeControlConfirmModal
+        action={pendingControlAction}
+        saving={controlSaving}
+        error={controlSaveError}
+        onCancel={cancelChallengeControl}
+        onConfirm={() => void confirmChallengeControl()}
         />
       )}
       <p className="challenge-guide">문장 전체가 100% 일치하면 자동으로 완료됩니다. AI보다 먼저 완성하세요.</p>
-      {modalBattle && (
+      {modalBattle && !pendingControlAction && (
         <BattlePopup
           battle={modalBattle}
           isFinalWin={modalBattle.result === "USER_WIN" && modalBattle.stage === 3}
           onNext={continueAfterWin}
-          onRetry={() => leaveChallenge("retry")}
-          onHome={() => leaveChallenge("home")}
+          onRetry={() => leaveFromBattlePopup("retry")}
+          onHome={() => leaveFromBattlePopup("home")}
           saveError={saveError}
           assetBaseUrl={assetBaseUrl}
           eventProfile={eventProfile}
@@ -993,12 +1332,12 @@ function BattlePopup({
       <section className="modal challenge-modal">
         <div className="challenge-modal-lead">
           <AssetImage
-            src={`${assetBaseUrl}/${(userWin ? eventProfile.assets.aiBossDefeat : eventProfile.assets.aiBossVictory).replace(/^assets\//, "")}`}
+            src={resolveEventAssetUrl(assetBaseUrl, eventProfile, userWin ? eventProfile.assets.aiBossDefeat : eventProfile.assets.aiBossVictory)}
             alt={userWin ? "패배한 AI" : "승리한 AI"}
             className="challenge-modal-art"
           />
           <div>
-            <StageBadges assetBaseUrl={assetBaseUrl} badgePaths={eventProfile.assets.stageBadges} currentStage={battle.stage} completedStages={userWin ? [battle.stage] : []} compact />
+            <StageBadges assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} badgePaths={eventProfile.assets.stageBadges} currentStage={battle.stage} completedStages={userWin ? [battle.stage] : []} compact />
             <p className="eyebrow">Stage {battle.stage}</p>
             <h2>{userWin ? "승리했습니다. AI보다 빠르게 입력했습니다." : "아쉽습니다. AI가 먼저 입력을 완료했습니다."}</h2>
           </div>
@@ -1030,11 +1369,13 @@ function BattlePopup({
 function ChallengeControlConfirmModal({
   action,
   saving,
+  error,
   onCancel,
   onConfirm
 }: {
   action: ChallengeControlAction;
   saving: boolean;
+  error: string;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -1043,6 +1384,7 @@ function ChallengeControlConfirmModal({
       <section className="modal game-confirm-modal">
         <h2>{action === "home" ? "메인으로 이동" : "다시하기"}</h2>
         <p>{action === "home" ? MAIN_CONFIRM_MESSAGE : RETRY_CONFIRM_MESSAGE}</p>
+        {error && <p className="error-text">{error}</p>}
         <div className="button-row">
           <button className="primary-button" onClick={onConfirm} disabled={saving}>{saving ? "기록 저장 중..." : "확인"}</button>
           <button className="secondary-button" onClick={onCancel} disabled={saving}>취소</button>
@@ -1081,7 +1423,7 @@ function ChallengeSummary({
       </div>
       {battles.map((battle) => (
         <div key={battle.stage}>
-          <StageBadge assetBaseUrl={assetBaseUrl} assetPath={eventProfile.assets.stageBadges[battle.stage - 1]} stage={battle.stage} state="complete" compact />
+          <StageBadge assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} assetPath={eventProfile.assets.stageBadges[battle.stage - 1]} stage={battle.stage} state="complete" compact />
           <strong>
             사용자 {formatRecordDisplay(battle.userTimeMs, battleUserCharCount(battle))} / AI {formatRecordDisplay(battle.aiElapsedMs, battleAiCharCount(battle))} / AI 평균 {formatDisplayNumber(battle.aiCpm, 2)}타
           </strong>
@@ -1117,7 +1459,14 @@ function AiTitle({
   className: string;
 }) {
   if (eventProfile.profileId === "geumcheon-2026") {
-    return <div className={`ai-title-fallback ${className}`}>{eventProfile.gameName}</div>;
+    return (
+      <AssetImage
+        src={resolveEventAssetUrl(assetBaseUrl, eventProfile, eventProfile.assets.eventTitle)}
+        alt={eventProfile.gameName}
+        className={className}
+        fallback={<div className={`ai-title-fallback ${className}`}>{eventProfile.gameName}</div>}
+      />
+    );
   }
   return (
     <AssetImage
@@ -1132,12 +1481,14 @@ function AiTitle({
 
 function StageBadges({
   assetBaseUrl,
+  eventProfile,
   badgePaths,
   currentStage,
   completedStages,
   compact = false
 }: {
   assetBaseUrl: string;
+  eventProfile: EventProfile;
   badgePaths: EventProfile["assets"]["stageBadges"];
   currentStage: number;
   completedStages: number[];
@@ -1149,6 +1500,7 @@ function StageBadges({
         <StageBadge
           key={stage}
           assetBaseUrl={assetBaseUrl}
+          eventProfile={eventProfile}
           assetPath={badgePaths[stage - 1]}
           stage={stage}
           state={completedStages.includes(stage) ? "complete" : stage === currentStage ? "current" : "locked"}
@@ -1161,12 +1513,14 @@ function StageBadges({
 
 function StageBadge({
   assetBaseUrl,
+  eventProfile,
   assetPath,
   stage,
   state,
   compact = false
 }: {
   assetBaseUrl: string;
+  eventProfile: EventProfile;
   assetPath: string;
   stage: number;
   state: "current" | "complete" | "locked";
@@ -1175,7 +1529,7 @@ function StageBadge({
   return (
     <span className={`stage-badge ${state}${compact ? " compact" : ""}`}>
       <AssetImage
-        src={`${assetBaseUrl}/${assetPath.replace(/^assets\//, "")}`}
+        src={resolveEventAssetUrl(assetBaseUrl, eventProfile, assetPath)}
         alt={`Stage ${stage}`}
         className="stage-badge-img"
         fallback={<span className="stage-badge-fallback">Stage {stage}</span>}

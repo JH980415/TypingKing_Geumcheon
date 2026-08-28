@@ -46,7 +46,9 @@ export function createBootstrapData(input: BootstrapInput): BootstrapData {
     : validateDeviceProfile(input.deviceProfile);
 
   return {
-    config: mergeRuntimeConfigWithEventProfile(input.config, eventProfile, variantPolicy.sessionKind),
+    config: redactRendererConfig(
+      mergeRuntimeConfigWithEventProfile(input.config, eventProfile, variantPolicy.sessionKind)
+    ),
     assetBaseUrl: input.assetBaseUrl,
     notices: [...input.notices],
     mode: input.mode,
@@ -55,4 +57,8 @@ export function createBootstrapData(input: BootstrapInput): BootstrapData {
     variantPolicy,
     deviceProfile
   };
+}
+
+export function redactRendererConfig(config: AppConfig): AppConfig {
+  return { ...config, adminPassword: "" };
 }

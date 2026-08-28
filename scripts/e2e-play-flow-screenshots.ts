@@ -54,11 +54,15 @@ async function waitForStable(page: Page): Promise<void> {
   await page.waitForTimeout(500);
 }
 
-async function setupOneDrive(page: Page, variant: Variant): Promise<void> {
+async function setupOneDrive(page: Page, variant: Variant, adminPassword: string): Promise<void> {
   await page.evaluate(
-    async ({ oneDriveRoot, variantName }) => {
+    async ({ oneDriveRoot, variantName, password }) => {
       const api = (window as any).typingKing;
-      await api.updateOneDriveSettings({
+      const authenticated = await api.validateAdmin(password, "play-flow-e2e");
+      if (!authenticated.ok) {
+        throw new Error(authenticated.error || "E2E administrator authentication failed");
+      }
+      const updated = await api.updateOneDriveSettings({
         syncMode: "onedrive_manual",
         pcRole: "player",
         pcId: variantName === "ai" ? "PCAI" : "PCTYPING",
@@ -67,9 +71,15 @@ async function setupOneDrive(page: Page, variant: Variant): Promise<void> {
         dayNo: 1,
         roundNo: 1
       });
-      await api.validateOneDriveSetup();
+      if (!updated.ok) {
+        throw new Error(updated.error || "E2E OneDrive settings update failed");
+      }
+      const validated = await api.validateOneDriveSetup();
+      if (!validated.ok) {
+        throw new Error(validated.error || "E2E OneDrive setup validation failed");
+      }
     },
-    { oneDriveRoot: sharedOneDriveRoot, variantName: variant }
+    { oneDriveRoot: sharedOneDriveRoot, variantName: variant, password: adminPassword }
   );
 }
 
@@ -261,6 +271,17 @@ async function runOne(variant: Variant, width: number, height: number, scale: nu
     `${variant}_${width}x${height}_${Math.round(scale * 100)}`
   );
   ensureDir(runtimeRoot);
+  const sourceConfigPath = path.join(root, "config", "config.json");
+  const runtimeConfigDir = path.join(runtimeRoot, "config");
+  const runtimeConfigPath = path.join(runtimeConfigDir, "config.json");
+  ensureDir(runtimeConfigDir);
+  const sourceConfig = JSON.parse(fs.readFileSync(sourceConfigPath, "utf8")) as Record<string, unknown>;
+  const adminPassword = "play-flow-e2e-admin-password";
+  fs.writeFileSync(
+    runtimeConfigPath,
+    JSON.stringify({ ...sourceConfig, adminPassword }),
+    "utf8"
+  );
   const app = await electron.launch({
     executablePath: electronExe,
     args: [mainJs, `--variant=${variant}`],
@@ -282,7 +303,7 @@ async function runOne(variant: Variant, width: number, height: number, scale: nu
       window.webContents.setZoomFactor(1 / zoom);
     }, scale);
     await waitForStable(page);
-    await setupOneDrive(page, variant);
+    await setupOneDrive(page, variant, adminPassword);
     await fillEntryForm(page);
     await finishTypingFlow(page, variant, width, height, scale);
   } finally {

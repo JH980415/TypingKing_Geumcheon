@@ -2526,7 +2526,11 @@ export function flushQueuedRecords(ctx: RuntimeContext): QueuedRecordFlushResult
   return { attempted: files.length, sent, failed, targetPaths, failures };
 }
 
-export async function saveRecord(ctx: RuntimeContext, input: SaveRecordInput): Promise<RecordRow> {
+export async function saveRecord(
+  ctx: RuntimeContext,
+  input: SaveRecordInput,
+  stableRecordId?: string
+): Promise<RecordRow> {
   const phoneError = validatePhoneParts(input.phone_part1, input.phone_part2, input.phone_part3);
   if (phoneError) throw new Error(phoneError);
 
@@ -2597,7 +2601,13 @@ export async function saveRecord(ctx: RuntimeContext, input: SaveRecordInput): P
     memo:
       input.memo ??
       (input.interruption
-        ? `사용자 중단:${input.interruption.action === "home" ? "메인화면" : "다시하기"}`
+        ? `사용자 중단:${
+            input.interruption.action === "home"
+              ? "메인화면"
+              : input.interruption.action === "retry"
+                ? "다시하기"
+                : "프로그램 종료"
+          }`
         : ""),
     game_mode: input.game_mode ?? "normal",
     ai_enabled: input.game_mode === "ai_challenge" ? "true" : "false",
@@ -2654,7 +2664,7 @@ export async function saveRecord(ctx: RuntimeContext, input: SaveRecordInput): P
 
   if (usesOneDriveJson(ctx)) {
     const row: RecordRow = {
-      record_id: createOneDriveRecordId(ctx, rowWithoutId.game_mode),
+      record_id: stableRecordId ?? createOneDriveRecordId(ctx, rowWithoutId.game_mode),
       ...rowWithoutId
     };
     // 설정 자체가 한 번도 검증되지 않은 상태에서는 게임 시작부터 차단하며 큐를 만들지 않는다.
@@ -2703,8 +2713,12 @@ export async function saveRecord(ctx: RuntimeContext, input: SaveRecordInput): P
   try {
     return await withFileLock(ctx.paths.recordsFile, () => {
       const records = readCsv<RecordRow>(ctx.paths.recordsFile, RECORD_HEADERS, false);
+      if (stableRecordId) {
+        const existing = records.find((record) => record.record_id === stableRecordId);
+        if (existing) return existing;
+      }
       const maxId = records.reduce((max, record) => Math.max(max, Number(record.record_id) || 0), 0);
-      const row: RecordRow = { record_id: String(maxId + 1), ...rowWithoutId };
+      const row: RecordRow = { record_id: stableRecordId ?? String(maxId + 1), ...rowWithoutId };
       writeCsvAtomic(ctx.paths.recordsFile, [...records, row], RECORD_HEADERS);
       return row;
     });
@@ -2883,7 +2897,7 @@ export async function clearRecords(
   });
 }
 
-function recalculateRecord(record: RecordRow): RecordRow {
+export function recalculateRecord(record: RecordRow): RecordRow {
   const phoneError = validatePhoneParts(record.phone_part1, record.phone_part2, record.phone_part3);
   if (phoneError) throw new Error(phoneError);
   const phoneFull = buildPhoneFull(record.phone_part1, record.phone_part2, record.phone_part3);

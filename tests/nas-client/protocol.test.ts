@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { DeviceProfile, GeumcheonFairnessInput, RecordRow } from "../../shared/types";
+
+import type { DeviceProfile, RecordRow } from "../../shared/types";
 import {
   assertNasLeaderboardSnapshot,
   assertNasRecordAck,
@@ -29,33 +30,18 @@ const profile: DeviceProfile = {
   retry: { initialDelayMs: 2_000, maxDelayMs: 60_000 },
 };
 
-const fairness: GeumcheonFairnessInput = {
-  catalogVersion: "geumcheon-draft-20260825-v1",
-  totalUserTimeMs: 6_000,
-  stages: [
-    { stageNumber: 1, textId: "gsc26-ai-s1-001", catalogVersion: "geumcheon-draft-20260825-v1", targetText: "첫 문장", typedText: "첫 문장", userTimeMs: 1_000, typingUnits: 4, aiCpm: 150, result: "USER_WIN" },
-    { stageNumber: 2, textId: "gsc26-ai-s2-001", catalogVersion: "geumcheon-draft-20260825-v1", targetText: "둘째 문장", typedText: "둘째 문장", userTimeMs: 2_000, typingUnits: 5, aiCpm: 200, result: "USER_WIN" },
-    { stageNumber: 3, textId: "gsc26-ai-s3-001", catalogVersion: "geumcheon-draft-20260825-v1", targetText: "셋째 문장", typedText: "셋째 문장", userTimeMs: 3_000, typingUnits: 5, aiCpm: 250, result: "USER_WIN" },
-  ],
-};
-
 const row = {
   record_id: RECORD_ID,
   created_at: "2026-09-18T01:00:00.000Z",
   completed_at: "2026-09-18T01:01:00.000Z",
   participant_name: "홍길동",
   phone_full: "01012345678",
-  birthdate: "2010-01-02",
-  privacy_agreed: "true",
-  privacy_agreed_at: "2026-09-18T01:00:00.000Z",
-  completionStatus: "success",
-  app_version: "1.0.0",
-  is_test: "false",
-  is_debug: "false",
-  debug_mode_type: "",
+  memo: "사용자 중단:프로그램 종료",
+  game_mode: "ai_challenge",
+  challenge_result_label: "중단 패배",
 } as RecordRow;
 
-function ack(overrides: Record<string, unknown> = {}) {
+function acknowledgement() {
   return {
     schema_version: 1,
     disposition: "stored",
@@ -63,128 +49,64 @@ function ack(overrides: Record<string, unknown> = {}) {
     payload_sha256: HASH,
     stored_sha256: "2".repeat(64),
     received_at: "2026-09-18T01:01:01.000Z",
-    ...overrides,
   };
 }
 
-test("creates only device-scoped UUID v4 record IDs", () => {
+test("creates device-scoped UUID record IDs", () => {
   const id = createGeumcheonRecordId("PC10", () => "123e4567-e89b-42d3-a456-426614174000");
-
   assert.equal(id, RECORD_ID);
   assert.equal(isGeumcheonRecordId(id), true);
   assert.equal(isGeumcheonRecordId("gsc26-pc10-../../record"), false);
 });
 
-test("canonicalizes key order while preserving array order", () => {
-  assert.equal(canonicalStringify({ b: 2, a: ["first", "second"] }), "{\"a\":[\"first\",\"second\"],\"b\":2}");
+test("canonical JSON and payload hashes do not depend on object insertion order", () => {
+  assert.equal(canonicalStringify({ b: 2, a: ["first", "second"] }), '{"a":["first","second"],"b":2}');
   assert.equal(payloadSha256({ b: 2, a: 1 }), payloadSha256({ a: 1, b: 2 }));
-  assert.throws(() => canonicalStringify({ value: Number.NaN }));
+  assert.throws(() => canonicalStringify({ invalid: Number.NaN }), /finite/i);
 });
 
-test("keeps an own __proto__ key distinct from an empty object", () => {
-  const ownProto = JSON.parse('{"__proto__":{"source":"fixture"}}');
+test("builds a full RecordRow envelope without fairness or reduced record fields", () => {
+  const envelope = buildNasRecordEnvelope(profile, "official", row);
 
-  assert.equal(canonicalStringify(ownProto), '{"__proto__":{"source":"fixture"}}');
-  assert.notEqual(payloadSha256(ownProto), payloadSha256({}));
-});
-
-test("rejects an acknowledgement for another payload", () => {
-  assert.throws(
-    () => assertNasRecordAck(ack({ payload_sha256: "0".repeat(64) }), RECORD_ID, HASH),
-    /payload hash/i,
-  );
-});
-
-test("maps only required local fields into the NAS record envelope", () => {
-  assert.deepEqual(buildNasRecordEnvelope(profile, "official", row, fairness), {
+  assert.deepEqual(envelope, {
     schema_version: 1,
     event_id: "geumcheon-science-festival-2026",
     session: { kind: "official", session_id: "official-1", day_no: 1, round_no: 2 },
-    record: {
-      record_id: RECORD_ID,
-      created_at: "2026-09-18T01:00:00.000Z",
-      completed_at: "2026-09-18T01:01:00.000Z",
-      participant: {
-        name: "홍길동",
-        phone: "01012345678",
-        birthdate: "2010-01-02",
-        privacy_agreed: true,
-        privacy_agreed_at: "2026-09-18T01:00:00.000Z",
-      },
-      status: "success",
-      stages: [
-        { stage_no: 1, text_id: "gsc26-ai-s1-001", catalog_version: "geumcheon-draft-20260825-v1", target_text: "첫 문장", typed_text: "첫 문장", user_time_ms: 1_000, ai_cpm: 150, result: "USER_WIN" },
-        { stage_no: 2, text_id: "gsc26-ai-s2-001", catalog_version: "geumcheon-draft-20260825-v1", target_text: "둘째 문장", typed_text: "둘째 문장", user_time_ms: 2_000, ai_cpm: 200, result: "USER_WIN" },
-        { stage_no: 3, text_id: "gsc26-ai-s3-001", catalog_version: "geumcheon-draft-20260825-v1", target_text: "셋째 문장", typed_text: "셋째 문장", user_time_ms: 3_000, ai_cpm: 250, result: "USER_WIN" },
-      ],
-      app_version: "1.0.0",
-      is_test: false,
-      is_debug: false,
-      debug_mode_type: "",
-    },
+    row,
   });
+  assert.equal("record" in envelope, false);
 });
 
-test("rejects NAS envelopes without fairness data or valid stage timing", () => {
-  assert.throws(() => buildNasRecordEnvelope(profile, "official", row, undefined), /fairness/i);
-  assert.throws(
-    () => buildNasRecordEnvelope(profile, "official", row, { ...fairness, stages: [{ ...fairness.stages[0], userTimeMs: 0 }] }),
-    /stage/i,
-  );
+test("rejects wrong event, device role, and record/device mismatch", () => {
+  assert.throws(() => buildNasRecordEnvelope({ ...profile, eventId: "other" }, "official", row), /EVENT_ID/);
+  assert.throws(() => buildNasRecordEnvelope({ ...profile, role: "leaderboard" }, "official", row), /DEVICE_ROLE/);
+  assert.throws(() => buildNasRecordEnvelope({ ...profile, deviceId: "PC09" }, "official", row), /DEVICE_MISMATCH/);
 });
 
-test("rejects empty and non-contiguous NAS stage attempts", () => {
-  assert.throws(() => buildNasRecordEnvelope(profile, "official", row, { ...fairness, stages: [] }), /stage/i);
-  assert.throws(
-    () => buildNasRecordEnvelope(profile, "official", row, { ...fairness, stages: [fairness.stages[0], fairness.stages[2]] }),
-    /stage/i,
-  );
+test("validates ACK against both record ID and submitted payload hash", () => {
+  assert.doesNotThrow(() => assertNasRecordAck(acknowledgement(), RECORD_ID, HASH));
+  assert.throws(() => assertNasRecordAck(acknowledgement(), RECORD_ID, "0".repeat(64)), /payload/i);
 });
 
-test("rejects a success status that does not contain three user-win stages", () => {
-  assert.throws(
-    () => buildNasRecordEnvelope(profile, "official", row, { ...fairness, stages: [fairness.stages[0]] }),
-    /status|stage/i,
-  );
+test("accepts authenticated leaderboard snapshots containing full raw RecordRow rows", () => {
+  const snapshot = {
+    schema_version: 1,
+    event_id: "geumcheon-science-festival-2026",
+    session: { kind: "official", session_id: "official-1", day_no: 1, round_no: 2 },
+    generated_at: "2026-09-18T01:02:00.000Z",
+    rows: [row],
+  };
+
+  assert.doesNotThrow(() => assertNasLeaderboardSnapshot(snapshot));
+  assert.equal(snapshot.rows[0]?.phone_full, "01012345678");
 });
 
-test("rejects public leaderboard snapshots containing raw participant data", () => {
-  assert.throws(
-    () => assertNasLeaderboardSnapshot({
-      schema_version: 1,
-      event_id: "geumcheon-science-festival-2026",
-      session: { kind: "official", session_id: "official-1", day_no: 1, round_no: 2 },
-      generated_at: "2026-09-18T01:01:01.000Z",
-      entries: [{ rank: 1, record_id: RECORD_ID, display_name: "홍*동", phone_masked: "****5678", display_cpm: 700, total_user_time_ms: 6_000, completed_at: "2026-09-18T01:01:00.000Z", result_stage: 3, attempt_number: 1, phone_full: "01012345678" }],
-    }),
-    /PUBLIC_SNAPSHOT_INVALID/,
-  );
-});
-
-test("rejects a leaderboard phone mask containing a raw mobile number", () => {
-  assert.throws(
-    () => assertNasLeaderboardSnapshot({
-      schema_version: 1,
-      event_id: "geumcheon-science-festival-2026",
-      session: { kind: "practice", session_id: "practice-1" },
-      generated_at: "2026-09-18T01:01:01.000Z",
-      entries: [{ rank: 1, record_id: RECORD_ID, display_name: "홍*동", phone_masked: "01012345678", display_cpm: 700, total_user_time_ms: 6_000, completed_at: "2026-09-18T01:01:00.000Z", result_stage: 3, attempt_number: 1 }],
-    }),
-    /PUBLIC_SNAPSHOT_INVALID/,
-  );
-});
-
-test("rejects raw display names and formatted or international phone values", () => {
-  for (const [displayName, phoneMasked] of [["홍길동", "010-****-5678"], ["홍*동", "010-1234-5678"], ["홍*동", "+82-10-1234-5678"]]) {
-    assert.throws(
-      () => assertNasLeaderboardSnapshot({
-        schema_version: 1,
-        event_id: "geumcheon-science-festival-2026",
-        session: { kind: "practice", session_id: "practice-1" },
-        generated_at: "2026-09-18T01:01:01.000Z",
-        entries: [{ rank: 1, record_id: RECORD_ID, display_name: displayName, phone_masked: phoneMasked, display_cpm: 700, total_user_time_ms: 6_000, completed_at: "2026-09-18T01:01:00.000Z", result_stage: 3, attempt_number: 1 }],
-      }),
-      /PUBLIC_SNAPSHOT_INVALID/,
-    );
-  }
+test("rejects legacy masked/ranked leaderboard entries", () => {
+  assert.throws(() => assertNasLeaderboardSnapshot({
+    schema_version: 1,
+    event_id: "geumcheon-science-festival-2026",
+    session: { kind: "practice", session_id: "practice-1" },
+    generated_at: "2026-09-18T01:02:00.000Z",
+    rows: [{ rank: 1, display_name: "홍*동", phone_masked: "010-****-5678" }],
+  }), /ROW/);
 });

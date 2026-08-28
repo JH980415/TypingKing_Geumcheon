@@ -1,208 +1,295 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
 import test from "node:test";
 
-import type { StageText } from "../../../shared/types/index.js";
-import type { NasRecordEnvelopeV1 } from "../../../shared/nas/protocol.js";
-import { countConvertedTypingUnits } from "../../../shared/utils/typing.js";
 import type { AuthenticatedPrincipal } from "../src/auth.js";
-import {
-  validateAndNormalizeRecord,
-  type RecordValidationConfigV1,
-} from "../src/recordSchema.js";
+import { validateAndNormalizeRecord } from "../src/recordSchema.js";
+import { envelope, PRACTICE_SESSION, RECEIVED_AT, recordRow, validationConfig } from "./fixtures.js";
 
-const RECEIVED_AT = "2026-08-26T03:10:00.000Z";
-const CATALOG_VERSION = "synthetic-catalog-v1";
-const HMAC_KEY = Buffer.alloc(32, 31);
+const principal: AuthenticatedPrincipal = {
+  tokenId: "PC01-write",
+  deviceId: "PC01",
+  eventId: "geumcheon-science-festival-2026",
+  role: "writer",
+  allowedSessions: ["official", "practice"],
+};
 
-const CATALOG: readonly StageText[] = [
-  { id: "synthetic-s1", catalog_version: CATALOG_VERSION, game_mode: "ai_challenge", stage_number: "1", text: "가나", is_active: "true", created_at: "2026-08-25T00:00:00.000Z", updated_at: "2026-08-25T00:00:00.000Z" },
-  { id: "synthetic-s2", catalog_version: CATALOG_VERSION, game_mode: "ai_challenge", stage_number: "2", text: "각1", is_active: "true", created_at: "2026-08-25T00:00:00.000Z", updated_at: "2026-08-25T00:00:00.000Z" },
-  { id: "synthetic-s3", catalog_version: CATALOG_VERSION, game_mode: "ai_challenge", stage_number: "3", text: "한글!", is_active: "true", created_at: "2026-08-25T00:00:00.000Z", updated_at: "2026-08-25T00:00:00.000Z" },
-];
+test("accepts and preserves a complete interrupted RecordRow without fairness metadata", () => {
+  const row = recordRow({
+    memo: "사용자 중단:프로그램 종료",
+    ai_challenge_status: "FAILED",
+    ai_failed_stage: "2",
+    stage2_vs_ai_result: "AI_WIN",
+    stage3_vs_ai_result: "",
+    final_vs_ai_result: "AI_WIN",
+    challenge_result_label: "중단 패배",
+    result_stage: "2",
+    phone_full: "010-0000-0001",
+    stage1_char_count: "4", stage2_char_count: "2", stage3_char_count: "0", total_char_count: "6",
+    stage1_time_ms: "1000", stage2_time_ms: "500", stage3_time_ms: "0",
+    stage1_cumulative_ms: "1000", stage2_cumulative_ms: "1500", total_time_ms: "1500",
+    display_stage1_sec: "1.000", display_stage2_sec: "0.500", display_stage3_sec: "0.000", display_total_sec: "1.500",
+    ai_stage1_time_ms: "1600", ai_stage2_time_ms: "400", ai_stage3_time_ms: "", ai_total_time_ms: "2000",
+    ai_stage3_cpm: "",
+    stage1_time_diff_ms: "-600", stage2_time_diff_ms: "100", stage3_time_diff_ms: "", final_time_diff_ms: "-500",
+    participant_result_time_ms: "1500", ai_result_time_ms: "2000",
+    participant_progress_percent: "50", ai_progress_percent: "100", duel_time_ms: "1500",
+  });
+  const stored = validateAndNormalizeRecord(envelope(row), principal, validationConfig("X:\\data"), RECEIVED_AT);
 
-function config(): RecordValidationConfigV1 {
-  return {
-    schemaVersion: 1,
-    eventId: "geumcheon-science-festival-2026",
-    dataRoot: "X:\\synthetic-data-root",
-    recordBaseFolderName: "기록저장",
-    stageTextCatalogPath: "X:\\synthetic-stage-texts.csv",
-    allowedSessions: {
-      official: [{ sessionId: "official-day1-round1", dayNo: 1, roundNo: 1 }],
-      practice: { sessionId: "practice-2026" },
-    },
-    aiRanges: {
-      official: [[150, 200], [200, 250], [250, 300]],
-      practice: [[100, 150], [150, 200], [200, 250]],
-    },
-    stageTextCatalog: CATALOG,
-    participantHmacKey: HMAC_KEY,
-  };
-}
-
-function principal(overrides: Partial<AuthenticatedPrincipal> = {}): AuthenticatedPrincipal {
-  return {
-    tokenId: "PC01-write",
-    deviceId: "PC01",
-    eventId: "geumcheon-science-festival-2026",
-    role: "writer",
-    allowedSessions: ["official", "practice"],
-    ...overrides,
-  };
-}
-
-function validEnvelope(): NasRecordEnvelopeV1 {
-  return {
-    schema_version: 1,
-    event_id: "geumcheon-science-festival-2026",
-    session: { kind: "official", session_id: "official-day1-round1", day_no: 1, round_no: 1 },
-    record: {
-      record_id: "gsc26-pc01-11111111-1111-4111-8111-111111111111",
-      created_at: "2026-08-26T03:00:00.000Z",
-      completed_at: "2026-08-26T03:00:06.000Z",
-      participant: {
-        name: "테스트참가자",
-        phone: "01000000001",
-        birthdate: "2000-02-29",
-        privacy_agreed: true,
-        privacy_agreed_at: "2026-08-26T02:59:59.000Z",
-      },
-      status: "success",
-      stages: [
-        { stage_no: 1, text_id: "synthetic-s1", catalog_version: CATALOG_VERSION, target_text: "가나", typed_text: "가나", user_time_ms: 1000, ai_cpm: 150, result: "USER_WIN" },
-        { stage_no: 2, text_id: "synthetic-s2", catalog_version: CATALOG_VERSION, target_text: "각1", typed_text: "각1", user_time_ms: 2000, ai_cpm: 200, result: "USER_WIN" },
-        { stage_no: 3, text_id: "synthetic-s3", catalog_version: CATALOG_VERSION, target_text: "한글!", typed_text: "한글!", user_time_ms: 3000, ai_cpm: 250, result: "USER_WIN" },
-      ],
-      app_version: "1.0.0-synthetic",
-      is_test: false,
-      is_debug: false,
-      debug_mode_type: "",
-    },
-  };
-}
-
-function cloneEnvelope(): NasRecordEnvelopeV1 {
-  return structuredClone(validEnvelope());
-}
-
-test("recalculates all private identity, typing, timing, and exact CPM derivatives server-side", () => {
-  const envelope = validEnvelope();
-  const stored = validateAndNormalizeRecord(envelope, principal(), config(), RECEIVED_AT);
-  assert.equal(stored.record.participant.phone, "010-0000-0001");
-  assert.equal(stored.record.participant.phone_masked, "010-****-0001");
-  assert.equal(stored.record.participant.birthdate_masked, "2000-**-**");
-  assert.equal(
-    stored.record.participant_key,
-    createHmac("sha256", HMAC_KEY).update("010-0000-0001", "utf8").digest("hex"),
-  );
-  assert.deepEqual(stored.record.stages.map((stage) => stage.typing_units), [4, 4, 7]);
-  assert.equal(stored.record.total_typing_units, 15);
-  assert.equal(stored.record.total_typing_units, stored.record.stages.reduce((sum, stage) => sum + countConvertedTypingUnits(stage.typed_text), 0));
-  assert.equal(stored.record.total_user_time_ms, 6000);
-  assert.equal(stored.record.effective_cpm_numerator, 900_000);
-  assert.equal(stored.record.effective_cpm_denominator, 6000);
-  assert.equal(stored.record.display_cpm, 150);
-  assert.equal(stored.record.authenticated_device_id, "PC01");
-  assert.equal(stored.record.received_at, RECEIVED_AT);
+  assert.deepEqual(stored.row, row);
+  assert.equal(stored.row.memo, "사용자 중단:프로그램 종료");
+  assert.equal(stored.row.challenge_result_label, "중단 패배");
+  assert.equal("record" in stored, false);
   assert.match(stored.payload_sha256, /^[0-9a-f]{64}$/);
 });
 
-test("requires exact phrase ID, catalog version, target text, and gapless stage order", () => {
-  const wrongId = cloneEnvelope();
-  wrongId.record.stages[0]!.text_id = "unknown-s1";
-  assert.throws(() => validateAndNormalizeRecord(wrongId, principal(), config(), RECEIVED_AT), /PHRASE_MISMATCH/);
-
-  const wrongVersion = cloneEnvelope();
-  wrongVersion.record.stages[0]!.catalog_version = "old-catalog";
-  assert.throws(() => validateAndNormalizeRecord(wrongVersion, principal(), config(), RECEIVED_AT), /PHRASE_MISMATCH/);
-
-  const wrongText = cloneEnvelope();
-  wrongText.record.stages[0]!.target_text = "다른문구";
-  assert.throws(() => validateAndNormalizeRecord(wrongText, principal(), config(), RECEIVED_AT), /PHRASE_MISMATCH/);
-
-  const gap = cloneEnvelope();
-  gap.record.stages[1]!.stage_no = 3;
-  assert.throws(() => validateAndNormalizeRecord(gap, principal(), config(), RECEIVED_AT), /STAGE_ORDER/);
-});
-
-test("validates real calendar dates, Korean mobile numbers, and explicit consent", () => {
-  const invalidDate = cloneEnvelope();
-  invalidDate.record.participant.birthdate = "2025-02-29";
-  assert.throws(() => validateAndNormalizeRecord(invalidDate, principal(), config(), RECEIVED_AT), /BIRTHDATE_INVALID/);
-
-  const invalidPhone = cloneEnvelope();
-  invalidPhone.record.participant.phone = "011-0000-0001";
-  assert.throws(() => validateAndNormalizeRecord(invalidPhone, principal(), config(), RECEIVED_AT), /PHONE_INVALID/);
-
-  const noConsent = cloneEnvelope();
-  noConsent.record.participant.privacy_agreed = false;
-  assert.throws(() => validateAndNormalizeRecord(noConsent, principal(), config(), RECEIVED_AT), /CONSENT_REQUIRED/);
-
-  const invalidTimestamp = cloneEnvelope();
-  invalidTimestamp.record.completed_at = "2025-02-29T03:00:06.000Z";
-  assert.throws(() => validateAndNormalizeRecord(invalidTimestamp, principal(), config(), RECEIVED_AT), /COMPLETED_AT_INVALID/);
-});
-
-test("keeps official and practice session and AI ranges exact and separate", () => {
-  const officialTooSlow = cloneEnvelope();
-  officialTooSlow.record.stages[0]!.ai_cpm = 149;
-  assert.throws(() => validateAndNormalizeRecord(officialTooSlow, principal(), config(), RECEIVED_AT), /AI_RANGE/);
-
-  const practice = cloneEnvelope();
-  practice.session = { kind: "practice", session_id: "practice-2026" };
-  practice.record.stages[0]!.ai_cpm = 100;
-  practice.record.stages[1]!.ai_cpm = 150;
-  practice.record.stages[2]!.ai_cpm = 200;
-  assert.equal(validateAndNormalizeRecord(practice, principal(), config(), RECEIVED_AT).session.kind, "practice");
-
-  practice.record.stages[0]!.ai_cpm = 151;
-  assert.throws(() => validateAndNormalizeRecord(practice, principal(), config(), RECEIVED_AT), /AI_RANGE/);
+test("rejects a forged successful record with no registered phrases and impossible metrics", () => {
+  const forged = recordRow({
+    stage1_text: "",
+    stage2_text: "",
+    stage3_text: "",
+    stage1_text_id: "",
+    stage2_text_id: "",
+    stage3_text_id: "",
+    stage1_char_count: "0",
+    stage2_char_count: "0",
+    stage3_char_count: "0",
+    total_char_count: "0",
+    stage1_time_ms: "0",
+    stage2_time_ms: "0",
+    stage3_time_ms: "0",
+    stage1_cumulative_ms: "0",
+    stage2_cumulative_ms: "0",
+    total_time_ms: "0",
+    display_stage1_sec: "0",
+    display_stage2_sec: "0",
+    display_stage3_sec: "0",
+    display_total_sec: "0",
+    stage1_time_diff_ms: "-1600",
+    stage2_time_diff_ms: "-2400",
+    stage3_time_diff_ms: "-3200",
+    final_time_diff_ms: "-7200",
+    final_cpm: "999999",
+    participant_avg_cpm: "999999",
+    participant_result_time_ms: "0",
+    duel_time_ms: "0",
+  });
 
   assert.throws(
-    () => validateAndNormalizeRecord(validEnvelope(), principal({ allowedSessions: ["practice"] }), config(), RECEIVED_AT),
-    /SESSION_SCOPE/,
+    () => validateAndNormalizeRecord(envelope(forged), principal, validationConfig("X:\\data"), RECEIVED_AT),
+    /PHRASE_REQUIRED|SUCCESS_METRICS_INVALID/,
   );
 });
 
-test("requires finite positive timing, exact typed prefixes, and status agreement", () => {
-  const invalidTime = cloneEnvelope();
-  invalidTime.record.stages[0]!.user_time_ms = Number.NaN;
-  assert.throws(() => validateAndNormalizeRecord(invalidTime, principal(), config(), RECEIVED_AT), /BODY_INVALID|TIME_INVALID/);
+test("rejects each forged successful phrase, time, character count, and CPM field independently", () => {
+  const cases: ReadonlyArray<{
+    name: string;
+    overrides: Partial<ReturnType<typeof recordRow>>;
+    code: RegExp;
+  }> = [
+    {
+      name: "missing registered stage phrase",
+      overrides: { stage2_text: "", stage2_text_id: "" },
+      code: /PHRASE_REQUIRED/,
+    },
+    {
+      name: "zero-duration success",
+      overrides: {
+        stage1_time_ms: "0",
+        stage2_time_ms: "0",
+        stage3_time_ms: "0",
+        stage1_cumulative_ms: "0",
+        stage2_cumulative_ms: "0",
+        total_time_ms: "0",
+        display_stage1_sec: "0",
+        display_stage2_sec: "0",
+        display_stage3_sec: "0",
+        display_total_sec: "0",
+        stage1_time_diff_ms: "-1600",
+        stage2_time_diff_ms: "-2400",
+        stage3_time_diff_ms: "-3200",
+        final_time_diff_ms: "-7200",
+        final_cpm: "0",
+        participant_avg_cpm: "0",
+        participant_result_time_ms: "0",
+        duel_time_ms: "0",
+      },
+      code: /SUCCESS_METRICS_INVALID/,
+    },
+    {
+      name: "inflated participant CPM",
+      overrides: { final_cpm: "999999", participant_avg_cpm: "999999" },
+      code: /SUCCESS_METRICS_INVALID/,
+    },
+    {
+      name: "character counts unrelated to registered phrases",
+      overrides: {
+        stage1_char_count: "1",
+        stage2_char_count: "1",
+        stage3_char_count: "1",
+        total_char_count: "3",
+        final_cpm: "30",
+        participant_avg_cpm: "30",
+      },
+      code: /SUCCESS_METRICS_INVALID/,
+    },
+  ];
 
-  const notPrefix = cloneEnvelope();
-  notPrefix.record.stages[0]!.typed_text = "나다";
-  assert.throws(() => validateAndNormalizeRecord(notPrefix, principal(), config(), RECEIVED_AT), /TYPED_PREFIX/);
-
-  const shortSuccess = cloneEnvelope();
-  shortSuccess.record.stages = shortSuccess.record.stages.slice(0, 2);
-  assert.throws(() => validateAndNormalizeRecord(shortSuccess, principal(), config(), RECEIVED_AT), /STATUS_MISMATCH/);
-
-  const failed = cloneEnvelope();
-  failed.record.status = "failed";
-  failed.record.stages = [{ ...failed.record.stages[0]!, typed_text: "가", result: "AI_WIN" }];
-  const stored = validateAndNormalizeRecord(failed, principal(), config(), RECEIVED_AT);
-  assert.equal(stored.record.status, "failed");
-  assert.equal(stored.record.total_typing_units, 2);
+  for (const item of cases) {
+    assert.throws(
+      () => validateAndNormalizeRecord(envelope(recordRow(item.overrides)), principal, validationConfig("X:\\data"), RECEIVED_AT),
+      item.code,
+      item.name,
+    );
+  }
 });
 
-test("rejects client derivatives, unknown fields, and canonical bodies above 32 KiB", () => {
-  const derivative = cloneEnvelope() as unknown as Record<string, unknown>;
-  (derivative.record as Record<string, unknown>).total_typing_units = 999_999;
-  assert.throws(() => validateAndNormalizeRecord(derivative, principal(), config(), RECEIVED_AT), /UNKNOWN_KEY/);
+test("accepts an interrupted countdown record with zero typing time and progress", () => {
+  const countdown = recordRow({
+    memo: "사용자 중단:프로그램 종료",
+    ai_challenge_status: "FAILED",
+    ai_failed_stage: "1",
+    stage1_char_count: "0",
+    stage2_char_count: "0",
+    stage3_char_count: "0",
+    total_char_count: "0",
+    stage1_time_ms: "0",
+    stage2_time_ms: "0",
+    stage3_time_ms: "0",
+    stage1_cumulative_ms: "0",
+    stage2_cumulative_ms: "0",
+    total_time_ms: "0",
+    display_stage1_sec: "0",
+    display_stage2_sec: "0",
+    display_stage3_sec: "0",
+    display_total_sec: "0",
+    final_cpm: "0",
+    ai_stage2_cpm: "",
+    ai_stage3_cpm: "",
+    ai_stage1_time_ms: "0",
+    ai_stage2_time_ms: "",
+    ai_stage3_time_ms: "",
+    ai_total_time_ms: "0",
+    stage1_vs_ai_result: "AI_WIN",
+    stage2_vs_ai_result: "",
+    stage3_vs_ai_result: "",
+    final_vs_ai_result: "AI_WIN",
+    stage1_time_diff_ms: "0",
+    stage2_time_diff_ms: "",
+    stage3_time_diff_ms: "",
+    final_time_diff_ms: "0",
+    participant_result_time_ms: "0",
+    ai_result_time_ms: "0",
+    participant_avg_cpm: "0",
+    ai_avg_cpm: "150",
+    challenge_result_label: "중단 패배",
+    participant_progress_percent: "0",
+    ai_progress_percent: "100",
+    duel_time_ms: "0",
+    result_stage: "1",
+  });
 
-  const oversized = cloneEnvelope();
-  oversized.record.app_version = "x".repeat(33 * 1024);
-  assert.throws(() => validateAndNormalizeRecord(oversized, principal(), config(), RECEIVED_AT), /BODY_TOO_LARGE/);
+  assert.equal(
+    validateAndNormalizeRecord(envelope(countdown), principal, validationConfig("X:\\data"), RECEIVED_AT).row.total_time_ms,
+    "0",
+  );
 });
 
-test("binds record identity and writer authority to the authenticated device", () => {
+test("rejects malformed, out-of-range, and internally inconsistent score fields", () => {
+  const cases: ReadonlyArray<{ name: string; overrides: Partial<ReturnType<typeof recordRow>>; code: RegExp }> = [
+    { name: "negative total time", overrides: { total_time_ms: "-1" }, code: /ROW_NUMBER_INVALID/ },
+    { name: "non numeric stage time", overrides: { stage1_time_ms: "not-a-number" }, code: /ROW_NUMBER_INVALID/ },
+    { name: "accuracy over 100", overrides: { final_accuracy: "999" }, code: /ROW_PERCENT_INVALID/ },
+    { name: "progress over 100", overrides: { participant_progress_percent: "1000" }, code: /ROW_PERCENT_INVALID/ },
+    { name: "result stage outside 1 to 3", overrides: { result_stage: "99" }, code: /RESULT_STAGE_INVALID/ },
+    { name: "character total mismatch", overrides: { total_char_count: "999" }, code: /CHAR_COUNT_MISMATCH/ },
+    { name: "cumulative time mismatch", overrides: { stage2_cumulative_ms: "999" }, code: /USER_TIME_MISMATCH/ },
+    { name: "AI total mismatch", overrides: { ai_total_time_ms: "999" }, code: /AI_TIME_MISMATCH/ },
+    { name: "display time mismatch", overrides: { display_total_sec: "99" }, code: /DISPLAY_TIME_MISMATCH/ },
+    { name: "stage time difference mismatch", overrides: { stage1_time_diff_ms: "0" }, code: /TIME_DIFF_MISMATCH/ },
+    { name: "participant result time mismatch", overrides: { participant_result_time_ms: "1" }, code: /RESULT_TIME_MISMATCH/ },
+    { name: "invalid boolean string", overrides: { is_test: "yes" }, code: /BOOLEAN_INVALID/ },
+  ];
+  for (const item of cases) {
+    assert.throws(
+      () => validateAndNormalizeRecord(envelope(recordRow(item.overrides)), principal, validationConfig("X:\\data"), RECEIVED_AT),
+      item.code,
+      item.name,
+    );
+  }
+});
+
+test("rejects AI result state combinations that contradict success or defeat", () => {
   assert.throws(
-    () => validateAndNormalizeRecord(validEnvelope(), principal({ deviceId: "PC02" }), config(), RECEIVED_AT),
-    /DEVICE_SCOPE/,
+    () => validateAndNormalizeRecord(
+      envelope(recordRow({ ai_challenge_status: "SUCCESS", stage2_vs_ai_result: "AI_WIN" })),
+      principal,
+      validationConfig("X:\\data"),
+      RECEIVED_AT,
+    ),
+    /AI_RESULT_STATE_INVALID/,
   );
   assert.throws(
-    () => validateAndNormalizeRecord(validEnvelope(), principal({ role: "leaderboard" }), config(), RECEIVED_AT),
-    /ROLE_SCOPE/,
+    () => validateAndNormalizeRecord(
+      envelope(recordRow({ memo: "사용자 중단:프로그램 종료", challenge_result_label: "참가자 승리" })),
+      principal,
+      validationConfig("X:\\data"),
+      RECEIVED_AT,
+    ),
+    /INTERRUPTION_STATE_INVALID/,
+  );
+});
+
+test("rejects missing or unknown RecordRow fields instead of accepting reduced snapshots", () => {
+  const reduced = envelope(recordRow()) as unknown as { row: Record<string, unknown> };
+  delete reduced.row.phone_full;
+  assert.throws(() => validateAndNormalizeRecord(reduced, principal, validationConfig("X:\\data"), RECEIVED_AT), /ROW_FIELD_MISSING/);
+
+  const unknown = envelope(recordRow()) as unknown as { row: Record<string, unknown> };
+  unknown.row.server_rank = 1;
+  assert.throws(() => validateAndNormalizeRecord(unknown, principal, validationConfig("X:\\data"), RECEIVED_AT), /ROW_UNKNOWN_KEY/);
+});
+
+test("enforces event, writer device, and configured session scope", () => {
+  assert.throws(() => validateAndNormalizeRecord(
+    envelope(),
+    { ...principal, deviceId: "PC02" },
+    validationConfig("X:\\data"),
+    RECEIVED_AT,
+  ), /DEVICE_MISMATCH/);
+
+  const wrongEvent = envelope() as unknown as { event_id: string };
+  wrongEvent.event_id = "other";
+  assert.throws(() => validateAndNormalizeRecord(wrongEvent, principal, validationConfig("X:\\data"), RECEIVED_AT), /EVENT_ID_INVALID/);
+
+  const wrongSession = envelope();
+  wrongSession.session = { ...wrongSession.session, session_id: "unknown" };
+  assert.throws(() => validateAndNormalizeRecord(wrongSession, principal, validationConfig("X:\\data"), RECEIVED_AT), /SESSION_INVALID/);
+});
+
+test("preserves official/practice separation and validates each session AI range", () => {
+  const practice = envelope(recordRow({
+    ai_stage1_cpm: "100",
+    ai_stage2_cpm: "150",
+    ai_stage3_cpm: "200",
+  }), PRACTICE_SESSION);
+  assert.equal(validateAndNormalizeRecord(practice, principal, validationConfig("X:\\data"), RECEIVED_AT).session.kind, "practice");
+
+  practice.row.ai_stage1_cpm = "151";
+  assert.throws(() => validateAndNormalizeRecord(practice, principal, validationConfig("X:\\data"), RECEIVED_AT), /AI_RANGE_INVALID/);
+});
+
+test("validates phrase identity, timestamps, consent, phone and birth date", () => {
+  assert.throws(() => validateAndNormalizeRecord(envelope(recordRow({ stage1_text_id: "unknown" })), principal, validationConfig("X:\\data"), RECEIVED_AT), /PHRASE_MISMATCH/);
+  assert.throws(() => validateAndNormalizeRecord(envelope(recordRow({ completed_at: "2026-08-26T02:00:00.000Z" })), principal, validationConfig("X:\\data"), RECEIVED_AT), /COMPLETED_AT_INVALID/);
+  assert.throws(() => validateAndNormalizeRecord(envelope(recordRow({ privacy_agreed: "false" })), principal, validationConfig("X:\\data"), RECEIVED_AT), /CONSENT_REQUIRED/);
+  assert.throws(() => validateAndNormalizeRecord(envelope(recordRow({ phone_full: "010-1234" })), principal, validationConfig("X:\\data"), RECEIVED_AT), /PHONE_INVALID/);
+  assert.throws(() => validateAndNormalizeRecord(envelope(recordRow({ birthdate: "2001-02-29" })), principal, validationConfig("X:\\data"), RECEIVED_AT), /BIRTHDATE_INVALID/);
+});
+
+test("rejects payloads whose canonical form exceeds 32 KiB", () => {
+  assert.throws(
+    () => validateAndNormalizeRecord(envelope(recordRow({ memo: "x".repeat(33 * 1024) })), principal, validationConfig("X:\\data"), RECEIVED_AT),
+    /BODY_TOO_LARGE/,
   );
 });

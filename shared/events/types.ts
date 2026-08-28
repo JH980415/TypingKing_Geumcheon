@@ -30,6 +30,10 @@ export type EventProfile = {
   assets: {
     eventTitle: string;
     pageBackground: string;
+    startBackground: string;
+    playBackground: string;
+    leaderboardBackground: string;
+    aiBossMain: string;
     aiBossTyping: string;
     aiBossVictory: string;
     aiBossDefeat: string;
@@ -39,6 +43,18 @@ export type EventProfile = {
   variants: Record<AppVariant, EventVariantPolicy>;
   aiChallenge: Record<SessionKind, AiChallengeConfig>;
 };
+
+export function resolveEventAssetUrl(
+  assetBaseUrl: string,
+  eventProfile: Pick<EventProfile, "profileId">,
+  configuredPath: string
+): string {
+  const baseUrl = assetBaseUrl.replace(/\/+$/, "");
+  const relativePath = configuredPath.replace(/^assets\//, "");
+  return eventProfile.profileId === "geumcheon-2026"
+    ? `${baseUrl}/../events/${eventProfile.profileId}/assets/${relativePath}`
+    : `${baseUrl}/${relativePath}`;
+}
 
 export type DeviceProfile = {
   schemaVersion: 1;

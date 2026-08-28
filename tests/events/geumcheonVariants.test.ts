@@ -183,7 +183,19 @@ const approvedEventResources = [
   "event.config.json",
   "stage_texts.csv",
   "assets/event-title.png",
-  "assets/key-visual.png"
+  "assets/key-visual.png",
+  "assets/bg_leaderboard_03_typing_hall_of_fame.png",
+  "assets/bg_main_03_geumcheon_data_city.png",
+  "assets/robot_03_speed_champion.png",
+  "assets/robot_04_science_lab.png",
+  "assets/robot_05_festival_victory.png",
+  "assets/robot_defeat_01_geumnarae_typer.png",
+  "assets/stage_01_03_science_classroom.png",
+  "assets/title_04_science_hologram.png",
+  "assets/vs_03_science_portal.png",
+  "assets/ai_challenge/stage_badge_1.png",
+  "assets/ai_challenge/stage_badge_2.png",
+  "assets/ai_challenge/stage_badge_3.png"
 ];
 const approvedAiAssets = [
   "ai_boss_typing.png",

@@ -35,6 +35,51 @@ export type ApplicationResourcePaths = {
   rendererAssetBaseUrl: string;
 };
 
+function isApprovedUiE2eProfile(
+  environment: Record<string, string | undefined>,
+  isPackaged: boolean
+): boolean {
+  return !isPackaged && environment.TYPINGKING_E2E_PROFILE === "approved-ui";
+}
+
+export function shouldShowStartupErrorDialog(
+  environment: Record<string, string | undefined>,
+  isPackaged: boolean
+): boolean {
+  return !(
+    isApprovedUiE2eProfile(environment, isPackaged)
+    && environment.TYPINGKING_E2E_SUPPRESS_STARTUP_DIALOGS === "1"
+  );
+}
+
+export function shouldHideE2eWindow(
+  environment: Record<string, string | undefined>,
+  isPackaged: boolean
+): boolean {
+  return isApprovedUiE2eProfile(environment, isPackaged)
+    && environment.TYPINGKING_E2E_HIDE_WINDOW === "1";
+}
+
+export function resolveE2eExtraCaPath(
+  environment: Record<string, string | undefined>,
+  isPackaged: boolean
+): string | undefined {
+  if (!isApprovedUiE2eProfile(environment, isPackaged)) return undefined;
+  return environment.NODE_EXTRA_CA_CERTS?.trim() || undefined;
+}
+
+export function sanitizeE2eChildEnvironment(
+  environment: Record<string, string | undefined>
+): Record<string, string | undefined> {
+  return Object.fromEntries(
+    Object.entries(environment).filter(([name]) => {
+      const normalizedName = name.toUpperCase();
+      if (normalizedName === "NODE_EXTRA_CA_CERTS" || normalizedName === "NODE_TLS_REJECT_UNAUTHORIZED") return false;
+      return !/(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|API[_-]?KEY|PRIVATE[_-]?KEY|ACCESS[_-]?KEY)/.test(normalizedName);
+    })
+  );
+}
+
 export function resolvePackagedMetadata(value: unknown): PackagedMetadata {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
   const metadata = value as Record<string, unknown>;
@@ -99,6 +144,10 @@ const skillUpCompatibilityProfile: EventProfile = {
   assets: {
     eventTitle: "assets/logo/event-logo.png",
     pageBackground: "assets/background/brand-soft.png",
+    startBackground: "assets/background/brand-soft.png",
+    playBackground: "assets/background/brand-soft.png",
+    leaderboardBackground: "assets/background/brand-soft.png",
+    aiBossMain: "assets/ai_challenge/ai_boss_typing.png",
     aiBossTyping: "assets/ai_challenge/ai_boss_typing.png",
     aiBossVictory: "assets/ai_challenge/ai_boss_victory.png",
     aiBossDefeat: "assets/ai_challenge/ai_boss_defeat.png",

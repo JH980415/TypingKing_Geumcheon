@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import type { AppConfig, BootstrapData, CsvBackupStatus, LeaderboardSyncStatus, RecordRow } from "../../../shared/types";
 import { bestRecordOnly, isInterruptedRecord, sortRecords } from "../../../shared/utils/ranking";
 import { calculateFinalCpm, countConvertedTypingUnits, countTypeableChars } from "../../../shared/utils/typing";
+import { resolveEventAssetUrl } from "../../../shared/events/types";
 import { OneDriveSettingsPanel } from "../../shell/src/OneDriveSettingsPanel";
 
 type Props = {
@@ -64,11 +65,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
   const showAiLeaderboard = bootstrap.variantPolicy.gameModes.includes("ai_challenge");
   const isDualPracticeBoard = isPracticeBoard && showNormalLeaderboard && showAiLeaderboard;
   const eventAsset = (configuredPath: string) => {
-    const relativePath = configuredPath.replace(/^assets\//, "");
-    return bootstrap.eventProfile.profileId === "geumcheon-2026" &&
-      (configuredPath === bootstrap.eventProfile.assets.eventTitle || configuredPath === bootstrap.eventProfile.assets.pageBackground)
-      ? `${assetBaseUrl}/../events/${bootstrap.eventProfile.profileId}/assets/${relativePath}`
-      : `${assetBaseUrl}/${relativePath}`;
+    return resolveEventAssetUrl(assetBaseUrl, bootstrap.eventProfile, configuredPath);
   };
   const [records, setRecords] = useState<RecordRow[]>([]);
   const [message, setMessage] = useState("");
@@ -363,7 +360,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
   }
 
   return (
-    <main className="app leaderboard-app" style={{ backgroundImage: `url("${eventAsset(bootstrap.eventProfile.assets.pageBackground)}")` }}>
+    <main className="app leaderboard-app" style={{ backgroundImage: `url("${eventAsset(bootstrap.eventProfile.assets.leaderboardBackground)}")` }}>
       <header className="leaderboard-header">
         <div>
           {bootstrap.eventProfile.profileId === "geumcheon-2026" && (
@@ -729,7 +726,7 @@ function aiResultRankV2(display: AiLeaderboardDisplay): number {
   return display.resultLabel === "참여자 승리" ? 0 : 1;
 }
 
-function buildAiLeaderboardDisplayV2(record: RecordRow): AiLeaderboardDisplay {
+export function buildAiLeaderboardDisplayV2(record: RecordRow): AiLeaderboardDisplay {
   const resultLabel = normalizeAiResultLabelV2(record);
   const resultStage = getAiResultStageV2(record, resultLabel);
   const stageResults = normalizeStageResultsV2(record, resultLabel, resultStage);
@@ -740,7 +737,7 @@ function buildAiLeaderboardDisplayV2(record: RecordRow): AiLeaderboardDisplay {
   const rawAiProgress = parseFiniteNumber(record.ai_progress_percent) ?? averageProgressV2(aiProgresses);
   const participantProgressPercent = resultLabel === "참여자 승리" ? 100 : rawParticipantProgress;
   const aiProgressPercent = resultLabel === "참여자 패배" ? 100 : rawAiProgress;
-  const duelTimeMs = firstFiniteNumber(record.duel_time_ms) ?? estimateDuelTimeMsV2(record, stageResults, resultStage);
+  const duelTimeMs = parseFiniteNumber(record.duel_time_ms) ?? estimateDuelTimeMsV2(record, stageResults, resultStage);
   // 저장된 평균 타수는 0(=입력 없음)도 유효값으로 존중한다. firstFiniteNumber는 0을 "없음"으로
   // 취급해 잘못된 보정값(final_cpm 기반)을 만들어 진행률 0%인데 평균 타수가 표시되는 모순을 유발했다.
   const participantAvgCpm =
@@ -750,9 +747,9 @@ function buildAiLeaderboardDisplayV2(record: RecordRow): AiLeaderboardDisplay {
     parseFiniteNumber(record.ai_avg_cpm) ??
     computeAverageCpmFromProgressV2(record, aiProgresses, stageResults, resultStage, "ai");
   const participantTimeMs =
-    firstFiniteNumber(record.participant_result_time_ms) ??
+    parseFiniteNumber(record.participant_result_time_ms) ??
     estimateParticipantFinishTimeV2(record, resultLabel, resultStage, participantAvgCpm);
-  const aiTimeMs = firstFiniteNumber(record.ai_result_time_ms) ?? estimateAiFinishTimeV2(record, resultStage);
+  const aiTimeMs = parseFiniteNumber(record.ai_result_time_ms) ?? estimateAiFinishTimeV2(record, resultStage);
 
   return {
     participantTimeMs,
@@ -1033,10 +1030,11 @@ function recordVisibleCharCount(record: RecordRow): number {
 
 function aiDuelVisibleCharCount(record: RecordRow, resultStage: number): number {
   const stageTexts = [record.stage1_text, record.stage2_text, record.stage3_text];
+  const storedStageCounts = [record.stage1_char_count, record.stage2_char_count, record.stage3_char_count];
   const limit = Math.max(1, Math.min(3, resultStage || 1));
-  return stageTexts
+  return storedStageCounts
     .slice(0, limit)
-    .reduce((sum, text) => sum + countTypeableChars(text ?? ""), 0);
+    .reduce((sum, value, index) => sum + (parseFiniteNumber(value) ?? countTypeableChars(stageTexts[index] ?? "")), 0);
 }
 
 function maskParticipantName(name: string): string {

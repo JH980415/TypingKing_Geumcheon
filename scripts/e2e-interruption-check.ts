@@ -32,6 +32,17 @@ async function runScenario(variant: Variant, action: Action): Promise<Record<str
   const oneDriveRoot = path.join(scenarioRoot, "shared_onedrive");
   fs.mkdirSync(runtimeRoot, { recursive: true });
   fs.mkdirSync(oneDriveRoot, { recursive: true });
+  const sourceConfigPath = path.join(root, "config", "config.json");
+  const runtimeConfigDir = path.join(runtimeRoot, "config");
+  const runtimeConfigPath = path.join(runtimeConfigDir, "config.json");
+  fs.mkdirSync(runtimeConfigDir, { recursive: true });
+  const sourceConfig = JSON.parse(fs.readFileSync(sourceConfigPath, "utf8")) as Record<string, unknown>;
+  const adminPassword = "interruption-e2e-admin-password";
+  fs.writeFileSync(
+    runtimeConfigPath,
+    JSON.stringify({ ...sourceConfig, adminPassword }),
+    "utf8"
+  );
   const app = await electron.launch({
     executablePath: electronExe,
     args: [mainJs, `--variant=${variant}`],
@@ -44,9 +55,13 @@ async function runScenario(variant: Variant, action: Action): Promise<Record<str
   });
   try {
     const page = await app.firstWindow({ timeout: 15000 });
-    await page.evaluate(async ({ rootPath, variantName }) => {
+    await page.evaluate(async ({ rootPath, variantName, password }) => {
       const api = (window as any).typingKing;
-      await api.updateOneDriveSettings({
+      const authenticated = await api.validateAdmin(password, "interruption-e2e");
+      if (!authenticated.ok) {
+        throw new Error(authenticated.error || "E2E administrator authentication failed");
+      }
+      const updated = await api.updateOneDriveSettings({
         syncMode: "onedrive_manual",
         pcRole: "player",
         pcId: variantName === "ai" ? "PCAI" : "PCTYPING",
@@ -55,8 +70,14 @@ async function runScenario(variant: Variant, action: Action): Promise<Record<str
         dayNo: 1,
         roundNo: 1
       });
-      await api.validateOneDriveSetup();
-    }, { rootPath: oneDriveRoot, variantName: variant });
+      if (!updated.ok) {
+        throw new Error(updated.error || "E2E OneDrive settings update failed");
+      }
+      const validated = await api.validateOneDriveSetup();
+      if (!validated.ok) {
+        throw new Error(validated.error || "E2E OneDrive setup validation failed");
+      }
+    }, { rootPath: oneDriveRoot, variantName: variant, password: adminPassword });
 
     await page.locator(".entry-panel .field input").first().fill("Interrupt Test");
     await page.locator(".phone-row select").selectOption("010");

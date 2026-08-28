@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { RecordRow } from "../../shared/types";
-import { selectGeumcheonAiLeaderboardEntriesForMode } from "../../apps/leaderboard/src/LeaderboardApp";
+import {
+  buildAiLeaderboardDisplayV2,
+  selectGeumcheonAiLeaderboardEntriesForMode
+} from "../../apps/leaderboard/src/LeaderboardApp";
 
 function record(overrides: Partial<RecordRow> = {}): RecordRow {
   return {
@@ -174,5 +177,76 @@ test("Geumcheon official AI leaderboard puts a shorter winning duel ahead of hig
   assert.deepEqual(
     visible.map(({ record: row }) => row.record_id),
     ["shorter-duel", "higher-cpm"]
+  );
+});
+
+test("interrupted AI display uses stored typed character counts instead of full prompt lengths", () => {
+  const display = buildAiLeaderboardDisplayV2(record({
+    challenge_result_label: "중단 패배",
+    ai_challenge_status: "FAILED",
+    final_vs_ai_result: "AI_WIN",
+    result_stage: "2",
+    stage1_vs_ai_result: "USER_WIN",
+    stage2_vs_ai_result: "AI_WIN",
+    stage3_vs_ai_result: "",
+    stage1_text: "가".repeat(20),
+    stage2_text: "나".repeat(20),
+    stage3_text: "다".repeat(20),
+    stage1_char_count: "4",
+    stage2_char_count: "3",
+    stage3_char_count: "0",
+    total_char_count: "7",
+    duel_time_ms: "11500"
+  }));
+
+  assert.equal(display.duelRecordText, "11.50초, 7글자");
+});
+
+test("countdown interruption displays stored zero time, CPM, and progress as zero values", () => {
+  const display = buildAiLeaderboardDisplayV2(record({
+    challenge_result_label: "중단 패배",
+    ai_challenge_status: "FAILED",
+    final_vs_ai_result: "AI_WIN",
+    result_stage: "1",
+    stage1_vs_ai_result: "AI_WIN",
+    stage2_vs_ai_result: "",
+    stage3_vs_ai_result: "",
+    stage1_char_count: "0",
+    stage2_char_count: "0",
+    stage3_char_count: "0",
+    total_char_count: "0",
+    stage1_time_ms: "0",
+    stage2_time_ms: "0",
+    stage3_time_ms: "0",
+    total_time_ms: "0",
+    participant_result_time_ms: "0",
+    participant_avg_cpm: "0",
+    participant_progress_percent: "0",
+    ai_stage1_time_ms: "0",
+    ai_stage2_time_ms: "0",
+    ai_stage3_time_ms: "0",
+    ai_result_time_ms: "0",
+    ai_avg_cpm: "0",
+    ai_progress_percent: "0",
+    duel_time_ms: "0"
+  }));
+
+  assert.deepEqual(
+    {
+      duelTimeMs: display.duelTimeMs,
+      duelRecordText: display.duelRecordText,
+      participantAvgCpm: display.participantAvgCpm,
+      participantCpmText: display.participantCpmText,
+      participantProgressPercent: display.participantProgressPercent,
+      participantProgressText: display.participantProgressText
+    },
+    {
+      duelTimeMs: 0,
+      duelRecordText: "0.00초, 0글자",
+      participantAvgCpm: 0,
+      participantCpmText: "평균 0타",
+      participantProgressPercent: 0,
+      participantProgressText: "진행률 0.00%"
+    }
   );
 });

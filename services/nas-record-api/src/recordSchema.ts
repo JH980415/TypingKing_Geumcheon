@@ -1,203 +1,103 @@
-import { createHmac } from "node:crypto";
-
-import type { StageText } from "../../../shared/types/index.js";
+import { RECORD_HEADERS } from "../../../shared/constants/defaults.js";
+import type { NasRecordEnvelopeV1, NasSessionV1 } from "../../../shared/nas/protocol.js";
 import {
   GEUMCHEON_NAS_EVENT_ID,
   canonicalStringify,
   isGeumcheonRecordId,
   payloadSha256,
-  type NasRecordEnvelopeV1,
-  type NasSessionV1,
-  type NasStageAttemptV1,
 } from "../../../shared/nas/protocol.js";
-import { maskBirthdate, maskPhone } from "../../../shared/utils/masking.js";
-import {
-  calculateFinalCpm,
-  calculateTotalUserTimeMs,
-  countConvertedTypingUnits,
-} from "../../../shared/utils/typing.js";
+import type { RecordRow, StageText } from "../../../shared/types/index.js";
+import { calculateFinalCpm, countTypeableChars } from "../../../shared/utils/typing.js";
 import type { AuthenticatedPrincipal } from "./auth.js";
 import type { NasServerConfigV1 } from "./config.js";
 
 const MAX_CANONICAL_BODY_BYTES = 32 * 1024;
+const INTERRUPTION_MEMOS = new Set([
+  "사용자 중단:메인화면",
+  "사용자 중단:다시하기",
+  "사용자 중단:프로그램 종료",
+]);
+const OPTIONAL_ROW_KEYS = new Set([
+  "fairness",
+  "attemptNumber",
+  "rankingEligible",
+  "participantKey",
+  "serverReceivedAt",
+  "completionStatus",
+  "totalTypingUnits",
+  "totalUserTimeMs",
+]);
 
 export type RecordValidationConfigV1 = NasServerConfigV1 & {
   stageTextCatalog: readonly StageText[];
   participantHmacKey: Uint8Array;
 };
 
-export type StoredNasStageV1 = NasStageAttemptV1 & { typing_units: number };
-
-export type StoredNasRecordV1 = {
-  schema_version: 1;
-  event_id: typeof GEUMCHEON_NAS_EVENT_ID;
-  session: NasSessionV1;
+export type StoredNasRecordV1 = NasRecordEnvelopeV1 & {
   payload_sha256: string;
-  record: {
-    record_id: string;
-    created_at: string;
-    completed_at: string;
-    participant: {
-      name: string;
-      phone: string;
-      phone_masked: string;
-      birthdate: string;
-      birthdate_masked: string;
-      privacy_agreed: true;
-      privacy_agreed_at: string;
-    };
-    participant_key: string;
-    status: "success" | "failed" | "interrupted";
-    stages: StoredNasStageV1[];
-    app_version: string;
-    is_test: boolean;
-    is_debug: boolean;
-    debug_mode_type: "" | "normal_typing_debug" | "ai_challenge_debug";
-    interruption_action?: "home" | "retry";
-    authenticated_device_id: string;
-    total_typing_units: number;
-    total_user_time_ms: number;
-    effective_cpm_numerator: number;
-    effective_cpm_denominator: number;
-    display_cpm: number;
-    received_at: string;
-  };
+  authenticated_device_id: string;
+  received_at: string;
 };
 
 export function validateAndNormalizeRecord(
-  body: unknown,
-  authenticatedDevice: AuthenticatedPrincipal,
+  value: unknown,
+  principal: AuthenticatedPrincipal,
   config: RecordValidationConfigV1,
   receivedAt: string,
 ): StoredNasRecordV1 {
-  let canonicalBody: string;
-  try {
-    canonicalBody = canonicalStringify(body);
-  } catch {
-    throw new Error("BODY_INVALID");
+  if (Buffer.byteLength(canonicalStringify(value), "utf8") > MAX_CANONICAL_BODY_BYTES) {
+    throw new Error("BODY_TOO_LARGE");
   }
-  if (Buffer.byteLength(canonicalBody, "utf8") > MAX_CANONICAL_BODY_BYTES) throw new Error("BODY_TOO_LARGE");
 
-  if (authenticatedDevice.role !== "writer") throw new Error("ROLE_SCOPE");
-  if (authenticatedDevice.eventId !== config.eventId || config.eventId !== GEUMCHEON_NAS_EVENT_ID) throw new Error("EVENT_SCOPE");
-  if (config.participantHmacKey.byteLength < 32) throw new Error("HMAC_KEY_INVALID");
-
-  const envelope = exactObject(body, ["schema_version", "event_id", "session", "record"], "ENVELOPE");
+  const envelope = exactObject(value, ["schema_version", "event_id", "session", "row"], "ENVELOPE");
   if (envelope.schema_version !== 1) throw new Error("SCHEMA_VERSION_INVALID");
-  if (envelope.event_id !== GEUMCHEON_NAS_EVENT_ID || envelope.event_id !== authenticatedDevice.eventId) throw new Error("EVENT_SCOPE");
+  if (
+    envelope.event_id !== GEUMCHEON_NAS_EVENT_ID
+    || envelope.event_id !== config.eventId
+    || envelope.event_id !== principal.eventId
+  ) {
+    throw new Error("EVENT_ID_INVALID");
+  }
+  if (principal.role !== "writer") throw new Error("ROLE_SCOPE");
 
-  const session = validateSession(envelope.session, authenticatedDevice, config);
-  const recordObject = exactObject(
-    envelope.record,
-    [
-      "record_id",
-      "created_at",
-      "completed_at",
-      "participant",
-      "status",
-      "stages",
-      "app_version",
-      "is_test",
-      "is_debug",
-      "debug_mode_type",
-      "interruption_action",
-    ],
-    "RECORD",
-    ["interruption_action"],
-  );
-
-  const recordId = stringValue(recordObject.record_id, "RECORD_ID_INVALID");
-  if (!isGeumcheonRecordId(recordId)) throw new Error("RECORD_ID_INVALID");
-  if (!recordId.startsWith(`gsc26-${authenticatedDevice.deviceId.toLowerCase()}-`)) throw new Error("DEVICE_SCOPE");
-
-  const receivedAtValue = timestamp(receivedAt, "RECEIVED_AT_INVALID");
-  const createdAt = timestamp(recordObject.created_at, "CREATED_AT_INVALID");
-  const completedAt = timestamp(recordObject.completed_at, "COMPLETED_AT_INVALID");
-  if (Date.parse(createdAt) > Date.parse(completedAt) || Date.parse(completedAt) > Date.parse(receivedAtValue)) {
-    throw new Error("TIMESTAMP_ORDER_INVALID");
+  const session = validateSession(envelope.session, principal, config);
+  const row = validateRecordRow(envelope.row);
+  if (!isGeumcheonRecordId(row.record_id)) throw new Error("RECORD_ID_INVALID");
+  if (!row.record_id.startsWith(`gsc26-${principal.deviceId.toLowerCase()}-`)) {
+    throw new Error("DEVICE_MISMATCH");
   }
 
-  const participantObject = exactObject(
-    recordObject.participant,
-    ["name", "phone", "birthdate", "privacy_agreed", "privacy_agreed_at"],
-    "PARTICIPANT",
-  );
-  const participantName = participantNameValue(participantObject.name);
-  const phone = normalizedPhone(participantObject.phone);
-  const birthdate = calendarDate(participantObject.birthdate, receivedAtValue);
-  if (participantObject.privacy_agreed !== true) throw new Error("CONSENT_REQUIRED");
-  const privacyAgreedAt = timestamp(participantObject.privacy_agreed_at, "CONSENT_TIME_INVALID");
-  if (Date.parse(privacyAgreedAt) > Date.parse(completedAt)) throw new Error("CONSENT_TIME_INVALID");
+  validateTimestamps(row, receivedAt);
+  validateParticipant(row);
+  validatePhrases(row, config.stageTextCatalog);
+  validateRowSemantics(row);
+  validateAiRanges(row, session, config);
 
-  if (recordObject.status !== "success" && recordObject.status !== "failed" && recordObject.status !== "interrupted") {
-    throw new Error("STATUS_INVALID");
-  }
-  if (!Array.isArray(recordObject.stages) || recordObject.stages.length < 1 || recordObject.stages.length > 3) {
-    throw new Error("STAGE_COUNT_INVALID");
-  }
-
-  const ranges = config.aiRanges[session.kind];
-  const stages = recordObject.stages.map((stage, index) => validateStage(stage, index, ranges[index]!, config.stageTextCatalog));
-  validateStatus(recordObject.status, stages);
-
-  const appVersion = stringValue(recordObject.app_version, "APP_VERSION_INVALID");
-  if (appVersion.length > 128) throw new Error("APP_VERSION_INVALID");
-  if (typeof recordObject.is_test !== "boolean" || typeof recordObject.is_debug !== "boolean") throw new Error("FLAG_INVALID");
-  if (recordObject.debug_mode_type !== "" && recordObject.debug_mode_type !== "normal_typing_debug" && recordObject.debug_mode_type !== "ai_challenge_debug") {
-    throw new Error("DEBUG_MODE_INVALID");
-  }
-  if ((recordObject.is_debug && recordObject.debug_mode_type === "") || (!recordObject.is_debug && recordObject.debug_mode_type !== "")) {
-    throw new Error("DEBUG_MODE_INVALID");
-  }
-
-  const interruptionAction = recordObject.interruption_action;
-  if (interruptionAction !== undefined) {
-    if (recordObject.status !== "interrupted" || (interruptionAction !== "home" && interruptionAction !== "retry")) {
-      throw new Error("INTERRUPTION_ACTION_INVALID");
-    }
-  }
-
-  const totalTypingUnits = stages.reduce((sum, stage) => sum + stage.typing_units, 0);
-  const totalUserTimeMs = calculateTotalUserTimeMs(stages.map((stage) => stage.user_time_ms));
-  const effectiveCpmNumerator = totalTypingUnits * 60_000;
-  if (!Number.isSafeInteger(effectiveCpmNumerator)) throw new Error("CPM_DERIVATIVE_INVALID");
-  const participantKey = createHmac("sha256", config.participantHmacKey).update(phone, "utf8").digest("hex");
-
-  return {
+  const normalizedEnvelope: NasRecordEnvelopeV1 = {
     schema_version: 1,
     event_id: GEUMCHEON_NAS_EVENT_ID,
     session,
-    payload_sha256: payloadSha256(body),
-    record: {
-      record_id: recordId,
-      created_at: createdAt,
-      completed_at: completedAt,
-      participant: {
-        name: participantName,
-        phone,
-        phone_masked: maskPhone(phone),
-        birthdate,
-        birthdate_masked: maskBirthdate(birthdate),
-        privacy_agreed: true,
-        privacy_agreed_at: privacyAgreedAt,
-      },
-      participant_key: participantKey,
-      status: recordObject.status,
-      stages,
-      app_version: appVersion,
-      is_test: recordObject.is_test,
-      is_debug: recordObject.is_debug,
-      debug_mode_type: recordObject.debug_mode_type,
-      ...(interruptionAction === "home" || interruptionAction === "retry" ? { interruption_action: interruptionAction } : {}),
-      authenticated_device_id: authenticatedDevice.deviceId,
-      total_typing_units: totalTypingUnits,
-      total_user_time_ms: totalUserTimeMs,
-      effective_cpm_numerator: effectiveCpmNumerator,
-      effective_cpm_denominator: totalUserTimeMs,
-      display_cpm: calculateFinalCpm(totalTypingUnits, totalUserTimeMs),
-      received_at: receivedAtValue,
-    },
+    row,
   };
+  return {
+    ...normalizedEnvelope,
+    payload_sha256: payloadSha256(normalizedEnvelope),
+    authenticated_device_id: principal.deviceId,
+    received_at: receivedAt,
+  };
+}
+
+function validateRecordRow(value: unknown): RecordRow {
+  const row = plainObject(value, "ROW_INVALID");
+  const requiredKeys = new Set<string>(RECORD_HEADERS);
+  for (const key of RECORD_HEADERS) {
+    if (!Object.prototype.hasOwnProperty.call(row, key)) throw new Error("ROW_FIELD_MISSING");
+    if (typeof row[key] !== "string") throw new Error("ROW_FIELD_INVALID");
+  }
+  for (const key of Object.keys(row)) {
+    if (!requiredKeys.has(key) && !OPTIONAL_ROW_KEYS.has(key)) throw new Error("ROW_UNKNOWN_KEY");
+  }
+  return row as RecordRow;
 }
 
 function validateSession(
@@ -205,172 +105,296 @@ function validateSession(
   principal: AuthenticatedPrincipal,
   config: RecordValidationConfigV1,
 ): NasSessionV1 {
-  const base = exactObject(value, ["kind", "session_id", "day_no", "round_no"], "SESSION", ["day_no", "round_no"]);
-  const sessionId = stringValue(base.session_id, "SESSION_INVALID");
-  if (base.kind !== "official" && base.kind !== "practice") throw new Error("SESSION_INVALID");
-  if (!principal.allowedSessions.includes(base.kind)) throw new Error("SESSION_SCOPE");
-  if (base.kind === "practice") {
-    if ("day_no" in base || "round_no" in base || sessionId !== config.allowedSessions.practice.sessionId) throw new Error("SESSION_SCOPE");
-    return { kind: "practice", session_id: sessionId };
+  const session = plainObject(value, "SESSION_INVALID");
+  if (session.kind !== "official" && session.kind !== "practice") {
+    throw new Error("SESSION_INVALID");
   }
-  const dayNo = positiveInteger(base.day_no, "SESSION_INVALID");
-  const roundNo = positiveInteger(base.round_no, "SESSION_INVALID");
-  const allowed = config.allowedSessions.official.some(
-    (session) => session.sessionId === sessionId && session.dayNo === dayNo && session.roundNo === roundNo,
-  );
-  if (!allowed) throw new Error("SESSION_SCOPE");
-  return { kind: "official", session_id: sessionId, day_no: dayNo, round_no: roundNo };
-}
+  if (!principal.allowedSessions.includes(session.kind)) throw new Error("SESSION_SCOPE");
 
-function validateStage(
-  value: unknown,
-  index: number,
-  aiRange: readonly [number, number],
-  catalog: readonly StageText[],
-): StoredNasStageV1 {
-  const stage = exactObject(value, [
-    "stage_no",
-    "text_id",
-    "catalog_version",
-    "target_text",
-    "typed_text",
-    "user_time_ms",
-    "ai_cpm",
-    "result",
-  ], "STAGE");
-  const stageNo = index + 1;
-  if (stage.stage_no !== stageNo || stageNo > 3) throw new Error("STAGE_ORDER");
-  const textId = stringValue(stage.text_id, "PHRASE_MISMATCH");
-  const catalogVersion = stringValue(stage.catalog_version, "PHRASE_MISMATCH");
-  const targetText = stringValue(stage.target_text, "PHRASE_MISMATCH", true);
-  if (typeof stage.typed_text !== "string") throw new Error("TYPED_PREFIX");
-  const typedText = stage.typed_text;
-  const catalogEntry = catalog.find((entry) => entry.id === textId);
-  if (
-    catalogEntry == null
-    || catalogEntry.catalog_version !== catalogVersion
-    || catalogEntry.text !== targetText
-    || catalogEntry.stage_number !== String(stageNo)
-    || catalogEntry.game_mode !== "ai_challenge"
-    || catalogEntry.is_active !== "true"
-  ) {
-    throw new Error("PHRASE_MISMATCH");
+  if (session.kind === "practice") {
+    exactKeys(session, ["kind", "session_id"], "SESSION");
+    if (session.session_id !== config.allowedSessions.practice.sessionId) {
+      throw new Error("SESSION_INVALID");
+    }
+    return { kind: "practice", session_id: session.session_id };
   }
-  if (!targetText.startsWith(typedText)) throw new Error("TYPED_PREFIX");
-  const userTimeMs = positiveInteger(stage.user_time_ms, "TIME_INVALID");
-  const aiCpm = positiveInteger(stage.ai_cpm, "AI_RANGE");
-  if (aiCpm < aiRange[0] || aiCpm > aiRange[1]) throw new Error("AI_RANGE");
-  if (stage.result !== "USER_WIN" && stage.result !== "AI_WIN" && stage.result !== "INTERRUPTED") throw new Error("RESULT_INVALID");
-  if (stage.result === "USER_WIN" ? typedText !== targetText : typedText === targetText) throw new Error("RESULT_MISMATCH");
+
+  exactKeys(session, ["kind", "session_id", "day_no", "round_no"], "SESSION");
+  if (
+    typeof session.session_id !== "string"
+    || !Number.isInteger(session.day_no)
+    || !Number.isInteger(session.round_no)
+  ) {
+    throw new Error("SESSION_INVALID");
+  }
+  const configured = config.allowedSessions.official.some((item) =>
+    item.sessionId === session.session_id
+    && item.dayNo === session.day_no
+    && item.roundNo === session.round_no);
+  if (!configured) throw new Error("SESSION_INVALID");
   return {
-    stage_no: stageNo as 1 | 2 | 3,
-    text_id: textId,
-    catalog_version: catalogVersion,
-    target_text: targetText,
-    typed_text: typedText,
-    user_time_ms: userTimeMs,
-    ai_cpm: aiCpm,
-    result: stage.result,
-    typing_units: countConvertedTypingUnits(typedText),
+    kind: "official",
+    session_id: session.session_id,
+    day_no: session.day_no as number,
+    round_no: session.round_no as number,
   };
 }
 
-function validateStatus(status: "success" | "failed" | "interrupted", stages: readonly StoredNasStageV1[]): void {
-  const preceding = stages.slice(0, -1);
-  if (preceding.some((stage) => stage.result !== "USER_WIN")) throw new Error("STATUS_MISMATCH");
-  const finalResult = stages.at(-1)?.result;
-  if (status === "success" && stages.length === 3 && stages.every((stage) => stage.result === "USER_WIN")) return;
-  if (status === "failed" && finalResult === "AI_WIN") return;
-  if (status === "interrupted" && finalResult === "INTERRUPTED") return;
-  throw new Error("STATUS_MISMATCH");
+function validateTimestamps(row: RecordRow, receivedAt: string): void {
+  const created = timestamp(row.created_at, "CREATED_AT_INVALID");
+  const completed = timestamp(row.completed_at, "COMPLETED_AT_INVALID");
+  const received = timestamp(receivedAt, "RECEIVED_AT_INVALID");
+  const consent = timestamp(row.privacy_agreed_at, "CONSENT_TIMESTAMP_INVALID");
+  if (created > completed || completed > received || consent > completed) {
+    throw new Error("COMPLETED_AT_INVALID");
+  }
+}
+
+function validateParticipant(row: RecordRow): void {
+  if (row.participant_name.trim().length === 0 || row.participant_name.length > 80) {
+    throw new Error("PARTICIPANT_NAME_INVALID");
+  }
+  if (!/^010$/.test(row.phone_part1) || !/^\d{4}$/.test(row.phone_part2) || !/^\d{4}$/.test(row.phone_part3)) throw new Error("PHONE_INVALID");
+  if (!/^(?:010\d{8}|010-\d{4}-\d{4})$/.test(row.phone_full)) throw new Error("PHONE_INVALID");
+  if (`${row.phone_part1}${row.phone_part2}${row.phone_part3}` !== row.phone_full.replace(/-/g, "")) throw new Error("PHONE_INVALID");
+  if (row.privacy_agreed !== "true") throw new Error("CONSENT_REQUIRED");
+
+  const birthdate = calendarDate(row.birthdate);
+  if (birthdate == null) throw new Error("BIRTHDATE_INVALID");
+  if (
+    row.birth_year !== birthdate.year
+    || row.birth_month.padStart(2, "0") !== birthdate.month
+    || row.birth_day.padStart(2, "0") !== birthdate.day
+  ) {
+    throw new Error("BIRTHDATE_INVALID");
+  }
+}
+
+function validateRowSemantics(row: RecordRow): void {
+  for (const key of ["is_test", "is_debug", "ai_enabled", "is_admin_edited"] as const) {
+    if (row[key] !== "true" && row[key] !== "false") throw new Error("BOOLEAN_INVALID");
+  }
+  if (row.game_mode !== "ai_challenge" || row.ai_enabled !== "true") throw new Error("AI_MODE_INVALID");
+  if ((row.is_debug === "true" && row.debug_mode_type !== "ai_challenge_debug") || (row.is_debug === "false" && row.debug_mode_type !== "")) throw new Error("DEBUG_MODE_INVALID");
+  if (row.is_admin_edited !== "false" || row.original_record_id !== "") throw new Error("ADMIN_STATE_INVALID");
+  if (row.app_version.trim() === "" || row.app_version.length > 128) throw new Error("APP_VERSION_INVALID");
+  if (row.memo.length > 256 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(row.memo)) throw new Error("MEMO_INVALID");
+
+  const charCounts = ([1, 2, 3] as const).map((stage) => integerString(row[`stage${stage}_char_count`], false));
+  const totalCharCount = integerString(row.total_char_count, false);
+  if (charCounts.reduce((sum, value) => sum + value, 0) !== totalCharCount) throw new Error("CHAR_COUNT_MISMATCH");
+
+  const userTimes = ([1, 2, 3] as const).map((stage) => integerString(row[`stage${stage}_time_ms`], false));
+  const stage1Cumulative = integerString(row.stage1_cumulative_ms, false);
+  const stage2Cumulative = integerString(row.stage2_cumulative_ms, false);
+  const totalTime = integerString(row.total_time_ms, false);
+  if (stage1Cumulative !== userTimes[0] || stage2Cumulative !== userTimes[0] + userTimes[1] || totalTime !== userTimes[0] + userTimes[1] + userTimes[2]) throw new Error("USER_TIME_MISMATCH");
+
+  const displayTimes = [row.display_stage1_sec, row.display_stage2_sec, row.display_stage3_sec, row.display_total_sec];
+  const expectedDisplayMs = [...userTimes, totalTime];
+  displayTimes.forEach((value, index) => {
+    const milliseconds = decimalString(value, "ROW_NUMBER_INVALID") * 1000;
+    if (!Number.isSafeInteger(Math.round(milliseconds)) || Math.round(milliseconds) !== expectedDisplayMs[index]) throw new Error("DISPLAY_TIME_MISMATCH");
+  });
+
+  const finalCpm = integerString(row.final_cpm, false);
+  percentString(row.final_accuracy);
+  percentString(row.participant_progress_percent);
+  percentString(row.ai_progress_percent);
+  const participantAvgCpm = optionalIntegerString(row.participant_avg_cpm, false);
+  optionalIntegerString(row.ai_avg_cpm, false);
+
+  const aiTimes = ([1, 2, 3] as const).map((stage) => optionalIntegerString(row[`ai_stage${stage}_time_ms`], false));
+  const aiTotalTime = integerString(row.ai_total_time_ms, false);
+  if (aiTimes.reduce<number>((sum, value) => sum + (value ?? 0), 0) !== aiTotalTime) throw new Error("AI_TIME_MISMATCH");
+
+  const timeDiffs = ([1, 2, 3] as const).map((stage) => optionalIntegerString(row[`stage${stage}_time_diff_ms`], true));
+  timeDiffs.forEach((difference, index) => {
+    if (aiTimes[index] == null) {
+      if (difference != null) throw new Error("TIME_DIFF_MISMATCH");
+      return;
+    }
+    if (difference !== userTimes[index] - aiTimes[index]!) throw new Error("TIME_DIFF_MISMATCH");
+  });
+  if (integerString(row.final_time_diff_ms, true) !== totalTime - aiTotalTime) throw new Error("TIME_DIFF_MISMATCH");
+
+  const participantResultTime = integerString(row.participant_result_time_ms, false);
+  integerString(row.ai_result_time_ms, false);
+  const duelTime = integerString(row.duel_time_ms, false);
+  if (row.ai_challenge_status === "SUCCESS" && (participantResultTime !== totalTime || duelTime !== totalTime)) {
+    throw new Error("RESULT_TIME_MISMATCH");
+  }
+  const resultStage = rangedStage(row.result_stage, "RESULT_STAGE_INVALID");
+  validateAiResultState(row, resultStage, aiTimes);
+  if (row.ai_challenge_status === "SUCCESS") {
+    const expectedCharCounts = ([1, 2, 3] as const).map((stage) =>
+      countTypeableChars(row[`stage${stage}_text`]));
+    const expectedCpm = calculateFinalCpm(totalCharCount, totalTime);
+    if (
+      totalTime === 0
+      || userTimes.some((value) => value === 0)
+      || charCounts.some((value, index) => value !== expectedCharCounts[index])
+      || participantAvgCpm == null
+      || finalCpm !== expectedCpm
+      || participantAvgCpm !== expectedCpm
+    ) {
+      throw new Error("SUCCESS_METRICS_INVALID");
+    }
+  }
+
+  const interruptionMemo = INTERRUPTION_MEMOS.has(row.memo);
+  const interruptionLabel = row.challenge_result_label === "중단 패배";
+  if (row.memo.startsWith("사용자 중단:") && !interruptionMemo) throw new Error("INTERRUPTION_STATE_INVALID");
+  if (interruptionMemo !== interruptionLabel) throw new Error("INTERRUPTION_STATE_INVALID");
+  if (interruptionMemo && (row.ai_challenge_status !== "FAILED" || row.final_vs_ai_result !== "AI_WIN" || participantResultTime !== totalTime || duelTime !== totalTime)) throw new Error("INTERRUPTION_STATE_INVALID");
+}
+
+function validateAiResultState(row: RecordRow, resultStage: 1 | 2 | 3, aiTimes: readonly (number | null)[]): void {
+  const results = [row.stage1_vs_ai_result, row.stage2_vs_ai_result, row.stage3_vs_ai_result];
+  const cpms = [row.ai_stage1_cpm, row.ai_stage2_cpm, row.ai_stage3_cpm];
+  const diffs = [row.stage1_time_diff_ms, row.stage2_time_diff_ms, row.stage3_time_diff_ms];
+  const interrupted = INTERRUPTION_MEMOS.has(row.memo) && row.challenge_result_label === "중단 패배";
+  if (row.ai_challenge_status === "SUCCESS") {
+    if (row.ai_failed_stage !== "" || resultStage !== 3 || results.some((value) => value !== "USER_WIN") || row.final_vs_ai_result !== "USER_WIN") throw new Error("AI_RESULT_STATE_INVALID");
+  } else if (row.ai_challenge_status === "FAILED") {
+    const failedStage = rangedStage(row.ai_failed_stage, "AI_RESULT_STATE_INVALID");
+    const terminalResult = results[failedStage - 1];
+    const completedPopupExit = interrupted && failedStage < 3 && terminalResult === "USER_WIN";
+    if (failedStage !== resultStage || row.final_vs_ai_result !== "AI_WIN" || results.slice(0, failedStage - 1).some((value) => value !== "USER_WIN") || (terminalResult !== "AI_WIN" && !completedPopupExit) || results.slice(failedStage).some((value) => value !== "")) throw new Error("AI_RESULT_STATE_INVALID");
+  } else {
+    throw new Error("AI_RESULT_STATE_INVALID");
+  }
+  for (let index = 0; index < 3; index += 1) {
+    const played = index < resultStage;
+    if (played) {
+      if (results[index] === "" || cpms[index] === "" || aiTimes[index] == null || diffs[index] === "") throw new Error("AI_RESULT_STATE_INVALID");
+    } else if (results[index] !== "" || cpms[index] !== "" || aiTimes[index] != null || diffs[index] !== "") {
+      throw new Error("AI_RESULT_STATE_INVALID");
+    }
+  }
+}
+
+function integerString(value: string, signed: boolean, code = "ROW_NUMBER_INVALID"): number {
+  const pattern = signed ? /^-?(?:0|[1-9]\d*)$/ : /^(?:0|[1-9]\d*)$/;
+  if (!pattern.test(value)) throw new Error(code);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new Error(code);
+  return parsed;
+}
+
+function optionalIntegerString(value: string, signed: boolean): number | null {
+  return value === "" ? null : integerString(value, signed);
+}
+
+function decimalString(value: string, code: string): number {
+  if (!/^(?:0|[1-9]\d*)(?:\.\d+)?$/.test(value)) throw new Error(code);
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) throw new Error(code);
+  return parsed;
+}
+
+function percentString(value: string): number {
+  const parsed = decimalString(value, "ROW_PERCENT_INVALID");
+  if (parsed > 100) throw new Error("ROW_PERCENT_INVALID");
+  return parsed;
+}
+
+function rangedStage(value: string, code: string): 1 | 2 | 3 {
+  const parsed = integerString(value, false, code);
+  if (parsed < 1 || parsed > 3) throw new Error(code);
+  return parsed as 1 | 2 | 3;
+}
+
+function validatePhrases(row: RecordRow, catalog: readonly StageText[]): void {
+  for (const stageNumber of [1, 2, 3] as const) {
+    const textId = row[`stage${stageNumber}_text_id`];
+    const targetText = row[`stage${stageNumber}_text`];
+    if (textId === "" && targetText === "") {
+      if (row.ai_challenge_status === "SUCCESS") throw new Error("PHRASE_REQUIRED");
+      continue;
+    }
+    const item = catalog.find((candidate) =>
+      candidate.id === textId
+      && candidate.catalog_version === row.stage_text_catalog_version
+      && candidate.game_mode === "ai_challenge"
+      && candidate.stage_number === String(stageNumber)
+      && candidate.is_active === "true");
+    if (item == null || item.text !== targetText) throw new Error("PHRASE_MISMATCH");
+  }
+}
+
+function validateAiRanges(
+  row: RecordRow,
+  session: NasSessionV1,
+  config: RecordValidationConfigV1,
+): void {
+  const ranges = config.aiRanges[session.kind];
+  for (const stageNumber of [1, 2, 3] as const) {
+    const raw = row[`ai_stage${stageNumber}_cpm`];
+    if (raw === "") continue;
+    const value = integerString(raw, false, "AI_RANGE_INVALID");
+    const [minimum, maximum] = ranges[stageNumber - 1];
+    if (!Number.isInteger(value) || value < minimum || value > maximum) {
+      throw new Error("AI_RANGE_INVALID");
+    }
+  }
 }
 
 function exactObject(
   value: unknown,
   keys: readonly string[],
   prefix: string,
-  optionalKeys: readonly string[] = [],
 ): Record<string, unknown> {
-  if (value == null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${prefix}_OBJECT_INVALID`);
-  const prototype = Object.getPrototypeOf(value);
-  if (prototype !== Object.prototype && prototype !== null) throw new Error(`${prefix}_OBJECT_INVALID`);
-  const object = value as Record<string, unknown>;
-  for (const key of Object.keys(object)) if (!keys.includes(key)) throw new Error(`${prefix}_UNKNOWN_KEY`);
-  for (const key of keys) if (!optionalKeys.includes(key) && !(key in object)) throw new Error(`${prefix}_MISSING_KEY`);
+  const object = plainObject(value, `${prefix}_INVALID`);
+  exactKeys(object, keys, prefix);
   return object;
 }
 
-function stringValue(value: unknown, code: string, allowWhitespace = false): string {
-  if (typeof value !== "string" || (!allowWhitespace && value.trim() === "") || (allowWhitespace && value.length === 0)) throw new Error(code);
-  return value;
-}
-
-function participantNameValue(value: unknown): string {
-  const name = stringValue(value, "PARTICIPANT_NAME_INVALID").trim();
-  if (name.length > 50 || /[\u0000-\u001f\u007f]/.test(name)) throw new Error("PARTICIPANT_NAME_INVALID");
-  return name;
-}
-
-function normalizedPhone(value: unknown): string {
-  if (typeof value !== "string" || !/^(?:010\d{8}|010-\d{4}-\d{4})$/.test(value)) throw new Error("PHONE_INVALID");
-  const digits = value.replace(/-/g, "");
-  return `${digits.slice(0, 3)}-${digits.slice(3, 7)}-${digits.slice(7)}`;
-}
-
-function calendarDate(value: unknown, receivedAt: string): string {
-  if (typeof value !== "string") throw new Error("BIRTHDATE_INVALID");
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (match == null) throw new Error("BIRTHDATE_INVALID");
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const date = new Date(Date.UTC(year, month - 1, day));
-  if (
-    year < 1900
-    || date.getUTCFullYear() !== year
-    || date.getUTCMonth() !== month - 1
-    || date.getUTCDate() !== day
-    || value > receivedAt.slice(0, 10)
-  ) {
-    throw new Error("BIRTHDATE_INVALID");
+function exactKeys(
+  object: Record<string, unknown>,
+  keys: readonly string[],
+  prefix: string,
+): void {
+  const expected = new Set(keys);
+  for (const key of keys) {
+    if (!Object.prototype.hasOwnProperty.call(object, key)) {
+      throw new Error(`${prefix}_FIELD_MISSING`);
+    }
   }
-  return value;
+  for (const key of Object.keys(object)) {
+    if (!expected.has(key)) throw new Error(`${prefix}_UNKNOWN_KEY`);
+  }
 }
 
-function timestamp(value: unknown, code: string): string {
-  if (typeof value !== "string") throw new Error(code);
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d{1,3})?(Z|[+-](\d{2}):(\d{2}))$/.exec(value);
-  if (match == null) throw new Error(code);
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  const hour = Number(match[4]);
-  const minute = Number(match[5]);
-  const second = Number(match[6]);
-  const offsetHour = match[8] == null ? 0 : Number(match[8]);
-  const offsetMinute = match[9] == null ? 0 : Number(match[9]);
-  const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] ?? 0;
-  if (
-    year < 1
-    || day < 1
-    || day > daysInMonth
-    || hour > 23
-    || minute > 59
-    || second > 59
-    || offsetHour > 23
-    || offsetMinute > 59
-    || Number.isNaN(Date.parse(value))
-  ) {
+function plainObject(value: unknown, code: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(code);
   }
-  return value;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) throw new Error(code);
+  return value as Record<string, unknown>;
 }
 
-function isLeapYear(year: number): boolean {
-  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+function timestamp(value: string, code: string): number {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(value)) {
+    throw new Error(code);
+  }
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) throw new Error(code);
+  return parsed;
 }
 
-function positiveInteger(value: unknown, code: string): number {
-  if (!Number.isSafeInteger(value) || (value as number) <= 0) throw new Error(code);
-  return value as number;
+function calendarDate(value: string): { year: string; month: string; day: string } | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (match == null) return null;
+  const [, year, month, day] = match;
+  const date = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  if (
+    date.getUTCFullYear() !== Number(year)
+    || date.getUTCMonth() + 1 !== Number(month)
+    || date.getUTCDate() !== Number(day)
+  ) {
+    return null;
+  }
+  return { year, month, day };
 }

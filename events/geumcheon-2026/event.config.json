@@ -21,12 +21,16 @@
     "successColor": "#552D8D"
   },
   "assets": {
-    "eventTitle": "assets/event-title.png",
+    "eventTitle": "assets/title_04_science_hologram.png",
     "pageBackground": "assets/key-visual.png",
-    "aiBossTyping": "assets/ai_challenge/ai_boss_typing.png",
-    "aiBossVictory": "assets/ai_challenge/ai_boss_victory.png",
-    "aiBossDefeat": "assets/ai_challenge/ai_boss_defeat.png",
-    "vsBadge": "assets/ai_challenge/vs_badge.png",
+    "startBackground": "assets/bg_leaderboard_03_typing_hall_of_fame.png",
+    "playBackground": "assets/bg_main_03_geumcheon_data_city.png",
+    "leaderboardBackground": "assets/stage_01_03_science_classroom.png",
+    "aiBossMain": "assets/robot_03_speed_champion.png",
+    "aiBossTyping": "assets/robot_04_science_lab.png",
+    "aiBossVictory": "assets/robot_05_festival_victory.png",
+    "aiBossDefeat": "assets/robot_defeat_01_geumnarae_typer.png",
+    "vsBadge": "assets/vs_03_science_portal.png",
     "stageBadges": ["assets/ai_challenge/stage_badge_1.png", "assets/ai_challenge/stage_badge_2.png", "assets/ai_challenge/stage_badge_3.png"]
   },
   "variants": {

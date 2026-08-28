@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "tsx --test test/auth.test.ts test/recordSchema.test.ts test/recordStore.test.ts test/routes.test.ts test/leaderboard.test.ts test/operatorActions.test.ts test/piiBoundary.test.ts",
+    "test": "tsx --test test/auth.test.ts test/recordSchema.test.ts test/recordStore.test.ts test/routes.test.ts test/leaderboard.test.ts test/operatorActions.test.ts test/piiBoundary.test.ts test/multiDeviceConcurrency.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "esbuild src/cli.ts --bundle --platform=node --target=node24 --format=cjs --packages=external --outfile=dist/server.cjs",
     "start": "node dist/server.cjs"

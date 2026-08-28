@@ -1,7 +1,10 @@
 ﻿import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import type { OpenDialogOptions } from "electron";
+import { safeStorage } from "electron";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import tls from "node:tls";
 import {
   addStageText,
   clearRecords,
@@ -21,6 +24,7 @@ import {
   listBackups,
   pokeOneDriveSync,
   publishStageTextsToOneDrive,
+  recalculateRecord,
   readRecords,
   readStageTexts,
   restoreBackup,
@@ -33,24 +37,64 @@ import {
   validateOneDriveSetup,
   validateStageReadiness
 } from "../shared/csv/fileStore";
-import type { AppMode, AppVariant, DrawStageTextsInput, LeaderboardSyncStatus, PcRole, RecordRow, SaveRecordInput, StageText } from "../shared/types";
-import { createBootstrapData } from "../shared/events/bootstrapData";
+import type { RuntimeContext } from "../shared/csv/fileStore";
+import type { AppMode, AppVariant, DrawStageTextsInput, GameStartReadiness, LeaderboardSyncStatus, PcRole, RecordRow, SaveRecordInput, StageText } from "../shared/types";
+import { createBootstrapData, redactRendererConfig } from "../shared/events/bootstrapData";
 import type { EventProfile, EventVariantPolicy } from "../shared/events/types";
 import {
   portableRuntimeMigrationAllowed,
   recordModeFromPolicy,
   resolveApplicationResourcePaths,
+  resolveE2eExtraCaPath,
   resolveLaunchPolicy,
   resolvePackagedMetadata,
+  shouldHideE2eWindow,
+  shouldShowStartupErrorDialog,
   resolveStartupProfile
 } from "./startupProfile";
 import type { ApplicationResourcePaths, PackagedMetadata } from "./startupProfile";
+import { AdminAccessSessions } from "./adminAccessSession";
+import { importBootstrapCredential } from "./nas/bootstrapCredential";
+import { NasCredentialStore } from "./nas/credentialStore";
+import { checkGeumcheonNasReadiness, requireGeumcheonCredential } from "./nas/readiness";
+import { createGeumcheonNasRuntime, type GeumcheonNasRuntime } from "./nas/runtime";
+import {
+  RendererCheckpointFence,
+  requestRendererActiveAttemptCheckpoint
+} from "./rendererCheckpointHandshake";
 
 let mainWindow: BrowserWindow | null = null;
 let startupRuntimeRoot: string | undefined;
 
-app.commandLine.appendSwitch("disable-gpu");
-app.commandLine.appendSwitch("disable-software-rasterizer");
+const metadata = packagedMetadata();
+const variant = resolveVariant(metadata.variant);
+const selectedEventProfileId = app.isPackaged
+  ? metadata.eventProfileId
+  : process.env.EVENT_PROFILE;
+const requiresSingleInstanceLock = selectedEventProfileId === "geumcheon-2026"
+  && (variant === "ai" || variant === "practice");
+const mayStartApplication = !requiresSingleInstanceLock || app.requestSingleInstanceLock();
+if (!mayStartApplication) app.exit(0);
+else if (requiresSingleInstanceLock) {
+  app.on("second-instance", () => {
+    const existingWindow = mainWindow ?? BrowserWindow.getAllWindows()[0];
+    if (!existingWindow) return;
+    if (existingWindow.isMinimized()) existingWindow.restore();
+    existingWindow.focus();
+  });
+}
+
+type GeumcheonNasConnection = {
+  runtime: GeumcheonNasRuntime;
+  checkpointFence: RendererCheckpointFence;
+  checkReadiness(): Promise<GameStartReadiness>;
+  flush(): ReturnType<GeumcheonNasRuntime["flush"]>;
+};
+
+if (mayStartApplication) {
+  app.commandLine.appendSwitch("disable-gpu");
+  app.commandLine.appendSwitch("disable-software-rasterizer");
+}
 
 function appendStartupLog(message: string): void {
   try {
@@ -62,13 +106,27 @@ function appendStartupLog(message: string): void {
   }
 }
 
-process.on("uncaughtException", (error) => {
-  appendStartupLog(`uncaughtException: ${error instanceof Error ? error.stack || error.message : String(error)}`);
-});
+function installConfiguredExtraCa(): void {
+  const extraCaPath = resolveE2eExtraCaPath(process.env, app.isPackaged);
+  if (!extraCaPath) return;
+  try {
+    const extraCa = fs.readFileSync(extraCaPath, "utf8");
+    tls.setDefaultCACertificates([...tls.getCACertificates("default"), extraCa]);
+  } catch (error) {
+    appendStartupLog(`Extra CA initialization failed: ${errorMessage(error)}`);
+  }
+}
 
-process.on("unhandledRejection", (reason) => {
-  appendStartupLog(`unhandledRejection: ${reason instanceof Error ? reason.stack || reason.message : String(reason)}`);
-});
+if (mayStartApplication) {
+  process.on("uncaughtException", (error) => {
+    appendStartupLog(`uncaughtException: ${error instanceof Error ? error.stack || error.message : String(error)}`);
+  });
+
+  process.on("unhandledRejection", (reason) => {
+    appendStartupLog(`unhandledRejection: ${reason instanceof Error ? reason.stack || reason.message : String(reason)}`);
+  });
+  installConfiguredExtraCa();
+}
 
 function executableName(): string {
   return path.basename(process.env.PORTABLE_EXECUTABLE_FILE || process.execPath);
@@ -195,15 +253,94 @@ function appUserModelId(profile: EventProfile, policy: EventVariantPolicy): stri
   return `${namespace}.${policy.variant}`;
 }
 
-function createWindow(
+async function initializeGeumcheonNasConnection(
+  eventProfile: EventProfile,
+  deviceProfile: NonNullable<ReturnType<typeof resolveStartupProfile>["deviceProfile"]>,
+  sessionKind: "official" | "practice",
+  ctx: RuntimeContext
+): Promise<GeumcheonNasConnection> {
+  const runtimeRoot = resolveRuntimeRoot();
+  const localContext = (): RuntimeContext => ({
+    ...ctx,
+    config: { ...ctx.config, syncMode: "local" }
+  });
+  const runtime = createGeumcheonNasRuntime({
+    event: eventProfile,
+    device: deviceProfile,
+    sessionKind,
+    runtimeRoot,
+    safeStorage,
+    fetch: (input, init) => globalThis.fetch(input, init),
+    local: {
+      persist: (input, recordId) => saveRecord(localContext(), input, recordId),
+      read: async () => readRecords(localContext()),
+      admin: {
+        edit: async () => { throw new Error("NAS_LOCAL_ADMIN_FORBIDDEN"); },
+        hide: async () => { throw new Error("NAS_LOCAL_ADMIN_FORBIDDEN"); },
+        resetSession: async () => { throw new Error("NAS_LOCAL_ADMIN_FORBIDDEN"); }
+      }
+    }
+  });
+  const credentialStore = new NasCredentialStore({
+    filePath: path.join(runtimeRoot, "nas", "device-token.bin"),
+    safeStorage,
+    eventId: eventProfile.nasEventId,
+    deviceId: deviceProfile.deviceId,
+    apiBaseUrl: deviceProfile.apiBaseUrl
+  });
+  const executableDirectory = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath);
+  await requireGeumcheonCredential(() =>
+    importBootstrapCredential({
+      filePath: path.join(executableDirectory, "bootstrap-credentials.json"),
+      expectedEventId: eventProfile.nasEventId,
+      expectedDeviceId: deviceProfile.deviceId,
+      expectedApiBaseUrl: deviceProfile.apiBaseUrl,
+      store: credentialStore,
+      verifyCredential: () => runtime.checkReady()
+    })
+  );
+
+  let flushInFlight: ReturnType<GeumcheonNasRuntime["flush"]> | null = null;
+  const connection: GeumcheonNasConnection = {
+    runtime,
+    checkpointFence: new RendererCheckpointFence(),
+    checkReadiness: () => checkGeumcheonNasReadiness({
+      checkAuthenticatedReady: () => runtime.checkReady()
+    }),
+    flush: () => {
+      if (flushInFlight) return flushInFlight;
+      flushInFlight = runtime.flush().finally(() => {
+        flushInFlight = null;
+      });
+      return flushInFlight;
+    }
+  };
+  if (deviceProfile.role === "player") {
+    try {
+      await runtime.recover();
+    } catch (error) {
+      appendStartupLog(`Geumcheon active-attempt recovery failed: ${errorMessage(error)}`);
+    }
+    void connection.flush().catch((error) => {
+      appendStartupLog(`Geumcheon NAS startup flush failed: ${errorMessage(error)}`);
+    });
+  }
+  return connection;
+}
+
+export function createWindow(
   variant: AppVariant,
   eventProfile: EventProfile,
-  applicationResources: ApplicationResourcePaths
+  applicationResources: ApplicationResourcePaths,
+  beforeClose?: (window: BrowserWindow) => Promise<void>
 ): void {
   const mode = appModeFromVariant(variant);
   const variantPolicy = eventProfile.variants[variant];
+  const restrictPackagedGeumcheonWindow = app.isPackaged
+    && eventProfile.profileId === "geumcheon-2026";
   const preload = path.join(__dirname, "preload.js");
   const windowTitle = variantPolicy.windowTitle;
+  const hideWindowForE2e = shouldHideE2eWindow(process.env, app.isPackaged);
   mainWindow = new BrowserWindow({
     width: 1440,
     height: 900,
@@ -218,11 +355,13 @@ function createWindow(
       preload,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: true,
+      ...(restrictPackagedGeumcheonWindow ? { devTools: false } : {})
     }
   });
 
   mainWindow.setMenuBarVisibility(false);
+  if (restrictPackagedGeumcheonWindow) mainWindow.removeMenu();
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event, navigationUrl) => {
     const currentUrl = mainWindow?.webContents.getURL();
@@ -234,14 +373,37 @@ function createWindow(
   });
   mainWindow.once("ready-to-show", () => {
     mainWindow?.setTitle(windowTitle);
-    mainWindow?.show();
-    mainWindow?.focus();
+    if (!hideWindowForE2e) {
+      mainWindow?.show();
+      mainWindow?.focus();
+    }
   });
   mainWindow.webContents.once("did-finish-load", () => {
     mainWindow?.setTitle(windowTitle);
-    mainWindow?.show();
-    mainWindow?.focus();
+    if (!hideWindowForE2e) {
+      mainWindow?.show();
+      mainWindow?.focus();
+    }
   });
+  if (beforeClose && mainWindow) {
+    let closeInProgress = false;
+    const closingWindow = mainWindow;
+    closingWindow.on("close", (event) => {
+      if (closeInProgress) {
+        event.preventDefault();
+        return;
+      }
+      event.preventDefault();
+      closeInProgress = true;
+      void beforeClose(closingWindow)
+        .catch((error) => {
+          appendStartupLog(`Geumcheon window-close recovery failed: ${errorMessage(error)}`);
+        })
+        .finally(() => {
+          if (closingWindow && !closingWindow.isDestroyed()) closingWindow.destroy();
+        });
+    });
+  }
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
@@ -260,13 +422,13 @@ function createWindow(
   }
 }
 
-function registerIpc(
+async function registerIpc(
   variant: AppVariant,
   eventProfile: EventProfile,
   deviceProfile: ReturnType<typeof resolveStartupProfile>["deviceProfile"],
   pcRole: PcRole,
   applicationResources: ApplicationResourcePaths
-): void {
+): Promise<GeumcheonNasConnection | null> {
   const variantPolicy = eventProfile.variants[variant];
   const isPracticeVariant = variantPolicy.sessionKind === "practice";
   // ensureRuntime(설정 로드) 전에 연습모드를 확정해야 세션 경로가 "연습회차" 폴더로 계산된다.
@@ -285,6 +447,20 @@ function registerIpc(
   const rendererAssetBaseUrl = eventProfile.profileId === "geumcheon-2026"
     ? applicationResources.rendererAssetBaseUrl
     : ctx.assetBaseUrl;
+  let geumcheonNas: GeumcheonNasConnection | null = null;
+  if (eventProfile.profileId === "geumcheon-2026") {
+    if (!deviceProfile) throw new Error("Geumcheon launch requires validated device profile");
+    geumcheonNas = await initializeGeumcheonNasConnection(
+      eventProfile,
+      deviceProfile,
+      variantPolicy.sessionKind,
+      ctx
+    );
+  }
+  const adminAccessSessions = new AdminAccessSessions({
+    password: ctx.config.adminPassword,
+    ttlMs: 15 * 60 * 1000
+  });
   ipcMain.handle("app:getBootstrap", () => ({
     ok: true,
     data: createBootstrapData({
@@ -298,12 +474,17 @@ function registerIpc(
     })
   }));
 
-  ipcMain.handle("admin:validate", (_event, password: string, adminName?: string) => {
-    if (!password) return { ok: false, error: "관리자 비밀번호를 입력해 주세요." };
-    if (password !== ctx.config.adminPassword) {
-      return { ok: false, error: "관리자 비밀번호가 올바르지 않습니다." };
+  ipcMain.handle("admin:validate", (event, password: string, adminName?: string) => {
+    const authenticated = adminAccessSessions.authenticate(event.sender, password, adminName);
+    if (!authenticated.ok) {
+      return {
+        ok: false,
+        error: password
+          ? "관리자 비밀번호가 올바르지 않습니다."
+          : "관리자 비밀번호를 입력해 주세요."
+      };
     }
-    return { ok: true, data: { adminName: adminName?.trim() || "admin" } };
+    return { ok: true, data: { adminName: authenticated.adminName } };
   });
 
   ipcMain.handle("stage:list", () => safe(() => readStageTexts(ctx)));
@@ -323,52 +504,118 @@ function registerIpc(
     })
   );
   ipcMain.handle("stage:readiness", (_event, gameMode?: string) => safe(() => validateStageReadiness(ctx, gameMode)));
-  ipcMain.handle("stage:add", (_event, stageNumber: string, text: string, gameMode?: string) =>
-    safeAsync(() => addStageText(ctx, stageNumber, text, gameMode))
+  ipcMain.handle("stage:add", (event, stageNumber: string, text: string, gameMode?: string) =>
+    safeAsync(async () => {
+      adminAccessSessions.require(event.sender);
+      return addStageText(ctx, stageNumber, text, gameMode);
+    })
   );
-  ipcMain.handle("stage:update", (_event, id: string, patch: Partial<StageText>) =>
-    safeAsync(() => updateStageText(ctx, id, patch))
+  ipcMain.handle("stage:update", (event, id: string, patch: Partial<StageText>) =>
+    safeAsync(async () => {
+      adminAccessSessions.require(event.sender);
+      return updateStageText(ctx, id, patch);
+    })
   );
-  ipcMain.handle("stage:softDelete", (_event, id: string) =>
-    safeAsync(() => softDeleteStageText(ctx, id))
+  ipcMain.handle("stage:softDelete", (event, id: string) =>
+    safeAsync(async () => {
+      adminAccessSessions.require(event.sender);
+      return softDeleteStageText(ctx, id);
+    })
   );
-  ipcMain.handle("stage:hardDelete", (_event, id: string) =>
-    safeAsync(() => hardDeleteStageText(ctx, id))
+  ipcMain.handle("stage:hardDelete", (event, id: string) =>
+    safeAsync(async () => {
+      adminAccessSessions.require(event.sender);
+      return hardDeleteStageText(ctx, id);
+    })
   );
-  ipcMain.handle("stage:publishShared", () =>
-    safeAsync(() => publishStageTextsToOneDrive(ctx))
+  ipcMain.handle("stage:publishShared", (event) =>
+    safeAsync(async () => {
+      adminAccessSessions.require(event.sender);
+      return publishStageTextsToOneDrive(ctx);
+    })
   );
 
+  ipcMain.handle("records:checkpointActiveAttempt", (
+    _event,
+    input: SaveRecordInput,
+    closeRequestId?: string
+  ) =>
+    safeAsync(async () => {
+      if (!geumcheonNas || variantPolicy.role !== "player") {
+        throw new Error("Active-attempt checkpoint is unavailable for this event");
+      }
+      await geumcheonNas.checkpointFence.run(
+        _event.sender.id,
+        closeRequestId,
+        () => geumcheonNas.runtime.checkpoint(input)
+      );
+    })
+  );
   ipcMain.handle("records:save", (_event, input: SaveRecordInput) =>
     safeAsync(async () => {
+      if (geumcheonNas) {
+        const row = await geumcheonNas.runtime.save(input);
+        void geumcheonNas.flush().catch((error) => {
+          appendStartupLog(`Geumcheon NAS save flush failed: ${errorMessage(error)}`);
+        });
+        return row;
+      }
       return saveRecord(ctx, input);
     }, "기록 저장에 실패했습니다. 복구 파일에 임시 저장합니다.")
   );
   ipcMain.handle("records:checkStartReady", (_event, gameMode: "normal" | "ai_challenge") =>
-    safe(() => checkGameStartReadiness(ctx, gameMode))
+    safeAsync(async () => {
+      if (eventProfile.profileId !== "geumcheon-2026") {
+        return checkGameStartReadiness(ctx, gameMode);
+      }
+      if (!geumcheonNas) throw new Error("GEUMCHEON_NAS_UNAVAILABLE");
+      return geumcheonNas.checkReadiness();
+    })
   );
   ipcMain.handle("records:list", () =>
-    safe(() => {
+    safeAsync(async () => {
+      if (geumcheonNas && variantPolicy.role === "leaderboard") {
+        return (await geumcheonNas.runtime.loadRecords()).rows;
+      }
       return readRecords(ctx);
     }, "기록 파일을 읽을 수 없습니다. 파일이 열려 있거나 손상되었을 수 있습니다.")
   );
   ipcMain.handle(
     "records:update",
-    (_event, recordId: string, patch: Partial<RecordRow>, adminName: string) =>
+    (event, recordId: string, patch: Partial<RecordRow>) =>
       safeAsync(
-        () => updateRecord(ctx, recordId, patch, adminName),
+        async () => {
+          const { adminName } = adminAccessSessions.require(event.sender);
+          if (!geumcheonNas) return updateRecord(ctx, recordId, patch, adminName);
+          const before = (await geumcheonNas.runtime.loadRecords()).rows.find(
+            (record) => record.record_id === recordId
+          );
+          if (!before) throw new Error("수정 또는 삭제할 기록을 선택해 주세요.");
+          const replacement = recalculateRecord({ ...before, ...patch, record_id: recordId });
+          await geumcheonNas.runtime.edit(recordId, replacement, adminName);
+          return replacement;
+        },
         "기록 수정 중 오류가 발생했습니다. 백업 파일을 확인해 주세요."
       )
   );
-  ipcMain.handle("records:delete", (_event, recordId: string, adminName: string) =>
+  ipcMain.handle("records:delete", (event, recordId: string) =>
     safeAsync(
-      () => deleteRecord(ctx, recordId, adminName),
+      async () => {
+        const { adminName } = adminAccessSessions.require(event.sender);
+        if (!geumcheonNas) return deleteRecord(ctx, recordId, adminName);
+        await geumcheonNas.runtime.hide(recordId, true, adminName);
+      },
       "기록 삭제 중 오류가 발생했습니다. 백업 파일을 확인해 주세요."
     )
   );
-  ipcMain.handle("records:clear", (_event, adminName: string) =>
+  ipcMain.handle("records:clear", (event) =>
     safeAsync(
       async () => {
+        const { adminName } = adminAccessSessions.require(event.sender);
+        if (geumcheonNas) {
+          await geumcheonNas.runtime.resetSession(adminName);
+          return;
+        }
         // 연습 리더보드는 일반+AI 두 보드를 함께 표시하므로 두 모드 모두 표시 초기화한다.
         if (hasMultipleRecordModes) {
           await clearRecords(ctx, adminName, "normal");
@@ -380,8 +627,9 @@ function registerIpc(
       "리더보드 초기화 중 오류가 발생했습니다. 백업 파일을 확인해 주세요."
     )
   );
-  ipcMain.handle("records:export", (_event, rows: RecordRow[], scope: "all" | "filtered" | "leaderboard") =>
+  ipcMain.handle("records:export", (event, rows: RecordRow[], scope: "all" | "filtered" | "leaderboard") =>
     safe(() => {
+      adminAccessSessions.require(event.sender);
       // 연습 리더보드는 일반+AI 두 보드를 표시하므로 CSV도 두 모드를 각각 내보낸다.
       // (OneDrive 모드의 exportRecords는 모드별 최신 기록으로 재구성하므로 단일 호출로는 한쪽이 유실됨)
       if (hasMultipleRecordModes) {
@@ -400,8 +648,9 @@ function registerIpc(
       return exportRecords(ctx, rows, scope, scopedRecordMode);
     }, "CSV 내보내기 중 오류가 발생했습니다. 저장 위치를 확인해 주세요.")
   );
-  ipcMain.handle("records:exportSessionBackup", () =>
+  ipcMain.handle("records:exportSessionBackup", (event) =>
     safe(() => {
+      adminAccessSessions.require(event.sender);
       if (hasMultipleRecordModes) {
         const normal = exportCurrentSessionBackupClean(ctx, "normal");
         const ai = exportCurrentSessionBackupClean(ctx, "ai_challenge");
@@ -433,32 +682,67 @@ function registerIpc(
     };
   }));
   ipcMain.handle("records:backupStatus", () => safe(() => getCsvBackupStatus(ctx)));
-  ipcMain.handle("queue:status", () => safe(() => getQueuedRecordStatus(ctx)));
-  ipcMain.handle("queue:flush", () =>
-    safe(() => flushQueuedRecords(ctx), "기록 폴더에 다시 올리지 못했습니다. OneDrive 상태, 기록 폴더 설정, 디스크 권한을 확인해 주세요.")
+  ipcMain.handle("queue:status", () => safeAsync(async () => {
+    if (!geumcheonNas) return getQueuedRecordStatus(ctx);
+    const status = await geumcheonNas.runtime.queueStatus();
+    return { count: status.pending + status.blocked };
+  }));
+  ipcMain.handle("queue:flush", (event) =>
+    safeAsync(async () => {
+      adminAccessSessions.require(event.sender);
+      if (!geumcheonNas) return flushQueuedRecords(ctx);
+      const result = await geumcheonNas.flush();
+      return {
+        attempted: result.attempted,
+        sent: result.sent,
+        failed: result.blocked + result.deferred,
+        targetPaths: [],
+        failures: []
+      };
+    }, "기록 서버에 다시 올리지 못했습니다. 인터넷 연결과 NAS 서버 상태를 확인해 주세요.")
   );
-  ipcMain.handle("backups:list", () => safe(() => listBackups(ctx)));
-  ipcMain.handle("backups:restore", (_event, backupName: string, adminName: string) =>
-    safeAsync(() => restoreBackup(ctx, backupName, adminName), "백업 파일 복원에 실패했습니다.")
+  ipcMain.handle("backups:list", (event) => safe(() => {
+    adminAccessSessions.require(event.sender);
+    return listBackups(ctx);
+  }));
+  ipcMain.handle("backups:restore", (event, backupName: string) =>
+    safeAsync(() => {
+      const { adminName } = adminAccessSessions.require(event.sender);
+      return restoreBackup(ctx, backupName, adminName);
+    }, "백업 파일 복원에 실패했습니다.")
   );
 
-  ipcMain.handle("sync:getSettings", () => safe(() => getOneDriveSettings(ctx, pcRole)));
-  ipcMain.handle("sync:updateSettings", (_event, patch) =>
-    safe(() => updateOneDriveSettings(ctx, patch, pcRole))
+  ipcMain.handle("sync:getSettings", () =>
+    safe(() => redactRendererConfig(getOneDriveSettings(ctx, pcRole)))
   );
-  ipcMain.handle("sync:validateSetup", () =>
+  ipcMain.handle("sync:updateSettings", (event, patch) =>
     safe(() => {
-      return validateOneDriveSetup(ctx, pcRole);
+      adminAccessSessions.require(event.sender);
+      return redactRendererConfig(updateOneDriveSettings(ctx, patch, pcRole));
     })
   );
-  ipcMain.handle("sync:poke", (_event, reason?: string) => safe(() => pokeOneDriveSync(ctx, reason || "manual")));
-  ipcMain.handle("sync:cleanupLegacyArtifacts", () =>
+  ipcMain.handle("sync:validateSetup", (event) =>
+    safe(() => {
+      adminAccessSessions.require(event.sender);
+      return redactRendererConfig(validateOneDriveSetup(ctx, pcRole));
+    })
+  );
+  ipcMain.handle("sync:poke", (event, reason?: string) => safe(() => {
+    adminAccessSessions.require(event.sender);
+    return pokeOneDriveSync(ctx, reason || "manual");
+  }));
+  ipcMain.handle("sync:cleanupLegacyArtifacts", (event) =>
     safe(
-      () => cleanupLegacyOneDriveArtifacts(ctx),
+      () => {
+        adminAccessSessions.require(event.sender);
+        return cleanupLegacyOneDriveArtifacts(ctx);
+      },
       "OneDrive 불필요 파일 정리에 실패했습니다. OneDrive 상태와 폴더 권한을 확인해 주세요."
     )
   );
-  ipcMain.handle("sync:chooseRoot", async () => {
+  ipcMain.handle("sync:chooseRoot", async (event) => {
+    const authorized = safe(() => adminAccessSessions.require(event.sender));
+    if (!authorized.ok) return authorized;
     const dialogOptions: OpenDialogOptions = {
       title: "OneDrive 루트 폴더 선택",
       properties: ["openDirectory"]
@@ -470,7 +754,7 @@ function registerIpc(
       return { ok: false, error: "OneDrive 루트 폴더가 선택되지 않았습니다." };
     }
     return safe(() =>
-      updateOneDriveSettings(
+      redactRendererConfig(updateOneDriveSettings(
         ctx,
         {
           syncMode: "onedrive_manual",
@@ -478,11 +762,12 @@ function registerIpc(
           oneDriveRoot: result.filePaths[0]
         },
         pcRole
-      )
+      ))
     );
   });
-  ipcMain.handle("sync:openSessionFolder", () =>
+  ipcMain.handle("sync:openSessionFolder", (event) =>
     safeAsync(async () => {
+      adminAccessSessions.require(event.sender);
       const settings = getOneDriveSettings(ctx, pcRole);
       const target = settings.sessionDataRoot || settings.oneDriveRoot || resolveRoot();
       await shell.openPath(target);
@@ -492,13 +777,20 @@ function registerIpc(
 
   if (pcRole === "player") {
     setTimeout(() => {
-      try {
-        flushQueuedRecords(ctx);
-      } catch {
-        // 관리자 모드에서 수동으로 다시 시도할 수 있다.
+      if (geumcheonNas) {
+        void geumcheonNas.flush().catch((error) => {
+          appendStartupLog(`Geumcheon NAS delayed flush failed: ${errorMessage(error)}`);
+        });
+      } else {
+        try {
+          flushQueuedRecords(ctx);
+        } catch {
+          // 관리자 모드에서 수동으로 다시 시도할 수 있다.
+        }
       }
     }, 1000);
   }
+  return geumcheonNas;
 }
 
 function errorMessage(error: unknown, fallback?: string): string {
@@ -522,9 +814,7 @@ async function safeAsync<T>(task: () => Promise<T>, fallback?: string) {
   }
 }
 
-void app.whenReady().then(() => {
-  const metadata = packagedMetadata();
-  const variant = resolveVariant(metadata.variant);
+if (mayStartApplication) void app.whenReady().then(async () => {
   let launchPolicy: ReturnType<typeof resolveLaunchPolicy> | undefined;
   let startup: ReturnType<typeof resolveStartupProfile> | undefined;
   let applicationResources: ApplicationResourcePaths | undefined;
@@ -556,22 +846,78 @@ void app.whenReady().then(() => {
       role: startup.eventProfile.variants[variant].role
     });
   } catch (error) {
-    dialog.showErrorBox("시작할 수 없습니다", error instanceof Error ? error.message : String(error));
+    appendStartupLog(`Startup profile initialization failed: ${errorMessage(error)}`);
+    if (shouldShowStartupErrorDialog(process.env, app.isPackaged)) {
+      dialog.showErrorBox("시작할 수 없습니다", error instanceof Error ? error.message : String(error));
+    }
     app.exit(1);
     return;
   }
   if (!launchPolicy || !startup || !applicationResources) return;
   app.setAppUserModelId(appUserModelId(startup.eventProfile, startup.eventProfile.variants[variant]));
-  registerIpc(variant, startup.eventProfile, startup.deviceProfile, launchPolicy.pcRole, applicationResources);
-  createWindow(variant, startup.eventProfile, applicationResources);
+  let geumcheonNas: GeumcheonNasConnection | null;
+  try {
+    geumcheonNas = await registerIpc(
+      variant,
+      startup.eventProfile,
+      startup.deviceProfile,
+      launchPolicy.pcRole,
+      applicationResources
+    );
+  } catch (error) {
+    const cause = error instanceof Error && error.cause instanceof Error
+      ? ` cause=${error.cause.message}`
+      : "";
+    appendStartupLog(`Geumcheon NAS initialization failed: ${errorMessage(error)}${cause}`);
+    if (shouldShowStartupErrorDialog(process.env, app.isPackaged)) {
+      dialog.showErrorBox("시작할 수 없습니다", errorMessage(error));
+    }
+    app.exit(1);
+    return;
+  }
+  const beforeClose = geumcheonNas && launchPolicy.pcRole === "player"
+    ? async (closingWindow: BrowserWindow) => {
+        const closeRequestId = randomUUID();
+        geumcheonNas.checkpointFence.begin(
+          closingWindow.webContents.id,
+          closeRequestId
+        );
+        const checkpointResult = await requestRendererActiveAttemptCheckpoint({
+          ipc: ipcMain,
+          target: closingWindow.webContents,
+          timeoutMs: 900,
+          requestId: closeRequestId
+        });
+        geumcheonNas.checkpointFence.seal(
+          closingWindow.webContents.id,
+          closeRequestId
+        );
+        if (checkpointResult !== "completed") {
+          appendStartupLog(
+            `Geumcheon close-time checkpoint used fallback: ${checkpointResult}`
+          );
+        }
+        const recovered = await geumcheonNas.runtime.recover();
+        if (!recovered) return;
+        await Promise.race([
+          geumcheonNas.flush().then(() => undefined).catch((error) => {
+            appendStartupLog(`Geumcheon NAS window-close flush failed: ${errorMessage(error)}`);
+          }),
+          new Promise<void>((resolve) => setTimeout(resolve, 1500))
+        ]);
+      }
+    : undefined;
+  createWindow(variant, startup.eventProfile, applicationResources, beforeClose);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow(variant, startup.eventProfile, applicationResources);
+      createWindow(variant, startup.eventProfile, applicationResources, beforeClose);
     }
   });
 });
 
-app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
-});
+if (mayStartApplication) {
+  app.on("window-all-closed", () => {
+    if (process.platform !== "darwin") app.quit();
+  });
+}
