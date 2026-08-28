@@ -38,4 +38,3 @@ test("uses only practice query fields for a practice snapshot", async () => {
 
   assert.equal(requested, "https://records.example.test/api/v1/records?session_kind=practice&session_id=practice-1");
 });
-

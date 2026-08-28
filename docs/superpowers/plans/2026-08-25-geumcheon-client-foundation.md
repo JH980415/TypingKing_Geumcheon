@@ -332,7 +332,7 @@ The renderer must obtain titles, labels, asset paths, palette, and allowed game 
 
 - [ ] **Step 5: Apply the approved visual tokens**
 
-Copy `C:/Users/박재환/Downloads/금천과학축제2026_타이틀_260820.png` byte-for-byte to `events/geumcheon-2026/assets/event-title.png`. Copy the provided final key visual byte-for-byte to `events/geumcheon-2026/assets/key-visual.png`; verify each destination SHA-256 equals its source before UI work. Set CSS variables to `#552D8D`, `#3F1556`, `#C40080`, `#00B3EC`, `#FED900`, and `#FFFFFF`. Use both images responsively without stretching or recoloring; retain legible game panels at 1366×768 and 1920×1080.
+Copy `<DOWNLOADS_DIR>/금천과학축제2026_타이틀_260820.png` byte-for-byte to `events/geumcheon-2026/assets/event-title.png`. Copy the provided final key visual byte-for-byte to `events/geumcheon-2026/assets/key-visual.png`; verify each destination SHA-256 equals its source before UI work. Set CSS variables to `#552D8D`, `#3F1556`, `#C40080`, `#00B3EC`, `#FED900`, and `#FFFFFF`. Use both images responsively without stretching or recoloring; retain legible game panels at 1366×768 and 1920×1080.
 
 - [ ] **Step 6: Run tests and renderer build**
 

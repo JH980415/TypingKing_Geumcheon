@@ -10,6 +10,15 @@ class TestSender extends EventEmitter {
   }
 }
 
+test("rejects blank or publicly documented placeholder administrator passwords", () => {
+  for (const password of ["", "   ", "CHANGE_ME_BEFORE_EVENT"]) {
+    assert.throws(
+      () => new AdminAccessSessions({ password, ttlMs: 60_000 }),
+      /ADMIN_PASSWORD_INVALID/,
+    );
+  }
+});
+
 test("grants one renderer a bounded admin session and returns the authenticated name", () => {
   let now = 1_000;
   const sessions = new AdminAccessSessions({

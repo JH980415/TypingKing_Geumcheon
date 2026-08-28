@@ -8,10 +8,21 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
+import { sanitizeE2eChildEnvironment } from "../electron/startupProfile";
 
 type GeumcheonVariant = "ai" | "ai-leaderboard" | "practice" | "practice-leaderboard";
 type PcRole = "player" | "leaderboard";
 type SessionKind = "official" | "practice";
+
+export function buildPackagedSmokeChildEnvironment(
+  overrides: NodeJS.ProcessEnv,
+  inheritedEnvironment: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+  return {
+    ...sanitizeE2eChildEnvironment(inheritedEnvironment),
+    ...overrides
+  };
+}
 
 type CaseSpec = {
   variant: GeumcheonVariant;
@@ -358,12 +369,11 @@ $caKey.Dispose()
     encoding: "utf8",
     windowsHide: true,
     maxBuffer: 1024 * 1024,
-    env: {
-      ...process.env,
+    env: buildPackagedSmokeChildEnvironment({
       TK_SMOKE_PFX_PATH: pfxPath,
       TK_SMOKE_CA_PEM_PATH: caPemPath,
       TK_SMOKE_PFX_PASSWORD: passphrase
-    }
+    })
   });
   if (result.error) throw result.error;
   if (result.status !== 0 || !fs.existsSync(pfxPath) || !fs.existsSync(caPemPath)) {
@@ -581,15 +591,16 @@ function sanitizedLaunchEnv(
   executablePath: string
 ): Record<string, string> {
   const env = Object.fromEntries(
-    Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)
+    Object.entries(buildPackagedSmokeChildEnvironment({})).filter(
+      (entry): entry is [string, string] => entry[1] !== undefined
+    )
   );
   for (const key of [
     "APP_VARIANT",
     "EVENT_PROFILE",
     "TYPINGKING_RUNTIME_ROOT",
     "VITE_DEV_SERVER_URL",
-    "ELECTRON_RUN_AS_NODE",
-    "NODE_TLS_REJECT_UNAUTHORIZED"
+    "ELECTRON_RUN_AS_NODE"
   ]) {
     delete env[key];
   }
@@ -598,7 +609,6 @@ function sanitizedLaunchEnv(
   env.LOCALAPPDATA = path.join(caseRoot, "LocalAppData");
   env.APPDATA = path.join(caseRoot, "RoamingAppData");
   env.NODE_EXTRA_CA_CERTS = caPemPath;
-  env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
   env.ELECTRON_DISABLE_SECURITY_WARNINGS = "1";
   env.NO_PROXY = "127.0.0.1,localhost";
   return env;
@@ -722,10 +732,9 @@ ConvertTo-Json -InputObject @($titles) -Compress
     windowsHide: true,
     timeout: 5_000,
     maxBuffer: 1024 * 1024,
-    env: {
-      ...process.env,
+    env: buildPackagedSmokeChildEnvironment({
       TK_SMOKE_ROOT_PROCESS_ID: String(rootProcessId)
-    }
+    })
   });
   if (result.error || result.status !== 0) {
     return {
@@ -1233,7 +1242,9 @@ async function main(): Promise<void> {
   if (failed.length > 0) process.exitCode = 1;
 }
 
-main().catch((error) => {
-  console.error(sanitizeError(error, os.tmpdir()));
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(sanitizeError(error, os.tmpdir()));
+    process.exitCode = 1;
+  });
+}

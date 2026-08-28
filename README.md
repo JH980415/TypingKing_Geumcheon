@@ -82,8 +82,8 @@ PC ID가 중복되면 사후 로그 확인이 어려워집니다.
 예시 경로:
 
 ```text
-C:\Users\사용자명\OneDrive - 더피엠디
-C:\Users\사용자명\OneDrive - 더피엠디 (1)
+%USERPROFILE%\OneDrive - <회사명>
+%USERPROFILE%\OneDrive - <회사명> (1)
 ```
 
 OneDrive 루트는 개인 이름이 들어간 하위 폴더가 아니라, 회사 OneDrive 전체 폴더를 선택합니다.

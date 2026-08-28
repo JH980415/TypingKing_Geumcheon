@@ -98,4 +98,3 @@ test("reset_session hides the session view without deleting source rows", async 
   assert.deepEqual(await store.listEffective(OFFICIAL_SESSION), []);
   assert.equal((await store.list(OFFICIAL_SESSION)).length, 1);
 });
-

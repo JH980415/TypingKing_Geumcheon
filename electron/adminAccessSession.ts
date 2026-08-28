@@ -15,7 +15,13 @@ export class AdminAccessSessions {
   private readonly observedSenders = new WeakSet<object>();
 
   constructor(options: { password: string; ttlMs: number; now?: () => number }) {
-    if (typeof options.password !== "string" || options.password.length === 0) {
+    const normalizedPassword = typeof options.password === "string"
+      ? options.password.trim()
+      : "";
+    if (
+      normalizedPassword.length === 0
+      || normalizedPassword === "CHANGE_ME_BEFORE_EVENT"
+    ) {
       throw new Error("ADMIN_PASSWORD_INVALID");
     }
     if (

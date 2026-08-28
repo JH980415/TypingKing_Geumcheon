@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { parse } from "csv-parse/sync";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright-core";
+import { sanitizeE2eChildEnvironment } from "../electron/startupProfile";
 import { RECORD_HEADER_LABELS, RECORD_HEADERS } from "../shared/constants/defaults";
 import type { RecordRow } from "../shared/types";
 
@@ -76,6 +77,16 @@ const playerDeviceId = "PC01";
 const leaderboardDeviceId = "LEADERBOARD01";
 const playerToken = "6".repeat(64);
 const leaderboardToken = "7".repeat(64);
+
+export function buildForcedExitChildEnvironment(
+  overrides: NodeJS.ProcessEnv,
+  inheritedEnvironment: NodeJS.ProcessEnv = process.env
+): NodeJS.ProcessEnv {
+  return {
+    ...sanitizeE2eChildEnvironment(inheritedEnvironment),
+    ...overrides
+  };
+}
 
 function cleanDir(dir: string): void {
   fs.rmSync(dir, { recursive: true, force: true });
@@ -280,12 +291,11 @@ $caKey.Dispose()
       encoding: "utf8",
       windowsHide: true,
       maxBuffer: 1024 * 1024,
-      env: {
-        ...process.env,
+      env: buildForcedExitChildEnvironment({
         TK_E2E_PFX_PATH: pfxPath,
         TK_E2E_CA_PEM_PATH: caPemPath,
         TK_E2E_PFX_PASSWORD: passphrase
-      }
+      })
     }
   );
   if (result.error) throw result.error;
@@ -521,14 +531,13 @@ fetch(process.env.TK_E2E_API_BASE_URL + "/api/v1/records?" + query.toString(), {
   const child = spawn(process.execPath, ["-e", script], {
     stdio: ["ignore", "ignore", "pipe"],
     windowsHide: true,
-    env: {
-      ...process.env,
+    env: buildForcedExitChildEnvironment({
       NODE_EXTRA_CA_CERTS: caPemPath,
       TK_E2E_API_BASE_URL: apiBaseUrl,
       TK_E2E_SESSION_ID: officialSessionId,
       TK_E2E_TOKEN: leaderboardToken,
       TK_E2E_DEVICE_ID: leaderboardDeviceId
-    }
+    })
   });
   let stderr = "";
   child.stderr?.on("data", (chunk) => {
@@ -582,16 +591,14 @@ async function launchApp(paths: ScenarioPaths, caPemPath: string): Promise<Elect
     executablePath: electronExe,
     args: ["--disable-gpu", mainJs, "--variant=ai"],
     timeout: 15_000,
-    env: {
-      ...process.env,
+    env: buildForcedExitChildEnvironment({
       APP_VARIANT: "ai",
       EVENT_PROFILE: "geumcheon-2026",
       PORTABLE_EXECUTABLE_DIR: paths.root,
       TYPINGKING_RUNTIME_ROOT: paths.runtimeRoot,
       NODE_EXTRA_CA_CERTS: caPemPath,
-      NODE_TLS_REJECT_UNAUTHORIZED: "0",
       ELECTRON_DISABLE_SECURITY_WARNINGS: "1"
-    }
+    })
   });
 }
 
@@ -600,16 +607,14 @@ async function launchLeaderboardApp(paths: ScenarioPaths, caPemPath: string): Pr
     executablePath: electronExe,
     args: ["--disable-gpu", mainJs, "--variant=ai-leaderboard"],
     timeout: 15_000,
-    env: {
-      ...process.env,
+    env: buildForcedExitChildEnvironment({
       APP_VARIANT: "ai-leaderboard",
       EVENT_PROFILE: "geumcheon-2026",
       PORTABLE_EXECUTABLE_DIR: paths.root,
       TYPINGKING_RUNTIME_ROOT: paths.runtimeRoot,
       NODE_EXTRA_CA_CERTS: caPemPath,
-      NODE_TLS_REJECT_UNAUTHORIZED: "0",
       ELECTRON_DISABLE_SECURITY_WARNINGS: "1"
-    }
+    })
   });
 }
 
@@ -1330,13 +1335,15 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
-  fs.mkdirSync(artifactRoot, { recursive: true });
-  fs.writeFileSync(
-    path.join(artifactRoot, "harness-error.txt"),
-    `${error instanceof Error ? error.stack || error.message : String(error)}\n`,
-    "utf8"
-  );
-  console.error(error);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    fs.mkdirSync(artifactRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(artifactRoot, "harness-error.txt"),
+      `${error instanceof Error ? error.stack || error.message : String(error)}\n`,
+      "utf8"
+    );
+    console.error(error);
+    process.exitCode = 1;
+  });
+}
