@@ -968,6 +968,47 @@ async function runCase(options: {
       ["ai_challenge"],
       JSON.stringify(bootstrap.variantPolicy?.gameModes) === JSON.stringify(["ai_challenge"])
     );
+    const notices = Array.isArray(bootstrap.notices) ? bootstrap.notices : [];
+    const stageTextFallbackNotice = "문구 파일이 없어 기본 문구로 생성합니다.";
+    addCheck(
+      checks,
+      "packaged stage catalog fallback absent",
+      notices.includes(stageTextFallbackNotice),
+      false,
+      notices.includes(stageTextFallbackNotice) === false
+    );
+    if (testCase.role === "player") {
+      const drawn = await page.evaluate(
+        async (sessionKind) => (window as any).typingKing.drawStageTexts({
+          sessionKind,
+          gameMode: "ai_challenge"
+        }),
+        testCase.sessionKind
+      );
+      const expectedCatalogVersion = bootstrap.eventProfile?.stageTextCatalogVersion;
+      const selections = drawn?.data?.selections;
+      const catalogDrawPassed = drawn?.ok === true
+        && drawn?.data?.catalogVersion === expectedCatalogVersion
+        && Array.isArray(selections)
+        && selections.length === 3
+        && selections.every((selection: any, index: number) =>
+          selection?.catalogVersion === expectedCatalogVersion
+          && selection?.stageNumber === index + 1
+          && typeof selection?.text === "string"
+          && selection.text.length > 0
+        );
+      addCheck(
+        checks,
+        "packaged stage catalog draw",
+        {
+          ok: drawn?.ok,
+          catalogVersion: drawn?.data?.catalogVersion,
+          selectionCount: Array.isArray(selections) ? selections.length : 0
+        },
+        { ok: true, catalogVersion: expectedCatalogVersion, selectionCount: 3 },
+        catalogDrawPassed
+      );
+    }
 
     const pageTitle = await page.title();
     addCheck(checks, "document title", pageTitle, testCase.title, pageTitle === testCase.title);

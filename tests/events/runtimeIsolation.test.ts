@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import * as startupProfileModule from "../../electron/startupProfile";
+import { ensureRuntime } from "../../shared/csv/fileStore";
 import { loadEventProfile } from "../../shared/events/eventProfile";
 import {
   resolveDeviceRuntimeRoot,
@@ -75,6 +78,50 @@ test("keeps packaged SkillUp compatible without a copied event profile", () => {
   });
   assert.equal(startup.eventProfile.profileId, "skillup-2026");
   assert.equal(startup.runtimeRoot, path.join("C:\\Local", "ThePMD", "TypingKing2026"));
+});
+
+test("seeds a packaged Geumcheon runtime from the bundled catalog without a fallback notice", (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-packaged-catalog-"));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  const resourceRoot = path.join(tempRoot, "resources");
+  const eventRoot = path.join(resourceRoot, "events", "geumcheon-2026");
+  const executableDirectory = path.join(tempRoot, "portable");
+  const localAppData = path.join(tempRoot, "local-app-data");
+  fs.mkdirSync(eventRoot, { recursive: true });
+  fs.mkdirSync(executableDirectory, { recursive: true });
+  fs.copyFileSync(path.resolve("events/geumcheon-2026/event.config.json"), path.join(eventRoot, "event.config.json"));
+  fs.copyFileSync(path.resolve("events/geumcheon-2026/stage_texts.csv"), path.join(eventRoot, "stage_texts.csv"));
+  fs.writeFileSync(
+    path.join(executableDirectory, "device-profile.json"),
+    JSON.stringify({
+      schemaVersion: 1,
+      eventProfileId: "geumcheon-2026",
+      eventId: "geumcheon-science-festival-2026",
+      deviceId: "PC01",
+      role: "player",
+      apiBaseUrl: "https://records.example.test",
+      sessions: {
+        official: { sessionId: "day-1-round-1", dayNo: 1, roundNo: 1 },
+        practice: { sessionId: "practice" }
+      },
+      requestTimeoutMs: 5000,
+      retry: { initialDelayMs: 2000, maxDelayMs: 60000 }
+    }),
+    "utf8"
+  );
+
+  const startup = resolveStartupProfile({
+    isPackaged: true,
+    packagedEventProfile: "geumcheon-2026",
+    projectRoot: resourceRoot,
+    executableDirectory,
+    localAppData
+  });
+  const runtime = ensureRuntime(startup.runtimeRoot, resourceRoot);
+  const runtimeCatalog = fs.readFileSync(runtime.paths.stageTextsFile, "utf8");
+
+  assert.equal(runtime.notices.includes("문구 파일이 없어 기본 문구로 생성합니다."), false);
+  assert.match(runtimeCatalog, /과학은 질문에서 시작됩니다/);
 });
 
 test("allows executable-adjacent runtime migration only for legacy SkillUp", () => {

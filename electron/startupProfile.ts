@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadDeviceProfile, loadEventProfile } from "../shared/events/eventProfile";
@@ -185,6 +186,28 @@ export function resolveDeviceRuntimeRoot(
   return path.join(localAppData, "ThePMD", "TypingKing2026", profileId, deviceId);
 }
 
+function seedPackagedGeumcheonStageTexts(
+  options: StartupProfileOptions,
+  profileId: EventProfileId,
+  runtimeRoot: string
+): void {
+  if (!options.isPackaged || profileId !== "geumcheon-2026") return;
+  const target = path.join(runtimeRoot, "data", "stage_texts.csv");
+  if (fs.existsSync(target)) return;
+  const source = path.join(options.projectRoot, "events", profileId, "stage_texts.csv");
+  if (!fs.existsSync(source) || !fs.statSync(source).isFile()) {
+    throw new Error("Packaged Geumcheon stage catalog is missing");
+  }
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const temporary = `${target}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.copyFileSync(source, temporary);
+    fs.renameSync(temporary, target);
+  } finally {
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+  }
+}
+
 export function resolveLaunchPolicy(startup: StartupProfile, variant: AppVariant): LaunchPolicy {
   const variantPolicy = startup.eventProfile.variants[variant];
   if (!variantPolicy.enabled) throw new Error(`Variant ${variant} is disabled for ${startup.eventProfile.profileId}`);
@@ -221,6 +244,7 @@ export function resolveStartupProfile(options: StartupProfileOptions): StartupPr
   const runtimeRoot = !options.isPackaged && options.runtimeRootOverride
     ? options.runtimeRootOverride
     : resolveDeviceRuntimeRoot(localBase, eventProfile.profileId, deviceProfile.deviceId);
+  seedPackagedGeumcheonStageTexts(options, eventProfile.profileId, runtimeRoot);
   return {
     eventProfile,
     deviceProfile,
