@@ -1,3 +1,5 @@
+import path from "node:path";
+
 export const approvedUiVariants = [
   "ai",
   "ai-leaderboard",
@@ -73,4 +75,50 @@ export function buildApprovedUiLaunchEnvironment(
     TYPINGKING_E2E_SUPPRESS_STARTUP_DIALOGS: "1",
     ...(options.mode === "automated" ? { TYPINGKING_E2E_HIDE_WINDOW: "1" } : {})
   };
+}
+
+export function resolveGeumcheonE2eArtifactRoot(
+  projectRoot: string,
+  defaultDirectoryName: string,
+  override?: string
+): string {
+  const testArtifactsRoot = path.resolve(projectRoot, "test_artifacts");
+  const requested = override?.trim();
+  const resolved = path.resolve(
+    projectRoot,
+    requested || path.join("test_artifacts", defaultDirectoryName)
+  );
+  if (
+    resolved === testArtifactsRoot
+    || !resolved.startsWith(`${testArtifactsRoot}${path.sep}`)
+  ) {
+    throw new Error("Refusing E2E artifact root outside test_artifacts");
+  }
+  if (path.dirname(resolved) !== testArtifactsRoot) {
+    throw new Error("E2E artifact root must be a direct child of test_artifacts");
+  }
+  return resolved;
+}
+
+export function resolveGeumcheonR2ReleaseRoot(projectRoot: string, override: string): string {
+  const releaseRoot = path.resolve(projectRoot, "Codex", "Outputs", "R2", "01_Release");
+  const requested = override.trim();
+  const resolved = path.resolve(projectRoot, requested);
+  if (resolved === releaseRoot) {
+    throw new Error("R2 release output must be a child directory");
+  }
+  if (!resolved.startsWith(`${releaseRoot}${path.sep}`)) {
+    throw new Error("Refusing R2 release root outside Codex/Outputs/R2/01_Release");
+  }
+  if (path.dirname(resolved) !== releaseRoot) {
+    throw new Error("R2 release root must be a direct child of Codex/Outputs/R2/01_Release");
+  }
+  return resolved;
+}
+
+export function resolveGeumcheonReleaseRoot(projectRoot: string, override?: string): string {
+  const requested = override?.trim();
+  return requested
+    ? resolveGeumcheonR2ReleaseRoot(projectRoot, requested)
+    : path.resolve(projectRoot, "release-geumcheon");
 }

@@ -7,9 +7,15 @@ import os from "node:os";
 import path from "node:path";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright-core";
 import { sanitizeE2eChildEnvironment } from "../electron/startupProfile";
+import { DEFAULT_CONFIG } from "../shared/constants/defaults";
+import {
+  toPortableCssFileReference,
+  toPortableProjectPath
+} from "./geumcheon-evidence-paths";
 import {
   buildApprovedUiLaunchEnvironment,
   parseApprovedUiRunOptions,
+  resolveGeumcheonE2eArtifactRoot,
   type ApprovedUiRunOptions,
   type ApprovedUiVariant
 } from "./geumcheon-approved-ui-options";
@@ -44,7 +50,11 @@ type ScreenCheck = {
 };
 
 const root = process.cwd();
-const artifactRoot = path.resolve("test_artifacts", "geumcheon_approved_ui");
+const artifactRoot = resolveGeumcheonE2eArtifactRoot(
+  root,
+  "geumcheon_approved_ui",
+  process.env.TYPINGKING_E2E_ARTIFACT_ROOT
+);
 const electronExe = path.join(root, "node_modules", "electron", "dist", "electron.exe");
 const mainJs = path.join(root, "dist-electron", "electron", "main.js");
 const eventId = "geumcheon-science-festival-2026";
@@ -98,6 +108,16 @@ function writeSyntheticProfiles(
     apiBaseUrl,
     token
   }, null, 2)}\n`, "utf8");
+  const runtimeConfigDir = path.join(dir, "runtime", "config");
+  ensureDir(runtimeConfigDir);
+  fs.writeFileSync(
+    path.join(runtimeConfigDir, "config.json"),
+    `${JSON.stringify({
+      ...DEFAULT_CONFIG,
+      adminPassword: crypto.randomBytes(24).toString("base64url")
+    }, null, 2)}\n`,
+    "utf8"
+  );
 }
 
 function createLocalHttpsCertificate(certRoot: string): {
@@ -423,13 +443,13 @@ async function captureAndAssert(
   rows.push({
     screen,
     resolution: `${width}x${height}`,
-    background: metrics.background,
+    background: toPortableCssFileReference(root, metrics.background),
     alpha: metrics.alpha,
     horizontalOverflow: metrics.horizontalOverflow,
     verticalOverflow: metrics.verticalOverflow,
     buttonsReachable: metrics.buttonsReachable,
     brokenImages,
-    screenshot
+    screenshot: toPortableProjectPath(root, screenshot)
   });
   assert.match(metrics.background, new RegExp(expectedBackgroundFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.ok(metrics.alpha < 1, `${screen} panel must be translucent; computed alpha=${metrics.alpha}`);

@@ -3,26 +3,43 @@ import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { _electron as electron } from "playwright-core";
-
-type FairnessStage = {
-  stageNumber: number;
-  textId: string;
-  catalogVersion: string;
-  targetText: string;
-  typedText: string;
-  userTimeMs: number;
-  typingUnits: number;
-  aiCpm: number;
-  result: string;
-};
-
-type FairnessRecord = {
-  fairness?: { catalogVersion: string; stages: FairnessStage[] };
-};
+import { _electron as electron, type Page } from "playwright-core";
+import {
+  buildForcedExitChildEnvironment,
+  type CapturedRecordEnvelope,
+  startLocalHealthServer,
+  stopHttpsServer,
+  writeSyntheticProfiles
+} from "./e2e-geumcheon-forced-exit-check";
 
 const root = process.cwd();
-const artifactRoot = path.resolve("test_artifacts", "geumcheon_countdown_interruption_e2e");
+
+export function resolveCountdownArtifactRoot(
+  environment: Record<string, string | undefined> = process.env,
+  projectRoot = root
+): string {
+  return resolveExplicitR2ArtifactRoot("geumcheon_countdown_interruption_e2e", environment, projectRoot);
+}
+
+function resolveExplicitR2ArtifactRoot(
+  defaultName: string,
+  environment: Record<string, string | undefined>,
+  projectRoot: string
+): string {
+  const base = path.resolve(projectRoot);
+  const override = environment.TYPINGKING_E2E_ARTIFACT_ROOT?.trim();
+  if (!override) return path.join(base, "test_artifacts", defaultName);
+
+  const resolved = path.resolve(path.isAbsolute(override) ? override : path.join(base, override));
+  const allowedRoot = path.join(base, "test_artifacts", "R2");
+  const relative = path.relative(allowedRoot, resolved);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("TYPINGKING_E2E_ARTIFACT_ROOT must resolve under test_artifacts/R2/<run-name>");
+  }
+  return resolved;
+}
+
+const artifactRoot = resolveCountdownArtifactRoot(process.env, root);
 const electronExe = path.join(root, "node_modules", "electron", "dist", "electron.exe");
 const mainJs = path.join(root, "dist-electron", "electron", "main.js");
 const devServerUrl = "http://127.0.0.1:4174";
@@ -67,23 +84,25 @@ function cleanDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-function writeDeviceProfile(dir: string): void {
-  fs.writeFileSync(path.join(dir, "device-profile.json"), `${JSON.stringify({
-    schemaVersion: 1,
-    eventProfileId: "geumcheon-2026",
-    eventId: "geumcheon-science-festival-2026",
-    deviceId: "PC01",
-    role: "player",
-    apiBaseUrl: "https://records.example.test",
-    sessions: {
-      official: { sessionId: "e2e-official", dayNo: 1, roundNo: 1 },
-      practice: { sessionId: "e2e-practice" }
-    },
-    requestTimeoutMs: 5000,
-    retry: { initialDelayMs: 2000, maxDelayMs: 60000 }
-  }, null, 2)}\n`, "utf8");
+export function writeCountdownDeviceProfile(
+  dir: string,
+  apiBaseUrl = "https://records.example.test"
+): void {
+  writeSyntheticProfiles(dir, apiBaseUrl);
 }
 
+export function shouldKeepCountdownEvidence(
+  environment: Record<string, string | undefined> = process.env,
+  resolvedArtifactRoot = artifactRoot,
+  projectRoot = root
+): boolean {
+  if (environment.TYPINGKING_E2E_KEEP_EVIDENCE !== "1") return false;
+  if (!environment.TYPINGKING_E2E_ARTIFACT_ROOT?.trim()) return false;
+  const base = path.resolve(projectRoot);
+  const allowedRoot = path.join(base, "test_artifacts", "R2");
+  const relative = path.relative(allowedRoot, path.resolve(resolvedArtifactRoot));
+  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
 async function startDevServer(): Promise<ChildProcess> {
   const vite = path.join(root, "node_modules", "vite", "bin", "vite.js");
   progress("Vite: spawning");
@@ -112,14 +131,79 @@ async function startDevServer(): Promise<ChildProcess> {
   throw new Error("Vite renderer server did not start");
 }
 
-async function waitForJson(dir: string): Promise<string> {
+async function writeCountdownDiagnostic(page: Page, terminalStage: 1 | 2 | 3, label: string): Promise<void> {
+  fs.mkdirSync(path.join(artifactRoot, "diagnostics"), { recursive: true });
+  const diagnostic = await page.evaluate(async () => {
+    const api = (window as any).typingKing;
+    const bootstrap = api?.getBootstrap
+      ? await api.getBootstrap().catch((error: unknown) => ({ ok: false, error: error instanceof Error ? error.message : String(error) }))
+      : { ok: false, error: "typingKing IPC API unavailable" };
+    const bootstrapData = bootstrap?.ok ? bootstrap.data : undefined;
+    return {
+      url: location.href,
+      title: document.title,
+      readyState: document.readyState,
+      bodyText: document.body?.innerText.slice(0, 1500) || "",
+      selectors: {
+        entryPanel: document.querySelectorAll(".entry-panel").length,
+        entryPanelVisibleInput: document.querySelectorAll(".entry-panel .field input").length,
+        phoneSelect: document.querySelectorAll(".phone-row select").length,
+        phoneInput: document.querySelectorAll(".phone-row input").length,
+        birthSelect: document.querySelectorAll(".birth-row select").length,
+        checkLineInput: document.querySelectorAll(".check-line input").length,
+        challengeScreen: document.querySelectorAll(".challenge-screen").length,
+        fallback: document.querySelectorAll(".empty-state, .app-fallback").length
+      },
+      bootstrap: bootstrap?.ok ? {
+        variant: bootstrapData?.variant,
+        mode: bootstrapData?.mode,
+        eventProfileId: bootstrapData?.eventProfile?.profileId,
+        deviceId: bootstrapData?.deviceProfile?.deviceId,
+        deviceRole: bootstrapData?.deviceProfile?.role,
+        syncMode: bootstrapData?.config?.syncMode,
+        pcRole: bootstrapData?.config?.pcRole,
+        pcId: bootstrapData?.config?.pcId,
+        recordBaseFolderName: bootstrapData?.config?.recordBaseFolderName,
+        dayNo: bootstrapData?.config?.dayNo,
+        roundNo: bootstrapData?.config?.roundNo
+      } : bootstrap
+    };
+  }).catch((error) => ({ error: error instanceof Error ? error.message : String(error) }));
+  const base = path.join(artifactRoot, "diagnostics", `stage-${terminalStage}-${label}`);
+  fs.writeFileSync(`${base}.json`, `${JSON.stringify(diagnostic, null, 2)}\n`, "utf8");
+  await page.screenshot({ path: `${base}.png`, fullPage: false }).catch(() => undefined);
+}
+
+async function waitForCountdownEntryPanel(page: Page, terminalStage: 1 | 2 | 3): Promise<void> {
+  await page.waitForFunction(() => Boolean((window as any).typingKing), undefined, { timeout: 15000 });
+  await page.locator(".entry-panel").first().waitFor({ state: "visible", timeout: 45000 }).catch(async (error) => {
+    await writeCountdownDiagnostic(page, terminalStage, "entry-panel-timeout").catch(() => undefined);
+    const diagnostic = await page.evaluate(() => ({
+      readyState: document.readyState,
+      body: document.body?.innerText.slice(0, 1000),
+      entryPanels: document.querySelectorAll(".entry-panel").length,
+      challengeScreens: document.querySelectorAll(".challenge-screen").length,
+      fallbackScreens: document.querySelectorAll(".empty-state, .app-fallback").length
+    })).catch((caught) => ({ error: caught instanceof Error ? caught.message : String(caught) }));
+    progress(`stage-${terminalStage}: entry panel wait failed ${JSON.stringify(diagnostic)}`);
+    throw error;
+  });
+}
+
+async function waitForCapturedCountdownRecord(
+  capturedRecords: CapturedRecordEnvelope[],
+  outboxPendingDir: string,
+  page: Page,
+  terminalStage: 1 | 2 | 3
+): Promise<CapturedRecordEnvelope> {
   const timeoutAt = Date.now() + 12000;
   while (Date.now() < timeoutAt) {
-    const files = fs.existsSync(dir) ? fs.readdirSync(dir).filter((name) => name.endsWith(".json")) : [];
-    if (files.length > 0) return path.join(dir, files[0]);
+    const pendingFiles = fs.existsSync(outboxPendingDir) ? fs.readdirSync(outboxPendingDir) : [];
+    if (capturedRecords[0] && pendingFiles.length === 0) return capturedRecords[0];
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error(`Interrupted Geumcheon record was not written: ${dir}`);
+  await writeCountdownDiagnostic(page, terminalStage, "save-record-timeout").catch(() => undefined);
+  throw new Error("Interrupted Geumcheon NAS record POST was not captured");
 }
 
 async function waitForRunningStage(page: Awaited<ReturnType<Awaited<ReturnType<typeof electron.launch>>["firstWindow"]>>): Promise<void> {
@@ -154,33 +238,33 @@ async function completeCurrentStage(page: Awaited<ReturnType<Awaited<ReturnType<
   await page.getByRole("button", { name: "다음 스테이지" }).click();
 }
 
-async function runCountdownInterruption(terminalStage: 1 | 2 | 3): Promise<FairnessRecord> {
+async function runCountdownInterruption(terminalStage: 1 | 2 | 3): Promise<CapturedRecordEnvelope> {
   const scenarioRoot = path.join(os.tmpdir(), "typingking-geumcheon-countdown-interruption-e2e", `stage-${terminalStage}`);
   const runtimeRoot = path.join(scenarioRoot, "runtime");
-  const oneDriveRoot = path.join(scenarioRoot, "onedrive");
   await removeScenarioDir(scenarioRoot);
   fs.mkdirSync(runtimeRoot, { recursive: true });
-  fs.mkdirSync(oneDriveRoot, { recursive: true });
-  writeDeviceProfile(scenarioRoot);
-  progress(`stage-${terminalStage}: launching Electron`);
+  let readinessServer: Awaited<ReturnType<typeof startLocalHealthServer>> | undefined;
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined;
   let appProcess: ChildProcess | undefined;
   try {
+    readinessServer = await startLocalHealthServer(path.join(scenarioRoot, "certs"), { captureRecords: true });
+    writeCountdownDeviceProfile(scenarioRoot, readinessServer.apiBaseUrl);
+    progress(`stage-${terminalStage}: launching Electron`);
     try {
       app = await electron.launch({
       executablePath: electronExe,
       // The renderer regression runs on GPU-less automation hosts as well as on Windows desktops.
       args: ["--disable-gpu", mainJs, "--variant=ai"],
       timeout: 15000,
-      env: {
-        ...process.env,
+      env: buildForcedExitChildEnvironment({
         APP_VARIANT: "ai",
         EVENT_PROFILE: "geumcheon-2026",
         PORTABLE_EXECUTABLE_DIR: scenarioRoot,
         TYPINGKING_RUNTIME_ROOT: runtimeRoot,
         VITE_DEV_SERVER_URL: devServerUrl,
+        NODE_EXTRA_CA_CERTS: readinessServer.caPemPath,
         ELECTRON_DISABLE_SECURITY_WARNINGS: "1"
-      }
+      })
       });
       progress(`stage-${terminalStage}: Electron launch resolved`);
     } catch (error) {
@@ -200,20 +284,9 @@ async function runCountdownInterruption(terminalStage: 1 | 2 | 3): Promise<Fairn
       challengeScreens: document.querySelectorAll(".challenge-screen").length,
       countdowns: document.querySelectorAll(".countdown-overlay").length
     })))}`);
-    await page.evaluate(async (rootPath) => {
-      const api = (window as any).typingKing;
-      await api.updateOneDriveSettings({
-        syncMode: "onedrive_manual",
-        pcRole: "player",
-        pcId: "PC01",
-        oneDriveRoot: rootPath,
-        recordBaseFolderName: "Geumcheon_Countdown_E2E",
-        dayNo: 1,
-        roundNo: 1
-      });
-      await api.validateOneDriveSetup();
-    }, oneDriveRoot);
-    progress(`stage-${terminalStage}: OneDrive settings validated`);
+    await writeCountdownDiagnostic(page, terminalStage, "after-first-window");
+    await page.waitForLoadState("domcontentloaded", { timeout: 15000 }).catch(() => undefined);
+    await waitForCountdownEntryPanel(page, terminalStage);
 
     await page.locator(".entry-panel .field input").first().fill("E2E");
     await page.locator(".phone-row select").selectOption("010");
@@ -241,10 +314,14 @@ async function runCountdownInterruption(terminalStage: 1 | 2 | 3): Promise<Fairn
     progress(`stage-${terminalStage}: interruption confirmed`);
     await page.locator(".entry-panel").waitFor({ state: "visible", timeout: 12000 });
 
-    const incoming = path.join(oneDriveRoot, "Geumcheon_Countdown_E2E", "1일차", "1회차", "incoming", "ai");
-    const jsonPath = await waitForJson(incoming);
-    progress(`stage-${terminalStage}: record found ${jsonPath}`);
-    return JSON.parse(fs.readFileSync(jsonPath, "utf8")) as FairnessRecord;
+    const envelope = await waitForCapturedCountdownRecord(
+      readinessServer.capturedRecords,
+      path.join(runtimeRoot, "nas", "outbox", "official", "pending"),
+      page,
+      terminalStage
+    );
+    progress(`stage-${terminalStage}: authenticated NAS record POST acknowledged and outbox flushed`);
+    return envelope;
   } finally {
     let cleanupError: unknown;
     if (app) {
@@ -257,8 +334,14 @@ async function runCountdownInterruption(terminalStage: 1 | 2 | 3): Promise<Fairn
       }
     }
     try {
+      await stopHttpsServer(readinessServer?.server);
+    } catch (error) {
+      cleanupError = cleanupError || error;
+      progress(`stage-${terminalStage}: HTTPS server cleanup failed ${error instanceof Error ? error.message : String(error)}`);
+    }
+    try {
       await removeScenarioDir(scenarioRoot);
-      progress(`stage-${terminalStage}: Electron and temp scenario cleaned`);
+      progress(`stage-${terminalStage}: Electron, HTTPS server, and temp scenario cleaned`);
     } catch (error) {
       cleanupError = cleanupError || error;
       progress(`stage-${terminalStage}: temp scenario cleanup failed ${error instanceof Error ? error.message : String(error)}`);
@@ -267,8 +350,77 @@ async function runCountdownInterruption(terminalStage: 1 | 2 | 3): Promise<Fairn
   }
 }
 
+type CountdownResult = {
+  terminalStage: 1 | 2 | 3;
+  envelope: CapturedRecordEnvelope;
+};
+
+function writeCountdownReport(results: CountdownResult[]): void {
+  fs.mkdirSync(artifactRoot, { recursive: true });
+  const summary = {
+    generatedAt: new Date().toISOString(),
+    artifactRoot,
+    total: results.length,
+    passed: results.length,
+    failed: 0,
+    results: results.map(({ terminalStage, envelope }) => {
+      const fairness = envelope.row.fairness;
+      const terminal = fairness?.stages.at(-1);
+      return {
+        terminalStage,
+        envelope: {
+          schemaVersion: envelope.schema_version,
+          eventId: envelope.event_id,
+          session: envelope.session
+        },
+        record: {
+          recordId: envelope.row.record_id,
+          interruptionReason: envelope.row.memo,
+          gameMode: envelope.row.game_mode,
+          challengeResultLabel: envelope.row.challenge_result_label,
+          aiChallengeStatus: envelope.row.ai_challenge_status,
+          finalVsAiResult: envelope.row.final_vs_ai_result,
+          resultStage: envelope.row.result_stage
+        },
+        fairness: {
+          catalogVersion: fairness?.catalogVersion ?? "",
+          totalUserTimeMs: fairness?.totalUserTimeMs ?? 0,
+          stageCount: fairness?.stages.length ?? 0,
+          terminal: terminal ? {
+            stageNumber: terminal.stageNumber,
+            textId: terminal.textId,
+            catalogVersion: terminal.catalogVersion,
+            typedText: terminal.typedText,
+            userTimeMs: terminal.userTimeMs,
+            typingUnits: terminal.typingUnits,
+            aiCpm: terminal.aiCpm,
+            result: terminal.result
+          } : null
+        }
+      };
+    })
+  };
+  fs.writeFileSync(path.join(artifactRoot, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  const lines = [
+    "# Geumcheon countdown interruption E2E report",
+    "",
+    `- Generated: ${summary.generatedAt}`,
+    "- Result: PASS",
+    `- Scenarios: ${summary.total}, passed ${summary.passed}, failed ${summary.failed}`,
+    "",
+    "| Terminal stage | Result stage | Reason | Outcome | Fairness result | AI CPM |",
+    "| ---: | ---: | --- | --- | --- | ---: |",
+    ...summary.results.map((result) =>
+      `| ${result.terminalStage} | ${result.record.resultStage} | ${result.record.interruptionReason} | ${result.record.challengeResultLabel} | ${result.fairness.terminal?.result ?? ""} | ${result.fairness.terminal?.aiCpm ?? ""} |`
+    )
+  ];
+  fs.writeFileSync(path.join(artifactRoot, "report.md"), `${lines.join("\n")}\n`, "utf8");
+}
+
 async function main(): Promise<void> {
   cleanDir(artifactRoot);
+  const keepEvidence = shouldKeepCountdownEvidence(process.env, artifactRoot, root);
+  const results: CountdownResult[] = [];
   let devServer: ChildProcess | undefined;
   try {
     devServer = await startDevServer();
@@ -276,8 +428,23 @@ async function main(): Promise<void> {
     const terminalStages: Array<1 | 2 | 3> = requestedStage === undefined ? [1, 2, 3] : [requestedStage as 1 | 2 | 3];
     for (const terminalStage of terminalStages) {
       assert.ok(terminalStage === 1 || terminalStage === 2 || terminalStage === 3, "E2E_STAGE must be 1, 2, or 3");
-      const record = await runCountdownInterruption(terminalStage);
-      const fairness = record.fairness;
+      const envelope = await runCountdownInterruption(terminalStage);
+      assert.equal(envelope.schema_version, 1);
+      assert.equal(envelope.event_id, "geumcheon-science-festival-2026");
+      assert.deepEqual(envelope.session, {
+        kind: "official",
+        session_id: "forced-exit-e2e-official",
+        day_no: 1,
+        round_no: 1
+      });
+      assert.match(envelope.row.record_id, /^gsc26-pc01-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      assert.equal(envelope.row.memo, "사용자 중단:메인화면");
+      assert.equal(envelope.row.game_mode, "ai_challenge");
+      assert.equal(envelope.row.challenge_result_label, "중단 패배");
+      assert.equal(envelope.row.ai_challenge_status, "FAILED");
+      assert.equal(envelope.row.final_vs_ai_result, "AI_WIN");
+      assert.equal(envelope.row.result_stage, String(terminalStage));
+      const fairness = envelope.row.fairness;
       assert.ok(fairness, `stage ${terminalStage}: fairness payload is missing`);
       assert.equal(fairness.stages.length, terminalStage);
       assert.equal(fairness.catalogVersion, eventConfig.stageTextCatalogVersion);
@@ -287,22 +454,41 @@ async function main(): Promise<void> {
         assert.equal(stage.stageNumber, stageNumber);
         assert.match(stage.textId, new RegExp(`^gsc26-ai-s${stageNumber}-\\d{3}$`));
         assert.equal(stage.catalogVersion, eventConfig.stageTextCatalogVersion);
+        assert.notEqual(stage.targetText, "");
+        assert.ok(Number.isFinite(stage.userTimeMs) && stage.userTimeMs >= 0);
+        assert.ok(Number.isInteger(stage.typingUnits) && stage.typingUnits >= 0);
         assert.ok(stage.aiCpm >= range.min && stage.aiCpm <= range.max, `stage ${stageNumber}: planned CPM ${stage.aiCpm} outside configured range`);
+        assert.equal(stage.result, stageNumber === terminalStage ? "INTERRUPTED" : "USER_WIN");
       });
-      assert.equal(fairness.stages.at(-1)?.result, "INTERRUPTED");
+      assert.equal(
+        fairness.totalUserTimeMs,
+        fairness.stages.reduce((total, stage) => total + stage.userTimeMs, 0)
+      );
+      const terminal = fairness.stages.at(-1);
+      assert.ok(terminal);
+      assert.equal(terminal.stageNumber, terminalStage);
+      assert.equal(terminal.typedText, "");
+      assert.equal(terminal.userTimeMs, 0);
+      assert.equal(terminal.typingUnits, 0);
+      assert.equal(terminal.result, "INTERRUPTED");
+      results.push({ terminalStage, envelope });
     }
-    console.log(JSON.stringify({ pass: 3, fail: 0, cleanup: artifactRoot }, null, 2));
+    if (keepEvidence) writeCountdownReport(results);
+    console.log(JSON.stringify({ pass: results.length, fail: 0, cleanup: artifactRoot }, null, 2));
   } finally {
     if (devServer && !devServer.killed) devServer.kill();
-    if (!debugProgress) fs.rmSync(artifactRoot, { recursive: true, force: true });
+    if (!debugProgress && !keepEvidence) fs.rmSync(artifactRoot, { recursive: true, force: true });
   }
 }
 
-main().catch((error) => {
-  if (debugProgress) {
-    fs.mkdirSync(artifactRoot, { recursive: true });
-    fs.appendFileSync(path.join(artifactRoot, "progress.log"), `${new Date().toISOString()} failure ${error instanceof Error ? error.stack || error.message : String(error)}\n`);
-  }
-  console.error(error);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    const keepEvidence = shouldKeepCountdownEvidence(process.env, artifactRoot, root);
+    if (debugProgress || keepEvidence) {
+      fs.mkdirSync(artifactRoot, { recursive: true });
+      fs.appendFileSync(path.join(artifactRoot, "progress.log"), `${new Date().toISOString()} failure ${error instanceof Error ? error.stack || error.message : String(error)}\n`);
+    }
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

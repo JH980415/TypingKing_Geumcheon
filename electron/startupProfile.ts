@@ -35,11 +35,13 @@ export type ApplicationResourcePaths = {
   rendererAssetBaseUrl: string;
 };
 
-function isApprovedUiE2eProfile(
+function isModeMatchedE2eProfile(
   environment: Record<string, string | undefined>,
   isPackaged: boolean
 ): boolean {
-  return !isPackaged && environment.TYPINGKING_E2E_PROFILE === "approved-ui";
+  const profile = environment.TYPINGKING_E2E_PROFILE;
+  if (profile === "approved-ui" || profile === "functional-flow") return !isPackaged;
+  return profile === "packaged-smoke" && isPackaged;
 }
 
 export function shouldShowStartupErrorDialog(
@@ -47,7 +49,7 @@ export function shouldShowStartupErrorDialog(
   isPackaged: boolean
 ): boolean {
   return !(
-    isApprovedUiE2eProfile(environment, isPackaged)
+    isModeMatchedE2eProfile(environment, isPackaged)
     && environment.TYPINGKING_E2E_SUPPRESS_STARTUP_DIALOGS === "1"
   );
 }
@@ -56,7 +58,7 @@ export function shouldHideE2eWindow(
   environment: Record<string, string | undefined>,
   isPackaged: boolean
 ): boolean {
-  return isApprovedUiE2eProfile(environment, isPackaged)
+  return isModeMatchedE2eProfile(environment, isPackaged)
     && environment.TYPINGKING_E2E_HIDE_WINDOW === "1";
 }
 
@@ -64,7 +66,7 @@ export function resolveE2eExtraCaPath(
   environment: Record<string, string | undefined>,
   isPackaged: boolean
 ): string | undefined {
-  if (!isApprovedUiE2eProfile(environment, isPackaged)) return undefined;
+  if (!isModeMatchedE2eProfile(environment, isPackaged)) return undefined;
   return environment.NODE_EXTRA_CA_CERTS?.trim() || undefined;
 }
 

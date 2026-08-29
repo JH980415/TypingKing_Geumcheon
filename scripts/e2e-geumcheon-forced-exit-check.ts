@@ -6,8 +6,9 @@ import path from "node:path";
 import { parse } from "csv-parse/sync";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright-core";
 import { sanitizeE2eChildEnvironment } from "../electron/startupProfile";
-import { RECORD_HEADER_LABELS, RECORD_HEADERS } from "../shared/constants/defaults";
-import type { RecordRow } from "../shared/types";
+import { DEFAULT_CONFIG, RECORD_HEADER_LABELS, RECORD_HEADERS } from "../shared/constants/defaults";
+import { isGeumcheonRecordId, payloadSha256 } from "../shared/nas/protocol";
+import type { GeumcheonFairnessInput, RecordRow } from "../shared/types";
 
 type ScenarioKind = "window-close" | "forced-kill-restart" | "leaderboard-display";
 
@@ -16,6 +17,14 @@ type Check = {
   passed: boolean;
   expected: unknown;
   actual: unknown;
+};
+
+type EvidenceDiagnostic = {
+  name: string;
+  ok: boolean;
+  error?: string;
+  retryCount?: number;
+  errors?: string[];
 };
 
 type ScenarioResult = {
@@ -35,6 +44,7 @@ type ScenarioResult = {
     | "participant_avg_cpm"
     | "participant_progress_percent"
   >;
+  diagnostics?: EvidenceDiagnostic[];
   error?: string;
 };
 
@@ -52,6 +62,31 @@ type SnapshotRequestObservation = {
   probe: boolean;
 };
 
+export type CapturedRecordEnvelope = {
+  schema_version: 1;
+  event_id: "geumcheon-science-festival-2026";
+  session: {
+    kind: "official";
+    session_id: string;
+    day_no: number;
+    round_no: number;
+  };
+  row: {
+    record_id: string;
+    memo: string;
+    game_mode: string;
+    challenge_result_label: string;
+    ai_challenge_status: string;
+    final_vs_ai_result: string;
+    result_stage: string;
+    fairness?: GeumcheonFairnessInput;
+  };
+};
+
+type LocalHealthServerOptions = {
+  captureRecords?: boolean;
+};
+
 type ScenarioPaths = {
   root: string;
   artifactRoot: string;
@@ -66,7 +101,33 @@ type ScenarioPaths = {
 };
 
 const root = process.cwd();
-const artifactRoot = path.resolve("test_artifacts", "geumcheon_forced_exit_e2e");
+
+export function resolveForcedExitArtifactRoot(
+  environment: Record<string, string | undefined> = process.env,
+  projectRoot = root
+): string {
+  return resolveExplicitR2ArtifactRoot("geumcheon_forced_exit_e2e", environment, projectRoot);
+}
+
+function resolveExplicitR2ArtifactRoot(
+  defaultName: string,
+  environment: Record<string, string | undefined>,
+  projectRoot: string
+): string {
+  const base = path.resolve(projectRoot);
+  const override = environment.TYPINGKING_E2E_ARTIFACT_ROOT?.trim();
+  if (!override) return path.join(base, "test_artifacts", defaultName);
+
+  const resolved = path.resolve(path.isAbsolute(override) ? override : path.join(base, override));
+  const allowedRoot = path.join(base, "test_artifacts", "R2");
+  const relative = path.relative(allowedRoot, resolved);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error("TYPINGKING_E2E_ARTIFACT_ROOT must resolve under test_artifacts/R2/<run-name>");
+  }
+  return resolved;
+}
+
+const artifactRoot = resolveForcedExitArtifactRoot(process.env, root);
 const temporaryRunRoot = path.join(os.tmpdir(), "typingking-geumcheon-forced-exit-e2e", `${process.pid}-${Date.now()}`);
 const electronExe = path.join(root, "node_modules", "electron", "dist", "electron.exe");
 const mainJs = path.join(root, "dist-electron", "electron", "main.js");
@@ -84,8 +145,23 @@ export function buildForcedExitChildEnvironment(
 ): NodeJS.ProcessEnv {
   return {
     ...sanitizeE2eChildEnvironment(inheritedEnvironment),
+    TYPINGKING_E2E_PROFILE: "functional-flow",
+    TYPINGKING_E2E_SUPPRESS_STARTUP_DIALOGS: "1",
+    TYPINGKING_E2E_HIDE_WINDOW: "1",
     ...overrides
   };
+}
+
+type ElectronMainPidEvaluator = {
+  evaluate(pageFunction: () => number): Promise<number>;
+};
+
+export async function resolveElectronMainPid(application: ElectronMainPidEvaluator): Promise<number> {
+  const pid = await application.evaluate(() => process.pid);
+  if (!Number.isSafeInteger(pid) || pid < 1) {
+    throw new Error("Refusing to kill an Electron main process without an exact positive PID");
+  }
+  return pid;
 }
 
 function cleanDir(dir: string): void {
@@ -93,6 +169,19 @@ function cleanDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true });
 }
 
+function writeSyntheticRuntimeConfig(scenarioRoot: string): void {
+  const configDir = path.join(scenarioRoot, "runtime", "config");
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(configDir, "config.json"),
+    `${JSON.stringify({
+      ...DEFAULT_CONFIG,
+      adminPassword: "typingking-e2e-admin",
+      syncMode: "local"
+    }, null, 2)}\n`,
+    "utf8"
+  );
+}
 function scenarioPaths(kind: ScenarioKind): ScenarioPaths {
   const scenarioRoot = path.join(temporaryRunRoot, kind);
   const artifactScenarioRoot = path.join(artifactRoot, "scenarios", kind);
@@ -111,8 +200,9 @@ function scenarioPaths(kind: ScenarioKind): ScenarioPaths {
   };
 }
 
-function writeSyntheticProfiles(scenarioRoot: string, apiBaseUrl: string): void {
+export function writeSyntheticProfiles(scenarioRoot: string, apiBaseUrl: string): void {
   fs.mkdirSync(scenarioRoot, { recursive: true });
+  writeSyntheticRuntimeConfig(scenarioRoot);
   fs.writeFileSync(
     path.join(scenarioRoot, "device-profile.json"),
     `${JSON.stringify({
@@ -146,6 +236,7 @@ function writeSyntheticProfiles(scenarioRoot: string, apiBaseUrl: string): void 
 
 function writeSyntheticLeaderboardProfiles(scenarioRoot: string, apiBaseUrl: string): void {
   fs.mkdirSync(scenarioRoot, { recursive: true });
+  writeSyntheticRuntimeConfig(scenarioRoot);
   fs.writeFileSync(
     path.join(scenarioRoot, "device-profile.json"),
     `${JSON.stringify({
@@ -411,14 +502,98 @@ async function startLocalSnapshotServer(record: RecordRow, certRoot: string): Pr
   };
 }
 
-async function startLocalHealthServer(certRoot: string): Promise<{
+function plainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function sanitizeCapturedFairness(value: unknown): GeumcheonFairnessInput | undefined {
+  if (value == null) return undefined;
+  if (!plainObject(value) || typeof value.catalogVersion !== "string"
+    || typeof value.totalUserTimeMs !== "number" || !Array.isArray(value.stages)) {
+    throw new Error("CAPTURE_FAIRNESS_INVALID");
+  }
+  const stages = value.stages.map((candidate) => {
+    if (!plainObject(candidate)
+      || (candidate.stageNumber !== 1 && candidate.stageNumber !== 2 && candidate.stageNumber !== 3)
+      || typeof candidate.textId !== "string"
+      || typeof candidate.catalogVersion !== "string"
+      || typeof candidate.targetText !== "string"
+      || typeof candidate.typedText !== "string"
+      || typeof candidate.userTimeMs !== "number"
+      || typeof candidate.typingUnits !== "number"
+      || typeof candidate.aiCpm !== "number"
+      || (candidate.result !== "USER_WIN" && candidate.result !== "AI_WIN" && candidate.result !== "INTERRUPTED")) {
+      throw new Error("CAPTURE_FAIRNESS_STAGE_INVALID");
+    }
+    return {
+      stageNumber: candidate.stageNumber,
+      textId: candidate.textId,
+      catalogVersion: candidate.catalogVersion,
+      targetText: candidate.targetText,
+      typedText: candidate.typedText,
+      userTimeMs: candidate.userTimeMs,
+      typingUnits: candidate.typingUnits,
+      aiCpm: candidate.aiCpm,
+      result: candidate.result
+    };
+  });
+  return {
+    catalogVersion: value.catalogVersion,
+    totalUserTimeMs: value.totalUserTimeMs,
+    stages
+  };
+}
+
+function sanitizeCapturedRecordEnvelope(value: unknown): CapturedRecordEnvelope {
+  if (!plainObject(value) || value.schema_version !== 1 || value.event_id !== nasEventId
+    || !plainObject(value.session) || value.session.kind !== "official"
+    || value.session.session_id !== officialSessionId || value.session.day_no !== 1 || value.session.round_no !== 1
+    || !plainObject(value.row) || !isGeumcheonRecordId(value.row.record_id)
+    || !value.row.record_id.startsWith(`gsc26-${playerDeviceId.toLowerCase()}-`)
+    || typeof value.row.memo !== "string"
+    || typeof value.row.game_mode !== "string"
+    || typeof value.row.challenge_result_label !== "string"
+    || typeof value.row.ai_challenge_status !== "string"
+    || typeof value.row.final_vs_ai_result !== "string"
+    || typeof value.row.result_stage !== "string") {
+    throw new Error("CAPTURE_RECORD_INVALID");
+  }
+  const fairness = sanitizeCapturedFairness(value.row.fairness);
+  return {
+    schema_version: 1,
+    event_id: nasEventId,
+    session: {
+      kind: "official",
+      session_id: officialSessionId,
+      day_no: 1,
+      round_no: 1
+    },
+    row: {
+      record_id: value.row.record_id,
+      memo: value.row.memo,
+      game_mode: value.row.game_mode,
+      challenge_result_label: value.row.challenge_result_label,
+      ai_challenge_status: value.row.ai_challenge_status,
+      final_vs_ai_result: value.row.final_vs_ai_result,
+      result_stage: value.row.result_stage,
+      ...(fairness ? { fairness } : {})
+    }
+  };
+}
+
+export async function startLocalHealthServer(
+  certRoot: string,
+  options: LocalHealthServerOptions = {}
+): Promise<{
   server: https.Server;
   apiBaseUrl: string;
   caPemPath: string;
   observations: SnapshotRequestObservation[];
+  capturedRecords: CapturedRecordEnvelope[];
 }> {
   const certificate = createLocalHttpsCertificate(certRoot);
   const observations: SnapshotRequestObservation[] = [];
+  const capturedRecords: CapturedRecordEnvelope[] = [];
   const server = https.createServer(
     {
       pfx: fs.readFileSync(certificate.pfxPath),
@@ -427,6 +602,71 @@ async function startLocalHealthServer(certRoot: string): Promise<{
     },
     (request, response) => {
       const requestUrl = new URL(request.url || "/", "https://localhost");
+      if (options.captureRecords && request.method === "POST" && requestUrl.pathname === "/api/v1/records") {
+        const queryMatched = requestUrl.search === "";
+        const authorizationMatched = request.headers.authorization === `Bearer ${playerToken}`;
+        const deviceMatched = request.headers["x-device-id"] === playerDeviceId;
+        observations.push({
+          method: request.method,
+          pathname: requestUrl.pathname,
+          queryMatched,
+          authorizationMatched,
+          deviceMatched,
+          probe: false
+        });
+        if (!authorizationMatched) {
+          response.writeHead(401).end();
+          return;
+        }
+        if (!deviceMatched || !queryMatched) {
+          response.writeHead(403).end();
+          return;
+        }
+        if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
+          response.writeHead(415).end();
+          return;
+        }
+        let body = "";
+        request.setEncoding("utf8");
+        request.on("data", (chunk) => { body += chunk; });
+        request.once("end", () => {
+          try {
+            const submitted = JSON.parse(body) as unknown;
+            const captured = sanitizeCapturedRecordEnvelope(submitted);
+            if (request.headers["idempotency-key"] !== captured.row.record_id) {
+              throw new Error("CAPTURE_IDEMPOTENCY_INVALID");
+            }
+            const hash = payloadSha256(submitted);
+            response.writeHead(201, {
+              "content-type": "application/json; charset=utf-8",
+              "cache-control": "no-store"
+            });
+            response.once("finish", () => { capturedRecords.push(captured); });
+            response.end(JSON.stringify({
+              schema_version: 1,
+              disposition: "stored",
+              record_id: captured.row.record_id,
+              payload_sha256: hash,
+              stored_sha256: hash,
+              received_at: new Date().toISOString()
+            }));
+          } catch {
+            response.writeHead(422, {
+              "content-type": "application/json; charset=utf-8",
+              "cache-control": "no-store"
+            });
+            response.end(JSON.stringify({
+              schema_version: 1,
+              code: "RECORD_INVALID",
+              message: "RECORD_INVALID"
+            }));
+          }
+        });
+        request.once("error", () => {
+          if (!response.writableEnded) response.writeHead(400).end();
+        });
+        return;
+      }
       if (request.method !== "GET" || requestUrl.pathname !== "/api/v1/ready") {
         response.writeHead(503, {
           "content-type": "application/json; charset=utf-8",
@@ -493,11 +733,12 @@ async function startLocalHealthServer(certRoot: string): Promise<{
     server,
     apiBaseUrl: `https://127.0.0.1:${address.port}`,
     caPemPath: certificate.caPemPath,
-    observations
+    observations,
+    capturedRecords
   };
 }
 
-async function stopHttpsServer(server: https.Server | undefined): Promise<void> {
+export async function stopHttpsServer(server: https.Server | undefined): Promise<void> {
   if (!server) return;
   await new Promise<void>((resolve) => {
     server.close(() => resolve());
@@ -566,15 +807,56 @@ function forceKillProcessTree(child: ChildProcess): void {
   child.kill("SIGKILL");
 }
 
+export function forceKillExactProcess(pid: number): void {
+  if (!Number.isSafeInteger(pid) || pid < 1) {
+    throw new Error("Refusing to kill a process without an exact positive PID");
+  }
+  process.kill(pid, "SIGKILL");
+}
+
+export function isExactProcessAlive(pid: number | undefined): boolean {
+  if (!Number.isSafeInteger(pid) || !pid || pid < 1) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (caught) {
+    return (caught as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+export async function waitForTaskkillExitRace(
+  child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode">,
+  timeoutMs = 1_000
+): Promise<boolean> {
+  return waitUntil(
+    "process exit after taskkill race",
+    () => child.exitCode !== null || child.signalCode !== null || !isExactProcessAlive(child.pid),
+    timeoutMs
+  ).then(() => true, () => false);
+}
+
 async function stopProcess(child: ChildProcess | undefined, force = false): Promise<void> {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  if (force) forceKillProcessTree(child);
-  else child.kill();
-  await waitUntil(`process ${child.pid} to exit`, () => child.exitCode !== null || child.signalCode !== null, 5_000)
+  if (force) {
+    try {
+      forceKillProcessTree(child);
+    } catch (error) {
+      if (!(await waitForTaskkillExitRace(child))) throw error;
+    }
+  } else child.kill();
+  await waitUntil(
+    `process ${child.pid} to exit`,
+    () => child.exitCode !== null || child.signalCode !== null || !isExactProcessAlive(child.pid),
+    5_000
+  )
     .catch(() => {
       forceKillProcessTree(child);
     });
-  await waitUntil(`process ${child.pid} forced cleanup`, () => child.exitCode !== null || child.signalCode !== null, 5_000);
+  await waitUntil(
+    `process ${child.pid} forced cleanup`,
+    () => child.exitCode !== null || child.signalCode !== null || !isExactProcessAlive(child.pid),
+    5_000
+  );
 }
 
 async function cleanupApp(app: ElectronApplication | undefined, child: ChildProcess | undefined): Promise<void> {
@@ -811,6 +1093,39 @@ function addCheck(checks: Check[], name: string, actual: unknown, expected: unkn
   checks.push({ name, actual, expected, passed });
 }
 
+export async function captureEvidenceDiagnostic(
+  capture: () => Promise<void>
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    await capture();
+    return { ok: true };
+  } catch (caught) {
+    return { ok: false, error: caught instanceof Error ? caught.message : String(caught) };
+  }
+}
+
+export async function evaluateRequiredElectronProbe<T>(
+  evaluate: () => Promise<T>
+): Promise<{ value: T; retryCount: number; errors: string[] }> {
+  const errors: string[] = [];
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return { value: await evaluate(), retryCount: attempt, errors };
+    } catch (caught) {
+      const message = caught instanceof Error ? caught.message : String(caught);
+      errors.push(message);
+      if (attempt === 0 && message.includes("Resulting promise was garbage collected")) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        continue;
+      }
+      throw new Error(
+        `Required Electron evaluation failed (retryCount=${attempt}; errors=${JSON.stringify(errors)}): ${message}`
+      );
+    }
+  }
+  throw new Error("Required Electron evaluation failed without an attempt");
+}
+
 function addRecordChecks(checks: Check[], row: RecordRow | undefined): void {
   addCheck(checks, "local RecordRow exists", Boolean(row), true, Boolean(row));
   if (!row) return;
@@ -951,6 +1266,21 @@ async function runForcedKillRestart(): Promise<ScenarioExecution> {
     await installSyntheticNasReadiness(firstApp);
     await prepareAttempt(page, paths);
 
+    const wrapperPid = firstProcess.pid;
+    const electronMainPid = await resolveElectronMainPid(firstApp);
+    fs.writeFileSync(
+      path.join(paths.artifactRoot, "process-topology-before-kill.json"),
+      `${JSON.stringify({
+        harnessPid: process.pid,
+        wrapperPid,
+        electronMainPid,
+        samePid: wrapperPid === electronMainPid,
+        wrapperExitCode: firstProcess.exitCode,
+        wrapperSignalCode: firstProcess.signalCode
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
     const preRestartRecordCount = readLocalRecords(paths.recordsPath).length;
     let checkpointBeforeRestart = false;
     await waitUntil("encrypted active-attempt checkpoint", () => fs.existsSync(paths.checkpointPath), 5_000)
@@ -959,7 +1289,26 @@ async function runForcedKillRestart(): Promise<ScenarioExecution> {
     addCheck(checks, "no local record before forced exit", preRestartRecordCount, 0, preRestartRecordCount === 0);
     addCheck(checks, "encrypted checkpoint exists before forced exit", checkpointBeforeRestart, true, checkpointBeforeRestart);
 
-    await stopProcess(firstProcess, true);
+    const forcedKillProgressPath = path.join(paths.artifactRoot, "forced-kill-progress.json");
+    const writeForcedKillProgress = (phase: string): void => {
+      fs.writeFileSync(
+        forcedKillProgressPath,
+        `${JSON.stringify({ phase, harnessPid: process.pid, wrapperPid, electronMainPid }, null, 2)}\n`,
+        "utf8"
+      );
+    };
+    writeForcedKillProgress("before-sigkill");
+    const forcedClose = firstApp.waitForEvent("close", { timeout: 10_000 });
+    forceKillExactProcess(electronMainPid);
+    writeForcedKillProgress("sigkill-sent");
+    await waitUntil(
+      `Electron main process ${electronMainPid} to exit after forced kill`,
+      () => !isExactProcessAlive(electronMainPid),
+      5_000
+    );
+    writeForcedKillProgress("pid-not-alive");
+    await forcedClose;
+    writeForcedKillProgress("playwright-close");
     firstApp = undefined;
     firstProcess = undefined;
 
@@ -1042,6 +1391,7 @@ async function runLeaderboardDisplay(sourceRecord: RecordRow): Promise<ScenarioR
   cleanDir(paths.root);
   fs.mkdirSync(paths.artifactRoot, { recursive: true });
   const checks: Check[] = [];
+  const diagnostics: EvidenceDiagnostic[] = [];
   let app: ElectronApplication | undefined;
   let appProcess: ChildProcess | undefined;
   let page: Page | undefined;
@@ -1059,9 +1409,25 @@ async function runLeaderboardDisplay(sourceRecord: RecordRow): Promise<ScenarioR
     appProcess = app.process();
     page = await app.firstWindow({ timeout: 20_000 });
     await page.waitForFunction(() => Boolean((window as any).typingKing), undefined, { timeout: 15_000 });
-    const caEnvVisible = await app.evaluate((_electron) => Boolean(process.env.NODE_EXTRA_CA_CERTS));
+    const caEnvEvaluation = await evaluateRequiredElectronProbe(
+      () => app!.evaluate((_electron) => Boolean(process.env.NODE_EXTRA_CA_CERTS))
+    ).catch((caught) => {
+      diagnostics.push({
+        name: "Electron main CA path evaluation retry",
+        ok: false,
+        error: caught instanceof Error ? caught.message : String(caught)
+      });
+      throw caught;
+    });
+    diagnostics.push({
+      name: "Electron main CA path evaluation retry",
+      ok: true,
+      retryCount: caEnvEvaluation.retryCount,
+      errors: caEnvEvaluation.errors
+    });
+    const caEnvVisible = caEnvEvaluation.value;
     addCheck(checks, "Electron main receives extra CA path", caEnvVisible, true, caEnvVisible);
-    const electronTlsProbe = await app.evaluate(async (_electron, input) => {
+    const electronTlsEvaluation = await evaluateRequiredElectronProbe(() => app!.evaluate(async (_electron, input) => {
       try {
         const query = new URLSearchParams({
           session_kind: "official",
@@ -1093,7 +1459,21 @@ async function runLeaderboardDisplay(sourceRecord: RecordRow): Promise<ScenarioR
       sessionId: officialSessionId,
       token: leaderboardToken,
       deviceId: leaderboardDeviceId
+    })).catch((caught) => {
+      diagnostics.push({
+        name: "Electron main TLS evaluation retry",
+        ok: false,
+        error: caught instanceof Error ? caught.message : String(caught)
+      });
+      throw caught;
     });
+    diagnostics.push({
+      name: "Electron main TLS evaluation retry",
+      ok: true,
+      retryCount: electronTlsEvaluation.retryCount,
+      errors: electronTlsEvaluation.errors
+    });
+    const electronTlsProbe = electronTlsEvaluation.value;
     addCheck(
       checks,
       "Electron main trusts throwaway local CA",
@@ -1142,7 +1522,12 @@ async function runLeaderboardDisplay(sourceRecord: RecordRow): Promise<ScenarioR
       ">= 1",
       matchingRequests >= 1
     );
-    await interruptedRow.screenshot({ path: path.join(paths.artifactRoot, "interrupted-row.png") });
+    diagnostics.push({
+      name: "leaderboard evidence screenshot",
+      ...await captureEvidenceDiagnostic(() =>
+        page!.screenshot({ path: path.join(paths.artifactRoot, "interrupted-row.png"), fullPage: false })
+      )
+    });
   } catch (caught) {
     error = caught instanceof Error ? caught.stack || caught.message : String(caught);
     if (snapshotServer) {
@@ -1168,6 +1553,7 @@ async function runLeaderboardDisplay(sourceRecord: RecordRow): Promise<ScenarioR
     scenario: "leaderboard-display",
     verdict: checks.length > 0 && checks.every((check) => check.passed) ? "PASS" : "FAIL",
     checks,
+    diagnostics,
     record: summarizedRecord(sourceRecord),
     error
   };
@@ -1179,6 +1565,7 @@ async function runLeaderboardDisplaySynthetic(sourceRecord: RecordRow): Promise<
   fs.mkdirSync(paths.artifactRoot, { recursive: true });
   writeSyntheticLeaderboardProfiles(paths.root, "https://records.example.invalid");
   const checks: Check[] = [];
+  const diagnostics: EvidenceDiagnostic[] = [];
   let app: ElectronApplication | undefined;
   let appProcess: ChildProcess | undefined;
   let page: Page | undefined;
@@ -1213,7 +1600,12 @@ async function runLeaderboardDisplaySynthetic(sourceRecord: RecordRow): Promise<
     const expectedTime = expectedLeaderboardTime(sourceRecord);
     addCheck(checks, "leaderboard exit time and stage characters", timeText, expectedTime, timeText === expectedTime);
     addCheck(checks, "leaderboard source isolated from external NAS", "synthetic records:list IPC", "synthetic records:list IPC", true);
-    await interruptedRow.screenshot({ path: path.join(paths.artifactRoot, "interrupted-row.png") });
+    diagnostics.push({
+      name: "leaderboard evidence screenshot",
+      ...await captureEvidenceDiagnostic(() =>
+        page!.screenshot({ path: path.join(paths.artifactRoot, "interrupted-row.png"), fullPage: false })
+      )
+    });
   } catch (caught) {
     error = caught instanceof Error ? caught.stack || caught.message : String(caught);
     if (page) {
@@ -1227,6 +1619,7 @@ async function runLeaderboardDisplaySynthetic(sourceRecord: RecordRow): Promise<
     scenario: "leaderboard-display",
     verdict: checks.length > 0 && checks.every((check) => check.passed) ? "PASS" : "FAIL",
     checks,
+    diagnostics,
     record: summarizedRecord(sourceRecord),
     error
   };

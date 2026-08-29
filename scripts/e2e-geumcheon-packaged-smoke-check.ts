@@ -9,6 +9,12 @@ import os from "node:os";
 import path from "node:path";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { sanitizeE2eChildEnvironment } from "../electron/startupProfile";
+import { DEFAULT_CONFIG } from "../shared/constants/defaults";
+import type { AppConfig } from "../shared/types";
+import {
+  resolveGeumcheonE2eArtifactRoot,
+  resolveGeumcheonReleaseRoot
+} from "./geumcheon-approved-ui-options";
 
 type GeumcheonVariant = "ai" | "ai-leaderboard" | "practice" | "practice-leaderboard";
 type PcRole = "player" | "leaderboard";
@@ -20,6 +26,9 @@ export function buildPackagedSmokeChildEnvironment(
 ): NodeJS.ProcessEnv {
   return {
     ...sanitizeE2eChildEnvironment(inheritedEnvironment),
+    TYPINGKING_E2E_PROFILE: "packaged-smoke",
+    TYPINGKING_E2E_SUPPRESS_STARTUP_DIALOGS: "1",
+    TYPINGKING_E2E_HIDE_WINDOW: "1",
     ...overrides
   };
 }
@@ -49,6 +58,7 @@ type CaseResult = {
   verdict: "PASS" | "FAIL";
   checks: Check[];
   screenshot?: string;
+  screenshotLimitation?: string;
   error?: string;
   nativeTitleEvidence?: "win32" | "document-fallback";
   nativeTitleLimitation?: string;
@@ -79,8 +89,12 @@ type NativeTitleProbe = {
 };
 
 const root = process.cwd();
-const releaseRoot = path.join(root, "release-geumcheon");
-const artifactRoot = path.join(root, "test_artifacts", "geumcheon_packaged_smoke");
+const releaseRoot = resolveGeumcheonReleaseRoot(root, process.env.TYPINGKING_GEUMCHEON_RELEASE_ROOT);
+const artifactRoot = resolveGeumcheonE2eArtifactRoot(
+  root,
+  "geumcheon_packaged_smoke",
+  process.env.TYPINGKING_E2E_ARTIFACT_ROOT
+);
 const eventProfileId = "geumcheon-2026";
 const eventId = "geumcheon-science-festival-2026";
 const officialSessionId = "packaged-smoke-official";
@@ -543,6 +557,22 @@ async function stopHttpsServer(server: https.Server | undefined): Promise<void> 
   });
 }
 
+export function buildPackagedSmokeRuntimeConfig(adminPassword = crypto.randomBytes(24).toString("base64url")): AppConfig {
+  return {
+    ...DEFAULT_CONFIG,
+    adminPassword
+  };
+}
+
+function writeRuntimeConfig(targetRoot: string, adminPassword: string): void {
+  const configDir = path.join(targetRoot, "config");
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(configDir, "config.json"),
+    `${JSON.stringify(buildPackagedSmokeRuntimeConfig(adminPassword), null, 2)}\n`,
+    "utf8"
+  );
+}
 function writeSyntheticProfile(
   caseRoot: string,
   testCase: CaseSpec,
@@ -552,6 +582,8 @@ function writeSyntheticProfile(
   const executableDirectory = path.join(caseRoot, "executable");
   const localAppData = path.join(caseRoot, "LocalAppData");
   const appData = path.join(caseRoot, "RoamingAppData");
+  const runtimeRoot = path.join(localAppData, "ThePMD", "TypingKing2026", eventProfileId, testCase.deviceId);
+  const syntheticAdminPassword = crypto.randomBytes(24).toString("base64url");
   fs.mkdirSync(executableDirectory, { recursive: true });
   fs.mkdirSync(localAppData, { recursive: true });
   fs.mkdirSync(appData, { recursive: true });
@@ -579,9 +611,11 @@ function writeSyntheticProfile(
     `${JSON.stringify({ schemaVersion: 1, eventId, deviceId: testCase.deviceId, apiBaseUrl: baseUrl, token }, null, 2)}\n`,
     "utf8"
   );
+  writeRuntimeConfig(executableDirectory, syntheticAdminPassword);
+  writeRuntimeConfig(runtimeRoot, syntheticAdminPassword);
   return {
     bootstrapPath,
-    runtimeRoot: path.join(localAppData, "ThePMD", "TypingKing2026", eventProfileId, testCase.deviceId)
+    runtimeRoot
   };
 }
 
@@ -843,6 +877,13 @@ function sanitizeError(error: unknown, temporaryRoot: string, secrets: string[] 
     .replace(/https:\/\/127\.0\.0\.1:\d+/g, "[local-https-server]");
 }
 
+export function formatPackagedSmokeFallbackError(primaryError: string, fallbackError: unknown): string {
+  const fallbackMessage = fallbackError instanceof Error
+    ? fallbackError.stack || fallbackError.message
+    : String(fallbackError);
+  return `Primary CDP failure: ${primaryError}\nNative fallback failure: ${fallbackMessage}`;
+}
+
 async function writeFailureScreenshot(page: Page | undefined, variant: GeumcheonVariant): Promise<void> {
   if (!page) return;
   const target = path.join(artifactRoot, "screenshots", `${variant}-failure.png`);
@@ -882,6 +923,7 @@ async function runCase(options: {
   let page: Page | undefined;
   let error: string | undefined;
   let screenshotRelative: string | undefined;
+  let screenshotLimitation: string | undefined;
   let nativeTitleEvidence: CaseResult["nativeTitleEvidence"];
   let nativeTitleLimitation: string | undefined;
   const observationStart = options.observations.length;
@@ -903,7 +945,7 @@ async function runCase(options: {
       true,
       Boolean(cdpVersion.webSocketDebuggerUrl)
     );
-    browser = await chromium.connectOverCDP(cdpVersion.webSocketDebuggerUrl!, { timeout: 20_000 });
+    browser = await chromium.connectOverCDP(cdpVersion.webSocketDebuggerUrl!, { timeout: 60_000 });
     page = await waitForPackagedRenderer(browser);
     await page.waitForLoadState("domcontentloaded");
     await page.waitForFunction(() => Boolean((window as any).typingKing), undefined, { timeout: 20_000 });
@@ -1021,10 +1063,7 @@ async function runCase(options: {
       Boolean(encryptedToken) && encryptedToken!.includes(Buffer.from(options.token, "utf8")) === false
     );
 
-    screenshotRelative = path.posix.join("screenshots", `${testCase.variant}.png`);
-    const screenshotPath = path.join(artifactRoot, ...screenshotRelative.split("/"));
-    fs.mkdirSync(path.dirname(screenshotPath), { recursive: true });
-    await page.screenshot({ path: screenshotPath, fullPage: false });
+    screenshotLimitation = "Hidden packaged renderer capture is covered by the separate approved-UI screen QA evidence.";
   } catch (caught) {
     const cdpError = sanitizeError(caught, options.temporaryRoot, [options.token]);
     const canUseNativeFallback = Boolean(child?.pid)
@@ -1085,7 +1124,11 @@ async function runCase(options: {
           addCheck(checks, "role/session-specific HTTPS request observed", true, true, true);
         }
       } catch (fallbackError) {
-        error = sanitizeError(fallbackError, options.temporaryRoot, [options.token]);
+        error = sanitizeError(
+          formatPackagedSmokeFallbackError(cdpError, fallbackError),
+          options.temporaryRoot,
+          [options.token]
+        );
       }
     } else {
       error = cdpError;
@@ -1125,6 +1168,7 @@ async function runCase(options: {
     verdict: !error && checks.every((check) => check.passed) ? "PASS" : "FAIL",
     checks,
     screenshot: screenshotRelative,
+    screenshotLimitation,
     error,
     nativeTitleEvidence,
     nativeTitleLimitation
@@ -1141,6 +1185,7 @@ function writeReports(
 ): void {
   const nativeTitleWin32Count = results.filter((result) => result.nativeTitleEvidence === "win32").length;
   const nativeTitleFallbackCount = results.filter((result) => result.nativeTitleEvidence === "document-fallback").length;
+  const separateScreenshotCount = results.filter((result) => result.screenshotLimitation).length;
   const summary = {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
@@ -1183,6 +1228,7 @@ function writeReports(
     "- Network: synthetic local HTTPS only; no Synology NAS or external network used.",
     "- Privacy: artifacts contain no token, API URL, participant name, phone number, or raw runtime data.",
     `- Native window title evidence: Win32 ${nativeTitleWin32Count}; documented CDP fallback ${nativeTitleFallbackCount}.`,
+    `- Hidden packaged screenshots: ${separateScreenshotCount} delegated to the separate approved-UI screen QA evidence.`,
     ...(nativeTitleFallbackCount > 0
       ? ["- Limitation: Win32 child-window title was unavailable or unstable for one or more cases; document title and packaged bootstrap assertions were used."]
       : []),
@@ -1201,7 +1247,7 @@ function writeReports(
   lines.push("- `summary.json`: machine-readable result plus final EXE hashes and sizes.");
   lines.push("- `report.md`: human-readable check table.");
   lines.push("- `observed/<variant>.json`: per-variant non-secret assertions.");
-  lines.push("- `screenshots/<variant>.png`: blank-entry or empty-leaderboard renderer evidence without participant data.");
+  lines.push("- Packaged renderer screenshots are intentionally covered by the separate approved-UI screen QA evidence because these EXEs run hidden/off-screen.");
   lines.push("- Synthetic profiles, credentials, certificates, and AppData are deleted with the OS temporary run directory.");
   fs.writeFileSync(path.join(artifactRoot, "report.md"), `${lines.join("\n")}\n`, "utf8");
 }

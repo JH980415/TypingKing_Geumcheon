@@ -122,7 +122,7 @@ test("returns the validated device role for allowed Geumcheon launches", () => {
   assert.deepEqual(resolveLaunchPolicy(geumcheonStartup("leaderboard"), "ai-leaderboard"), { pcRole: "leaderboard" });
 });
 
-test("suppresses startup error dialogs only for the explicit unpackaged approved UI E2E profile", () => {
+test("suppresses startup error dialogs only for a mode-matched explicit E2E profile", () => {
   const showDialog = shouldShowStartupErrorDialog as (
     environment: Record<string, string | undefined>,
     isPackaged: boolean
@@ -136,9 +136,21 @@ test("suppresses startup error dialogs only for the explicit unpackaged approved
   assert.equal(showDialog({ TYPINGKING_E2E_SUPPRESS_STARTUP_DIALOGS: "1" }, false), true);
   assert.equal(showDialog(approvedUiEnvironment, false), false);
   assert.equal(showDialog(approvedUiEnvironment, true), true);
+  assert.equal(showDialog({
+    TYPINGKING_E2E_PROFILE: "functional-flow",
+    TYPINGKING_E2E_SUPPRESS_STARTUP_DIALOGS: "1"
+  }, false), false);
+  assert.equal(showDialog({
+    TYPINGKING_E2E_PROFILE: "packaged-smoke",
+    TYPINGKING_E2E_SUPPRESS_STARTUP_DIALOGS: "1"
+  }, true), false);
+  assert.equal(showDialog({
+    TYPINGKING_E2E_PROFILE: "functional-flow",
+    TYPINGKING_E2E_SUPPRESS_STARTUP_DIALOGS: "1"
+  }, true), true);
 });
 
-test("hides windows only for the explicit unpackaged approved UI E2E profile", () => {
+test("hides windows only for a mode-matched explicit E2E profile", () => {
   const shouldHideWindow = (
     startupProfileModule as typeof startupProfileModule & {
       shouldHideE2eWindow?: (
@@ -157,9 +169,21 @@ test("hides windows only for the explicit unpackaged approved UI E2E profile", (
   assert.equal(shouldHideWindow?.({ TYPINGKING_E2E_HIDE_WINDOW: "1" }, false), false);
   assert.equal(shouldHideWindow?.(approvedUiEnvironment, false), true);
   assert.equal(shouldHideWindow?.(approvedUiEnvironment, true), false);
+  assert.equal(shouldHideWindow?.({
+    TYPINGKING_E2E_PROFILE: "functional-flow",
+    TYPINGKING_E2E_HIDE_WINDOW: "1"
+  }, false), true);
+  assert.equal(shouldHideWindow?.({
+    TYPINGKING_E2E_PROFILE: "packaged-smoke",
+    TYPINGKING_E2E_HIDE_WINDOW: "1"
+  }, true), true);
+  assert.equal(shouldHideWindow?.({
+    TYPINGKING_E2E_PROFILE: "packaged-smoke",
+    TYPINGKING_E2E_HIDE_WINDOW: "1"
+  }, false), false);
 });
 
-test("accepts an extra CA only for the explicit unpackaged approved UI E2E profile", () => {
+test("accepts an extra CA only for a mode-matched explicit E2E profile", () => {
   const resolveExtraCaPath = (
     startupProfileModule as typeof startupProfileModule & {
       resolveE2eExtraCaPath?: (
@@ -177,6 +201,22 @@ test("accepts an extra CA only for the explicit unpackaged approved UI E2E profi
   assert.equal(resolveExtraCaPath?.({}, false), undefined);
   assert.equal(resolveExtraCaPath?.(approvedUiEnvironment, true), undefined);
   assert.equal(resolveExtraCaPath?.(approvedUiEnvironment, false), "C:\\test\\mock-ca.pem");
+  assert.equal(resolveExtraCaPath?.({
+    TYPINGKING_E2E_PROFILE: "functional-flow",
+    NODE_EXTRA_CA_CERTS: "C:\\test\\flow-ca.pem"
+  }, false), "C:\\test\\flow-ca.pem");
+  assert.equal(resolveExtraCaPath?.({
+    TYPINGKING_E2E_PROFILE: "packaged-smoke",
+    NODE_EXTRA_CA_CERTS: "C:\\test\\packaged-ca.pem"
+  }, true), "C:\\test\\packaged-ca.pem");
+  assert.equal(resolveExtraCaPath?.({
+    TYPINGKING_E2E_PROFILE: "functional-flow",
+    NODE_EXTRA_CA_CERTS: "C:\\test\\flow-ca.pem"
+  }, true), undefined);
+  assert.equal(resolveExtraCaPath?.({
+    TYPINGKING_E2E_PROFILE: "packaged-smoke",
+    NODE_EXTRA_CA_CERTS: "C:\\test\\packaged-ca.pem"
+  }, false), undefined);
 });
 
 test("removes inherited secrets and TLS overrides from the approved UI E2E child environment", () => {

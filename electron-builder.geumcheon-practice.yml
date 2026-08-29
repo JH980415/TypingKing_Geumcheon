@@ -1,6 +1,8 @@
 appId: com.thepmd.gscience.typingking.practice
 productName: G-Science AI 타자왕 연습모드
 extraMetadata:
+  author:
+    name: 제8회 금천과학축제
   typingKingEventProfile: geumcheon-2026
   typingKingVariant: practice
 directories:

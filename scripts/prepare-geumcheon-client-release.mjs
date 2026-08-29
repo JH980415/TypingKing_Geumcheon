@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 const root = process.cwd();
-const releaseDir = path.join(root, "release-geumcheon");
+const defaultReleaseDir = path.join(root, "release-geumcheon");
 const sentinelName = ".typingking-geumcheon-client-release.json";
 const sentinel = { schemaVersion: 1, kind: "typingking-geumcheon-client-release" };
 const expected = new Map([
@@ -52,6 +52,38 @@ function fileList(dir, relative = "") {
   });
 }
 
+function resolveR2ReleaseRoot(override) {
+  const releaseRoot = path.resolve(root, "Codex", "Outputs", "R2", "01_Release");
+  const resolved = path.resolve(root, override.trim());
+  if (resolved === releaseRoot) throw new Error("R2 release output must be a child directory");
+  if (!resolved.startsWith(`${releaseRoot}${path.sep}`)) {
+    throw new Error("Refusing R2 release root outside Codex/Outputs/R2/01_Release");
+  }
+  if (path.dirname(resolved) !== releaseRoot) {
+    throw new Error("R2 release root must be a direct child of Codex/Outputs/R2/01_Release");
+  }
+  return resolved;
+}
+
+function parseArgs(args) {
+  let allowReplace = false;
+  let releaseDir = defaultReleaseDir;
+  for (const arg of args) {
+    if (arg === "--replace") {
+      allowReplace = true;
+      continue;
+    }
+    if (arg.startsWith("--output-root=")) {
+      const value = arg.slice("--output-root=".length);
+      if (!value.trim()) throw new Error("--output-root requires a path");
+      releaseDir = resolveR2ReleaseRoot(value);
+      continue;
+    }
+    throw new Error("Usage: node scripts/prepare-geumcheon-client-release.mjs [--replace] [--output-root=Codex/Outputs/R2/01_Release/<directory>]");
+  }
+  return { allowReplace, releaseDir };
+}
+
 function ensureSafeSource(sourcePath) {
   if (!exists(sourcePath) || !fs.statSync(sourcePath).isFile()) throw new Error(`Missing required public source: ${sourcePath}`);
   if (fs.statSync(sourcePath).size === 0) throw new Error(`Zero-byte source is not allowed: ${sourcePath}`);
@@ -77,11 +109,11 @@ function assertExactPortableOutput(variant, fileName) {
 
 function assertGeneratedOutput(target) {
   const stat = fs.lstatSync(target);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("release-geumcheon must be a real generated directory");
+  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("release output must be a real generated directory");
   const sentinelPath = path.join(target, sentinelName);
-  if (!exists(sentinelPath)) throw new Error("Refusing to replace release-geumcheon without its generated-output sentinel");
+  if (!exists(sentinelPath)) throw new Error("Refusing to replace release output without its generated-output sentinel");
   const value = JSON.parse(fs.readFileSync(sentinelPath, "utf8"));
-  if (JSON.stringify(value) !== JSON.stringify(sentinel)) throw new Error("Refusing to replace release-geumcheon with an invalid generated-output sentinel");
+  if (JSON.stringify(value) !== JSON.stringify(sentinel)) throw new Error("Refusing to replace release output with an invalid generated-output sentinel");
 }
 
 function assertStagedTree(stageDir) {
@@ -107,14 +139,22 @@ function stageRelease(stageDir) {
   assertStagedTree(stageDir);
 }
 
-function replaceAtomically(stageDir, allowReplace) {
+function backupPathFor(target) {
+  if (path.resolve(target) === path.resolve(defaultReleaseDir)) {
+    return path.join(root, `.release-geumcheon.previous-${crypto.randomUUID()}`);
+  }
+  return path.join(path.dirname(target), `.${path.basename(target)}.previous-${crypto.randomUUID()}`);
+}
+
+function replaceAtomically(stageDir, releaseDir, allowReplace) {
+  fs.mkdirSync(path.dirname(releaseDir), { recursive: true });
   if (!exists(releaseDir)) {
     fs.renameSync(stageDir, releaseDir);
     return;
   }
-  if (!allowReplace) throw new Error("release-geumcheon already exists; rerun with --replace only for generated output");
+  if (!allowReplace) throw new Error(`${path.relative(root, releaseDir)} already exists; rerun with --replace only for generated output`);
   assertGeneratedOutput(releaseDir);
-  const backupDir = path.join(root, `.release-geumcheon.previous-${crypto.randomUUID()}`);
+  const backupDir = backupPathFor(releaseDir);
   fs.renameSync(releaseDir, backupDir);
   try {
     fs.renameSync(stageDir, releaseDir);
@@ -125,13 +165,12 @@ function replaceAtomically(stageDir, allowReplace) {
   fs.rmSync(backupDir, { recursive: true, force: true });
 }
 
-const args = process.argv.slice(2);
-if (args.some((arg) => arg !== "--replace")) throw new Error("Usage: node scripts/prepare-geumcheon-client-release.mjs [--replace]");
-const stageDir = path.join(root, `.release-geumcheon.staging-${crypto.randomUUID()}`);
+const { allowReplace, releaseDir } = parseArgs(process.argv.slice(2));
+const stageDir = path.join(root, `.geumcheon-client-release.staging-${crypto.randomUUID()}`);
 try {
   stageRelease(stageDir);
-  replaceAtomically(stageDir, args.includes("--replace"));
-  console.log("Credential-free Geumcheon client release assembled.");
+  replaceAtomically(stageDir, releaseDir, allowReplace);
+  console.log(`Credential-free Geumcheon client release assembled: ${path.relative(root, releaseDir)}`);
 } finally {
   if (exists(stageDir)) fs.rmSync(stageDir, { recursive: true, force: true });
 }
