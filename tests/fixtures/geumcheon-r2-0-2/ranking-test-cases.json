@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "rankingKeys": [
+    "stageReached DESC",
+    "wholeGameProgressRaw DESC",
+    "participantAverageCpmRaw DESC",
+    "totalActiveDuelTimeMs ASC"
+  ],
+  "displayOnlyTiebreakers": [
+    "recordedAt ASC",
+    "recordId ASC"
+  ],
+  "nonRankingFieldsDeliberatelyVaried": [
+    "result",
+    "completedAt",
+    "participantName",
+    "phone"
+  ],
+  "cases": [
+    {
+      "name": "higher CPM remains ahead despite longer duel",
+      "record": {
+        "stageReached": 3,
+        "wholeGameProgressRaw": 100,
+        "participantAverageCpmRaw": 300,
+        "totalActiveDuelTimeMs": 40000,
+        "recordedAt": "2026-08-31T01:00:00.000Z",
+        "recordId": "record-a",
+        "contradictionCodes": [],
+        "result": "PARTICIPANT_WIN",
+        "completedAt": "2099-01-01T00:00:00.000Z",
+        "participantName": "합성참가자A",
+        "phone": "01000000001"
+      }
+    },
+    {
+      "name": "full tie displayed second by recordedAt only",
+      "record": {
+        "stageReached": 3,
+        "wholeGameProgressRaw": 100,
+        "participantAverageCpmRaw": 250,
+        "totalActiveDuelTimeMs": 28000,
+        "recordedAt": "2026-08-31T01:02:00.000Z",
+        "recordId": "record-b",
+        "contradictionCodes": [],
+        "result": "PARTICIPANT_WIN",
+        "completedAt": "2026-08-31T01:02:30.000Z",
+        "participantName": "합성참가자B",
+        "phone": "01000000002"
+      }
+    },
+    {
+      "name": "full tie displayed first by recordedAt only",
+      "record": {
+        "stageReached": 3,
+        "wholeGameProgressRaw": 100,
+        "participantAverageCpmRaw": 250,
+        "totalActiveDuelTimeMs": 28000,
+        "recordedAt": "2026-08-31T01:01:00.000Z",
+        "recordId": "record-c",
+        "contradictionCodes": [],
+        "result": "GEUMNARAE_WIN",
+        "completedAt": "2025-01-01T00:00:00.000Z",
+        "participantName": "합성참가자C",
+        "phone": "01000000003"
+      }
+    },
+    {
+      "name": "lower stage remains fourth despite higher later metrics",
+      "record": {
+        "stageReached": 2,
+        "wholeGameProgressRaw": 99,
+        "participantAverageCpmRaw": 999,
+        "totalActiveDuelTimeMs": 1,
+        "recordedAt": "2026-08-31T01:03:00.000Z",
+        "recordId": "record-d",
+        "contradictionCodes": [],
+        "result": "INTERRUPTED",
+        "completedAt": "2026-08-31T01:03:01.000Z",
+        "participantName": "합성참가자D",
+        "phone": "01000000004"
+      }
+    },
+    {
+      "name": "contradictory record is quarantined before ranking",
+      "record": {
+        "stageReached": 3,
+        "wholeGameProgressRaw": 100,
+        "participantAverageCpmRaw": 999,
+        "totalActiveDuelTimeMs": 1,
+        "recordedAt": "2026-08-31T00:00:00.000Z",
+        "recordId": "quarantined",
+        "contradictionCodes": [
+          "RESULT_TIMING_CONTRADICTION"
+        ],
+        "result": "GEUMNARAE_WIN",
+        "completedAt": "2026-08-31T00:00:01.000Z",
+        "participantName": "합성격리",
+        "phone": "01000000005"
+      }
+    }
+  ],
+  "expectedPublicOrder": [
+    "record-a",
+    "record-c",
+    "record-b",
+    "record-d"
+  ],
+  "expectedCompetitionRanks": [
+    1,
+    2,
+    2,
+    4
+  ],
+  "excludedRecordIds": [
+    "quarantined"
+  ]
+}

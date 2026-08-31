@@ -8,7 +8,7 @@ import {
 } from "../../shared/utils/geumcheonAiAttempt";
 import { rankCanonicalAiAttempts } from "../../shared/utils/ranking";
 
-const evidenceRoot = path.resolve("Codex/Work/R3/02_Working");
+const evidenceRoot = path.resolve("tests/fixtures/geumcheon-r2-0-2");
 
 test("ships hand-derived four-key ranking cases as executable evidence", () => {
   const evidencePath = path.join(evidenceRoot, "ranking-test-cases.json");

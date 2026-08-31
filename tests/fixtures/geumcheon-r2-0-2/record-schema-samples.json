@@ -1,0 +1,221 @@
+{
+  "schemaVersion": 1,
+  "namespaceNote": "official/practice/sample is transport and storage context, not duplicated inside canonicalAttempt",
+  "samples": [
+    {
+      "name": "valid participant win",
+      "namespace": "official",
+      "expectedDisposition": "public",
+      "canonicalAttempt": {
+        "schemaVersion": 1,
+        "attemptId": "attempt-pc01-001",
+        "recordId": "record-pc01-001",
+        "deviceId": "PC01",
+        "recordedAt": "2026-08-31T01:00:00.000Z",
+        "result": "PARTICIPANT_WIN",
+        "interruptionReason": null,
+        "participantFinishTimeMs": 18000,
+        "geumnaraeFinishTimeMs": null,
+        "stages": [
+          {
+            "stageNumber": 1,
+            "entered": true,
+            "assignedInputUnits": 10,
+            "participantCorrectInputUnits": 10,
+            "participantValidInputUnits": 10,
+            "participantActiveTypingTimeMs": 6000,
+            "geumnaraeCorrectInputUnits": 10,
+            "geumnaraeValidInputUnits": 10,
+            "geumnaraeActiveTypingTimeMs": 6000,
+            "activeDuelTimeMs": 6000
+          },
+          {
+            "stageNumber": 2,
+            "entered": true,
+            "assignedInputUnits": 20,
+            "participantCorrectInputUnits": 20,
+            "participantValidInputUnits": 20,
+            "participantActiveTypingTimeMs": 6000,
+            "geumnaraeCorrectInputUnits": 20,
+            "geumnaraeValidInputUnits": 20,
+            "geumnaraeActiveTypingTimeMs": 6000,
+            "activeDuelTimeMs": 6000
+          },
+          {
+            "stageNumber": 3,
+            "entered": true,
+            "assignedInputUnits": 30,
+            "participantCorrectInputUnits": 30,
+            "participantValidInputUnits": 30,
+            "participantActiveTypingTimeMs": 6000,
+            "geumnaraeCorrectInputUnits": 20,
+            "geumnaraeValidInputUnits": 20,
+            "geumnaraeActiveTypingTimeMs": 6000,
+            "activeDuelTimeMs": 6000
+          }
+        ],
+        "stageReached": 3,
+        "stageState": "COMPLETED",
+        "wholeGameProgressRaw": 100,
+        "participantAverageCpmRaw": 200,
+        "geumnaraeProgressRaw": 83.33333333333334,
+        "geumnaraeAverageCpmRaw": 166.66666666666666,
+        "totalActiveDuelTimeMs": 18000,
+        "assignedInputUnits": 60,
+        "participantCorrectInputUnits": 60,
+        "participantValidInputUnits": 60,
+        "participantActiveTypingTimeMs": 18000,
+        "geumnaraeCorrectInputUnits": 50,
+        "geumnaraeValidInputUnits": 50,
+        "geumnaraeActiveTypingTimeMs": 18000,
+        "participantCompleted": true,
+        "geumnaraeCompleted": false,
+        "contradictionCodes": []
+      }
+    },
+    {
+      "name": "valid interrupted attempt",
+      "namespace": "practice",
+      "expectedDisposition": "public",
+      "canonicalAttempt": {
+        "schemaVersion": 1,
+        "attemptId": "attempt-pc02-003",
+        "recordId": "record-pc02-003",
+        "deviceId": "PC02",
+        "recordedAt": "2026-08-31T01:05:00.000Z",
+        "result": "INTERRUPTED",
+        "interruptionReason": "HOME",
+        "participantFinishTimeMs": null,
+        "geumnaraeFinishTimeMs": null,
+        "stages": [
+          {
+            "stageNumber": 1,
+            "entered": true,
+            "assignedInputUnits": 10,
+            "participantCorrectInputUnits": 10,
+            "participantValidInputUnits": 10,
+            "participantActiveTypingTimeMs": 5000,
+            "geumnaraeCorrectInputUnits": 10,
+            "geumnaraeValidInputUnits": 10,
+            "geumnaraeActiveTypingTimeMs": 5000,
+            "activeDuelTimeMs": 5000
+          },
+          {
+            "stageNumber": 2,
+            "entered": true,
+            "assignedInputUnits": 20,
+            "participantCorrectInputUnits": 5,
+            "participantValidInputUnits": 6,
+            "participantActiveTypingTimeMs": 4000,
+            "geumnaraeCorrectInputUnits": 15,
+            "geumnaraeValidInputUnits": 15,
+            "geumnaraeActiveTypingTimeMs": 4000,
+            "activeDuelTimeMs": 4000
+          },
+          {
+            "stageNumber": 3,
+            "entered": false,
+            "assignedInputUnits": 30,
+            "participantCorrectInputUnits": 0,
+            "participantValidInputUnits": 0,
+            "participantActiveTypingTimeMs": 0,
+            "geumnaraeCorrectInputUnits": 0,
+            "geumnaraeValidInputUnits": 0,
+            "geumnaraeActiveTypingTimeMs": 0,
+            "activeDuelTimeMs": 0
+          }
+        ],
+        "stageReached": 2,
+        "stageState": "IN_PROGRESS",
+        "wholeGameProgressRaw": 25,
+        "participantAverageCpmRaw": 106.66666666666667,
+        "geumnaraeProgressRaw": 41.66666666666667,
+        "geumnaraeAverageCpmRaw": 166.66666666666666,
+        "totalActiveDuelTimeMs": 9000,
+        "assignedInputUnits": 60,
+        "participantCorrectInputUnits": 15,
+        "participantValidInputUnits": 16,
+        "participantActiveTypingTimeMs": 9000,
+        "geumnaraeCorrectInputUnits": 25,
+        "geumnaraeValidInputUnits": 25,
+        "geumnaraeActiveTypingTimeMs": 9000,
+        "participantCompleted": false,
+        "geumnaraeCompleted": false,
+        "contradictionCodes": []
+      }
+    },
+    {
+      "name": "quarantined opposite winner timing",
+      "namespace": "official",
+      "expectedDisposition": "quarantine",
+      "canonicalAttempt": {
+        "schemaVersion": 1,
+        "attemptId": "attempt-pc03-002",
+        "recordId": "record-pc03-002",
+        "deviceId": "PC03",
+        "recordedAt": "2026-08-31T01:10:00.000Z",
+        "result": "GEUMNARAE_WIN",
+        "interruptionReason": null,
+        "participantFinishTimeMs": 18000,
+        "geumnaraeFinishTimeMs": 19000,
+        "stages": [
+          {
+            "stageNumber": 1,
+            "entered": true,
+            "assignedInputUnits": 10,
+            "participantCorrectInputUnits": 10,
+            "participantValidInputUnits": 10,
+            "participantActiveTypingTimeMs": 6000,
+            "geumnaraeCorrectInputUnits": 10,
+            "geumnaraeValidInputUnits": 10,
+            "geumnaraeActiveTypingTimeMs": 6000,
+            "activeDuelTimeMs": 6000
+          },
+          {
+            "stageNumber": 2,
+            "entered": true,
+            "assignedInputUnits": 20,
+            "participantCorrectInputUnits": 20,
+            "participantValidInputUnits": 20,
+            "participantActiveTypingTimeMs": 6000,
+            "geumnaraeCorrectInputUnits": 20,
+            "geumnaraeValidInputUnits": 20,
+            "geumnaraeActiveTypingTimeMs": 6000,
+            "activeDuelTimeMs": 6000
+          },
+          {
+            "stageNumber": 3,
+            "entered": true,
+            "assignedInputUnits": 30,
+            "participantCorrectInputUnits": 30,
+            "participantValidInputUnits": 30,
+            "participantActiveTypingTimeMs": 6000,
+            "geumnaraeCorrectInputUnits": 30,
+            "geumnaraeValidInputUnits": 30,
+            "geumnaraeActiveTypingTimeMs": 7000,
+            "activeDuelTimeMs": 7000
+          }
+        ],
+        "stageReached": 3,
+        "stageState": "COMPLETED",
+        "wholeGameProgressRaw": 100,
+        "participantAverageCpmRaw": 200,
+        "geumnaraeProgressRaw": 100,
+        "geumnaraeAverageCpmRaw": 189.47368421052633,
+        "totalActiveDuelTimeMs": 19000,
+        "assignedInputUnits": 60,
+        "participantCorrectInputUnits": 60,
+        "participantValidInputUnits": 60,
+        "participantActiveTypingTimeMs": 18000,
+        "geumnaraeCorrectInputUnits": 60,
+        "geumnaraeValidInputUnits": 60,
+        "geumnaraeActiveTypingTimeMs": 19000,
+        "participantCompleted": true,
+        "geumnaraeCompleted": true,
+        "contradictionCodes": [
+          "RESULT_TIMING_CONTRADICTION"
+        ]
+      }
+    }
+  ]
+}

@@ -396,7 +396,7 @@ test("participant name masking exposes only the first and final characters", () 
   }).maskParticipantName;
 
   assert.equal(typeof maskParticipantName, "function");
-  assert.equal(maskParticipantName("박재환"), "박*환");
+  assert.equal(maskParticipantName("홍길동"), "홍*동");
   assert.equal(maskParticipantName("김철"), "김*");
   assert.equal(maskParticipantName("합성참가자1"), "합****1");
   assert.equal(maskParticipantName("박"), "박");
