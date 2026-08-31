@@ -361,3 +361,26 @@ test("JSON normalization keeps legacy records without a canonical extension", (c
   assert.equal(normalized?.record_id, "legacy-record");
   assert.equal(normalized?.canonicalAttempt, undefined);
 });
+
+test("Geumcheon CSV export names the competitor as Geumnarae", (context) => {
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-geumnarae-csv-"));
+  context.after(() => fs.rmSync(runtimeRoot, { recursive: true, force: true }));
+  const runtime = ensureRuntime(runtimeRoot, path.resolve("."));
+  const fileName = exportRecords(runtime, [record("header-row")], "all", "ai_challenge");
+  const [header] = parse(
+    fs.readFileSync(path.join(runtime.paths.exportsDir, fileName), "utf8").replace(/^\uFEFF/, "")
+  ) as string[][];
+  const labelFor = (key: (typeof RECORD_HEADERS)[number]) =>
+    header[RECORD_HEADERS.indexOf(key) + 1];
+
+  assert.equal(labelFor("ai_failed_stage"), "AI 챌린지 실패 스테이지");
+  assert.equal(labelFor("ai_stage1_cpm"), "금나래 1스테이지 타수");
+  assert.equal(labelFor("ai_stage1_time_ms"), "금나래 1스테이지 시간(ms)");
+  assert.equal(labelFor("ai_total_time_ms"), "금나래 전체 시간(ms)");
+  assert.equal(labelFor("stage1_vs_ai_result"), "1스테이지 금나래 대결 결과");
+  assert.equal(labelFor("final_vs_ai_result"), "최종 금나래 대결 결과");
+  assert.equal(labelFor("ai_result_time_ms"), "금나래 결과 시간(ms)");
+  assert.equal(labelFor("ai_avg_cpm"), "금나래 평균 타수");
+  assert.equal(labelFor("challenge_result_label"), "금나래 대결 결과");
+  assert.equal(labelFor("ai_progress_percent"), "금나래 진행률");
+});

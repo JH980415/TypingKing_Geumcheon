@@ -200,7 +200,11 @@ function syntheticLeaderboardRows(): RecordRow[] {
 }
 
 function maskSyntheticParticipantName(value: string): string {
-  return Array.from(value).map((character, index) => (index % 2 === 0 ? character : "*")).join("");
+  const chars = Array.from(value.trim());
+  if (chars.length === 0) return "";
+  if (chars.length === 1) return chars[0];
+  if (chars.length === 2) return `${chars[0]}*`;
+  return `${chars[0]}${"*".repeat(chars.length - 2)}${chars.at(-1)}`;
 }
 
 function ensureDir(dir: string): void {

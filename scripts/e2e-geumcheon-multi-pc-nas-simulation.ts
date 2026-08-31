@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { NasApiError } from "../electron/nas/apiClient";
 import { EncryptedNasOutbox } from "../electron/nas/outbox";
 import { NasRetryWorker } from "../electron/nas/retryWorker";
-import { RECORD_HEADERS } from "../shared/constants/defaults";
+import { DEFAULT_CONFIG, RECORD_HEADERS } from "../shared/constants/defaults";
 import { canonicalStringify, type NasRecordEnvelopeV1 } from "../shared/nas/protocol";
 import type { CanonicalAiAttemptV1, RecordRow } from "../shared/types";
 import {
@@ -229,6 +229,16 @@ async function captureScreenshot(
     baseUrl: mock.baseUrl,
     token: tokens[READER],
   });
+  const runtimeConfigDirectory = path.join(profile.runtimeRoot, "config");
+  fs.mkdirSync(runtimeConfigDirectory, { recursive: true });
+  fs.writeFileSync(
+    path.join(runtimeConfigDirectory, "config.json"),
+    `${JSON.stringify({
+      ...DEFAULT_CONFIG,
+      adminPassword: crypto.randomBytes(24).toString("base64url")
+    }, null, 2)}\n`,
+    "utf8"
+  );
   const childEnvironment = runner.buildIsolatedChildEnvironment({
     inherited: process.env,
     caseRoot: scenarioRoot,
@@ -240,9 +250,10 @@ async function captureScreenshot(
     executablePath: electronExe,
     args: ["--disable-gpu", mainJs, "--variant=ai-leaderboard"],
     timeout: 30_000,
-    env: {
-      ...childEnvironment,
-      APP_VARIANT: "ai-leaderboard",
+      env: {
+        ...childEnvironment,
+        TYPINGKING_E2E_PROFILE: "functional-flow",
+        APP_VARIANT: "ai-leaderboard",
       EVENT_PROFILE: "geumcheon-2026",
       TYPINGKING_RUNTIME_ROOT: profile.runtimeRoot,
       ELECTRON_DISABLE_SECURITY_WARNINGS: "1",
@@ -251,7 +262,13 @@ async function captureScreenshot(
   try {
     const bypassed = await app.evaluate(() => Boolean(process.env.NODE_TLS_REJECT_UNAUTHORIZED));
     if (bypassed) throw new Error("ELECTRON_TLS_BYPASS_DETECTED");
-    const page = await app.firstWindow({ timeout: 30_000 });
+    const page = await app.firstWindow({ timeout: 30_000 }).catch((error) => {
+      const startupLog = path.join(profile.runtimeRoot, "logs", "startup_error.log");
+      if (fs.existsSync(startupLog)) {
+        console.error(`ELECTRON_STARTUP_LOG\n${fs.readFileSync(startupLog, "utf8")}`);
+      }
+      throw error;
+    });
     await page.setViewportSize({ width: 1920, height: 1080 });
     await page.waitForLoadState("domcontentloaded");
     await page.locator(".leaderboard-app").waitFor({ state: "visible", timeout: 30_000 });

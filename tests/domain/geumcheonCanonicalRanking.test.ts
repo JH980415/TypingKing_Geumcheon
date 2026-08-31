@@ -81,7 +81,6 @@ test("ranks by exactly four canonical keys with competition-rank gaps", async ()
     ]
   );
 });
-
 test("uses recordedAt and recordId only for stable display order within a full tie", async () => {
   const ranking = await import("../../shared/utils/ranking") as RankingModule;
   assert.equal(typeof ranking.compareCanonicalAiDisplayOrder, "function");
@@ -95,4 +94,3 @@ test("uses recordedAt and recordId only for stable display order within a full t
   assert.ok(ranking.compareCanonicalAiDisplayOrder!(sameTimeLowerId, sameTimeHigherId) < 0);
   assert.deepEqual(ranking.canonicalAiRankKey!(earlier), ranking.canonicalAiRankKey!(later));
 });
-

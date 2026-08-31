@@ -34,7 +34,6 @@ test("ships hand-derived four-key ranking cases as executable evidence", () => {
   );
   assert.deepEqual(evidence.displayOnlyTiebreakers, ["recordedAt ASC", "recordId ASC"]);
 });
-
 test("ships schema samples whose stored quarantine codes are reproducible", () => {
   const evidencePath = path.join(evidenceRoot, "record-schema-samples.json");
   assert.equal(fs.existsSync(evidencePath), true, "record-schema-samples.json must exist");
@@ -49,4 +48,3 @@ test("ships schema samples whose stored quarantine codes are reproducible", () =
     );
   }
 });
-
