@@ -75,7 +75,7 @@
   "runtimeConfig": {
     "eventName": "제8회 금천과학축제 AI 타자왕",
     "stageCount": 3,
-    "adminPassword": "__GENERATED_PER_RUN__",
+    "adminPassword": "0208",
     "leaderboardRefreshSeconds": 2,
     "allowRetry": true,
     "leaderboardMode": "all_records",

@@ -161,9 +161,16 @@ function writeSyntheticProfile({ caseRoot, executableDirectory, app, baseUrl, to
     apiBaseUrl: baseUrl,
     token
   };
+  const configuredAdminPassword = typeof runtimeConfig?.adminPassword === "string"
+    ? runtimeConfig.adminPassword.trim()
+    : "";
   const generatedConfig = {
     ...runtimeConfig,
-    adminPassword: crypto.randomBytes(24).toString("base64url")
+    adminPassword: configuredAdminPassword
+      && configuredAdminPassword !== "__GENERATED_PER_RUN__"
+      && configuredAdminPassword !== "CHANGE_ME_BEFORE_EVENT"
+      ? configuredAdminPassword
+      : crypto.randomBytes(24).toString("base64url")
   };
 
   writeJson(path.join(executableDirectory, "device-profile.json"), deviceProfile);
