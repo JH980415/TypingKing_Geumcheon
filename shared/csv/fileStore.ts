@@ -35,7 +35,8 @@ import type {
 } from "../types";
 import { formatBirthdate, formatMs, nowIso, timestampForFile } from "../utils/date";
 import { buildPhoneFull, maskBirthdate, maskPhone, validatePhoneParts } from "../utils/masking";
-import { compareRecords, isInterruptedRecord } from "../utils/ranking";
+import { compareLegacyAiRecords, compareRecords, isInterruptedRecord, rankCanonicalAiAttempts } from "../utils/ranking";
+import { isCanonicalAiAttemptPubliclyRankable, isCanonicalAiAttemptV1 } from "../utils/geumcheonAiAttempt";
 import { calculateFinalCpm, calculateTotalUserTimeMs, countConvertedTypingUnits, countTypeableChars } from "../utils/typing";
 import { parseStageTextCatalog, validateStageTextCatalog } from "../events/stageTextCatalog";
 import { drawStageTextFromBag, stageTextBagKey, type StageTextShuffleState } from "../utils/stageTextShuffle";
@@ -877,56 +878,50 @@ function currentBackupTargetRecords(ctx: RuntimeContext, mode: RecordMode): Reco
     .filter((record) => record.is_test !== "true" && record.is_debug !== "true");
 }
 
-function numericValue(value: string | number | null | undefined, fallback = 0): number {
-  const numeric = Number(value);
-  return Number.isFinite(numeric) ? numeric : fallback;
-}
-
-function aiExportResultRank(record: RecordRow): number {
-  if (record.challenge_result_label.includes("승리")) return 0;
-  if (record.challenge_result_label.includes("패배")) return 1;
-  return record.ai_challenge_status === "SUCCESS" || record.final_vs_ai_result === "USER_WIN" ? 0 : 1;
-}
-
-function aiExportResultStage(record: RecordRow): number {
-  const stored = numericValue(record.result_stage, 0);
-  if (stored > 0) return Math.max(1, Math.min(3, Math.round(stored)));
-  const failed = numericValue(record.ai_failed_stage, 0);
-  if (failed > 0) return Math.max(1, Math.min(3, Math.round(failed)));
-  return aiExportResultRank(record) === 0 ? 3 : 1;
-}
-
-function compareAiRecordsForExport(a: RecordRow, b: RecordRow): number {
-  const resultDiff = aiExportResultRank(a) - aiExportResultRank(b);
-  if (resultDiff !== 0) return resultDiff;
-
-  if (aiExportResultRank(a) === 0 && aiExportResultRank(b) === 0) {
-    const duelDiff = numericValue(a.duel_time_ms, Number.MAX_SAFE_INTEGER) - numericValue(b.duel_time_ms, Number.MAX_SAFE_INTEGER);
-    if (duelDiff !== 0) return duelDiff;
-    const cpmDiff = numericValue(b.participant_avg_cpm, -1) - numericValue(a.participant_avg_cpm, -1);
-    if (cpmDiff !== 0) return cpmDiff;
-  } else {
-    const stageDiff = aiExportResultStage(b) - aiExportResultStage(a);
-    if (stageDiff !== 0) return stageDiff;
-    const progressDiff = numericValue(b.participant_progress_percent, -1) - numericValue(a.participant_progress_percent, -1);
-    if (progressDiff !== 0) return progressDiff;
-    const cpmDiff = numericValue(b.participant_avg_cpm || b.final_cpm, -1) - numericValue(a.participant_avg_cpm || a.final_cpm, -1);
-    if (cpmDiff !== 0) return cpmDiff;
+function withExportRanks(
+  rows: RecordRow[],
+  mode: RecordMode
+): Array<RecordRow & { export_rank: string }> {
+  if (mode !== "ai_challenge") {
+    return [...rows]
+      .sort(compareRecords)
+      .map((row, index) => ({ export_rank: String(index + 1), ...row }));
   }
 
-  const completedDiff = new Date(a.completed_at).getTime() - new Date(b.completed_at).getTime();
-  if (completedDiff !== 0) return completedDiff;
-  return String(a.record_id).localeCompare(String(b.record_id));
-}
-
-function sortRowsForCsvExport(rows: RecordRow[], mode: RecordMode): RecordRow[] {
-  return mode === "ai_challenge"
-    ? [...rows].sort(compareAiRecordsForExport)
-    : [...rows].sort(compareRecords);
-}
-
-function withExportRanks(rows: RecordRow[]): Array<RecordRow & { export_rank: string }> {
-  return rows.map((row, index) => ({ export_rank: String(index + 1), ...row }));
+  const canonicalRows = rows.flatMap((row) => {
+    const attempt = row.canonicalAttempt;
+    if (!attempt || !isCanonicalAiAttemptPubliclyRankable(attempt, {
+      recordId: row.record_id
+    })) {
+      return [];
+    }
+    return [{ row, attempt }];
+  });
+  const rowByAttempt = new Map(
+    canonicalRows.map(({ row, attempt }) => [attempt, row])
+  );
+  const rankedAttempts = rankCanonicalAiAttempts(
+    canonicalRows.map(({ attempt }) => attempt)
+  );
+  const publiclyRankedAttempts = new Set(
+    rankedAttempts.map(({ record: attempt }) => attempt)
+  );
+  const rankedCanonical = rankedAttempts.map(({ rank, record: attempt }) => ({
+    export_rank: String(rank),
+    ...rowByAttempt.get(attempt)!
+  }));
+  const legacyRows = rows
+    .filter((row) => row.canonicalAttempt == null)
+    .sort(compareLegacyAiRecords)
+    .map((row, index) => ({
+      export_rank: String(rankedCanonical.length + index + 1),
+      ...row
+    }));
+  const quarantinedRows = rows
+    .filter((row) => row.canonicalAttempt != null &&
+      !publiclyRankedAttempts.has(row.canonicalAttempt))
+    .map((row) => ({ export_rank: "", ...row }));
+  return [...rankedCanonical, ...legacyRows, ...quarantinedRows];
 }
 
 function readBackupMarkers(ctx: RuntimeContext, mode: RecordMode): Array<{
@@ -1128,8 +1123,8 @@ export function exportCurrentSessionBackup(
   const modeLabel = mode === "ai_challenge" ? "AI타자왕" : "일잘러타자왕";
   const fileName = `${modeLabel}_${ctx.config.dayNo}일차_${ctx.config.roundNo}회차_리더보드_${uniqueOperationStamp(ctx)}.csv`;
   const filePath = path.join(exportDir, fileName);
-  const exportRows = sortRowsForCsvExport(rows, mode);
-  writeCsvAtomic(filePath, withExportRanks(exportRows), EXPORT_RECORD_HEADERS);
+  const exportRows = withExportRanks(rows, mode);
+  writeCsvAtomic(filePath, exportRows, EXPORT_RECORD_HEADERS);
   const markerFileName = writeCsvBackupMarker(ctx, mode, fileName, exportRows);
   const recordIds = exportRows.map((row) => row.record_id).filter(Boolean).sort();
   writeOperationalLog(ctx, {
@@ -1168,8 +1163,8 @@ export function exportCurrentSessionBackupClean(
   ensureDir(exportDir);
   const fileName = sessionBackupFileName(ctx, mode);
   const filePath = path.join(exportDir, fileName);
-  const exportRows = sortRowsForCsvExport(rows, mode);
-  writeCsvAtomic(filePath, withExportRanks(exportRows), EXPORT_RECORD_HEADERS);
+  const exportRows = withExportRanks(rows, mode);
+  writeCsvAtomic(filePath, exportRows, EXPORT_RECORD_HEADERS);
   const markerFileName = writeCsvBackupMarker(ctx, mode, fileName, exportRows);
   const recordIds = exportRows.map((row) => row.record_id).filter(Boolean).sort();
   writeOperationalLog(ctx, {
@@ -1820,7 +1815,16 @@ function normalizeJsonRecord(value: unknown): RecordRow | null {
     RECORD_HEADERS.map((header) => [header, source[header] == null ? "" : String(source[header])])
   ) as unknown as RecordRow;
   const fairness = normalizeGeumcheonFairness(source.fairness);
-  return row.record_id ? { ...row, ...(fairness ? { fairness } : {}) } : null;
+  const canonicalAttempt = isCanonicalAiAttemptV1(source.canonicalAttempt)
+    ? source.canonicalAttempt
+    : undefined;
+  return row.record_id
+    ? {
+        ...row,
+        ...(fairness ? { fairness } : {}),
+        ...(canonicalAttempt ? { canonicalAttempt } : {})
+      }
+    : null;
 }
 
 function isSupportedRecordMode(value: string): value is RecordMode {
@@ -3115,8 +3119,8 @@ export function exportRecords(
     ? `${modeLabel}_${sessionLabel}_리더보드_${uniqueOperationStamp(ctx)}.csv`
     : `typingking_export_${uniqueOperationStamp(ctx)}.csv`;
   const filePath = path.join(exportDir, fileName);
-  const exportRows = sortRowsForCsvExport(rows, normalizeRecordMode(exportMode));
-  writeCsvAtomic(filePath, withExportRanks(exportRows), EXPORT_RECORD_HEADERS);
+  const exportRows = withExportRanks(rows, normalizeRecordMode(exportMode));
+  writeCsvAtomic(filePath, exportRows, EXPORT_RECORD_HEADERS);
   writeOperationalLog(ctx, {
     action: "csv_export",
     targetPath: filePath,

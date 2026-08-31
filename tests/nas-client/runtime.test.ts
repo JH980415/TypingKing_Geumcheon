@@ -4,13 +4,17 @@ import { access, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createGeumcheonNasRuntime } from "../../electron/nas/runtime";
+import {
+  createGeumcheonNasRuntime,
+  type GeumcheonLocalCallbacks,
+} from "../../electron/nas/runtime";
 import { payloadSha256 } from "../../shared/nas/protocol";
 import type { DeviceProfile, EventProfile, RecordRow, SaveRecordInput } from "../../shared/types";
 import type { SafeStorageAdapter } from "../../electron/nas/credentialStore";
 import type { FetchLike } from "../../electron/nas/apiClient";
 
 const recordId = "gsc26-pc01-123e4567-e89b-42d3-a456-426614174000";
+const attemptId = "gsc26-attempt-123e4567-e89b-42d3-a456-426614174000";
 
 function safeStorage(): SafeStorageAdapter {
   const key = crypto.randomBytes(32);
@@ -70,7 +74,7 @@ function row(id = recordId): RecordRow {
   return { record_id: id, participant_name: "합성참가자", phone_full: "01000000001", final_cpm: "321", game_mode: "ai_challenge" } as RecordRow;
 }
 
-function localCallbacks(persistLocal: (value: SaveRecordInput, id: string) => Promise<RecordRow>) {
+function localCallbacks(persistLocal: GeumcheonLocalCallbacks["persist"]) {
   let readCalls = 0;
   let adminCalls = 0;
   return {
@@ -93,16 +97,23 @@ test("checkpoints and saves one official RecordRow into encrypted outbox, then f
   context.after(() => rm(runtimeRoot, { recursive: true, force: true }));
   const encryption = safeStorage();
   const persistedIds: string[] = [];
+  const persistedIdentities: unknown[] = [];
   let uploaded: any;
   const fetch: FetchLike = async (_url, init) => {
     uploaded = JSON.parse(String(init?.body));
     const hash = payloadSha256(uploaded);
     return new Response(JSON.stringify({ schema_version: 1, disposition: "stored", record_id: uploaded.row.record_id, payload_sha256: hash, stored_sha256: hash, received_at: "2026-09-18T01:03:00.000Z" }), { status: 201, headers: { "content-type": "application/json" } });
   };
-  const local = localCallbacks(async (_value, id) => { persistedIds.push(id); return row(id); });
+  const local = localCallbacks(async (_value, id, identity) => {
+    persistedIds.push(id);
+    persistedIdentities.push(identity);
+    return row(id);
+  });
   const runtime = createGeumcheonNasRuntime({
     event: event(), device: device(), sessionKind: "official", runtimeRoot, safeStorage: encryption, fetch,
-    local: local.callbacks, createRecordId: () => recordId, createActionId: () => "gsc26-action-123e4567-e89b-42d3-a456-426614174000",
+    local: local.callbacks,
+    createAttemptIdentity: () => ({ recordId, attemptId }),
+    createActionId: () => "gsc26-action-123e4567-e89b-42d3-a456-426614174000",
     now: () => "2026-09-18T01:02:00.000Z", sleep: async () => undefined,
   });
   await runtime.importToken(crypto.randomBytes(32).toString("hex"));
@@ -112,6 +123,12 @@ test("checkpoints and saves one official RecordRow into encrypted outbox, then f
 
   assert.equal(saved.record_id, checkpoint.recordId);
   assert.deepEqual(persistedIds, [recordId]);
+  assert.deepEqual(persistedIdentities, [{
+    recordId,
+    attemptId,
+    deviceId: "PC01",
+    recordedAt: "2026-09-18T01:02:00.000Z",
+  }]);
   const pendingDir = path.join(runtimeRoot, "nas", "outbox", "official", "pending");
   assert.deepEqual(await readdir(pendingDir), [`${recordId}.bin`]);
   assert.equal((await readFile(path.join(pendingDir, `${recordId}.bin`))).includes(Buffer.from("합성참가자")), false);
@@ -130,9 +147,17 @@ test("recovers a practice checkpoint into practice outbox with the same stable r
   const encryption = safeStorage();
   const local = localCallbacks(async (_value, id) => row(id));
   const common = { event: event(), device: device(), sessionKind: "practice" as const, runtimeRoot, safeStorage: encryption, fetch: (async () => { throw new Error("unused"); }) as FetchLike, local: local.callbacks, now: () => "2026-09-18T01:02:00.000Z", sleep: async () => undefined };
-  const first = createGeumcheonNasRuntime({ ...common, createRecordId: () => recordId, createActionId: () => "gsc26-action-123e4567-e89b-42d3-a456-426614174000" });
+  const first = createGeumcheonNasRuntime({
+    ...common,
+    createAttemptIdentity: () => ({ recordId, attemptId }),
+    createActionId: () => "gsc26-action-123e4567-e89b-42d3-a456-426614174000",
+  });
   await first.checkpoint(input());
-  const restarted = createGeumcheonNasRuntime({ ...common, createRecordId: () => { throw new Error("must reuse checkpoint ID"); }, createActionId: () => "gsc26-action-123e4567-e89b-42d3-a456-426614174000" });
+  const restarted = createGeumcheonNasRuntime({
+    ...common,
+    createAttemptIdentity: () => { throw new Error("must reuse checkpoint identity"); },
+    createActionId: () => "gsc26-action-123e4567-e89b-42d3-a456-426614174000",
+  });
 
   const recovered = await restarted.recover();
 
@@ -146,8 +171,19 @@ test("isolates simultaneous official and practice active checkpoints under one d
   const encryption = safeStorage();
   const local = localCallbacks(async (_value, id) => row(id));
   const common = { event: event(), device: device(), runtimeRoot, safeStorage: encryption, fetch: (async () => { throw new Error("unused"); }) as FetchLike, local: local.callbacks, createActionId: () => "gsc26-action-123e4567-e89b-42d3-a456-426614174000", now: () => "2026-09-18T01:02:00.000Z", sleep: async () => undefined };
-  const official = createGeumcheonNasRuntime({ ...common, sessionKind: "official", createRecordId: () => recordId });
-  const practice = createGeumcheonNasRuntime({ ...common, sessionKind: "practice", createRecordId: () => "gsc26-pc01-123e4567-e89b-42d3-a456-426614174001" });
+  const official = createGeumcheonNasRuntime({
+    ...common,
+    sessionKind: "official",
+    createAttemptIdentity: () => ({ recordId, attemptId }),
+  });
+  const practice = createGeumcheonNasRuntime({
+    ...common,
+    sessionKind: "practice",
+    createAttemptIdentity: () => ({
+      recordId: "gsc26-pc01-123e4567-e89b-42d3-a456-426614174001",
+      attemptId: "gsc26-attempt-123e4567-e89b-42d3-a456-426614174001",
+    }),
+  });
 
   await official.checkpoint(input());
   await practice.checkpoint(input());

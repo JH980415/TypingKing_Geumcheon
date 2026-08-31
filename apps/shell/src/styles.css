@@ -2017,7 +2017,7 @@ textarea:focus {
 
 .ai-head,
 .ai-row {
-  /* 순위 | 참여자명 | 휴대폰번호 | 결과 | 종료 스테이지 | 참여자 점수 | AI 점수 | 대결 시간 */
+ /* 순위 | 참여자명 | 휴대폰번호 | 결과 | 종료 지점 | 참여자 기록 | 금나래 기록 | 총 대결시간 */
   grid-template-columns: 0.62fr 1fr 1.3fr 0.95fr 0.95fr 1.35fr 1.35fr 1.05fr;
   gap: 0;
   font-size: 14px;
@@ -2219,7 +2219,7 @@ textarea:focus {
 
 .ai-head,
 .ai-row {
-  /* 순위 | 참여자명 | 휴대폰번호 | 결과 | 종료 스테이지 | 참여자 점수 | AI 점수 | 대결 시간 (8열) */
+ /* 순위 | 참여자명 | 휴대폰번호 | 결과 | 종료 지점 | 참여자 기록 | 금나래 기록 | 총 대결시간 (8열) */
   grid-template-columns: 0.62fr 1fr 1.32fr 0.95fr 0.92fr 1.32fr 1.32fr 1.02fr;
 }
 
@@ -3259,15 +3259,15 @@ html[data-event-profile="geumcheon-2026"] {
 }
 
 html[data-event-profile="geumcheon-2026"] body {
-  background: var(--deep-purple);
+  background: #000;
   color: var(--deep-purple);
 }
 
 html[data-event-profile="geumcheon-2026"] .app {
-  background-color: var(--deep-purple);
+  background-color: #000;
   background-position: center;
   background-repeat: no-repeat;
-  background-size: contain;
+  background-size: cover;
 }
 
 html[data-event-profile="geumcheon-2026"] .app::before {
@@ -3276,8 +3276,8 @@ html[data-event-profile="geumcheon-2026"] .app::before {
 
 html[data-event-profile="geumcheon-2026"] .brand-header,
 html[data-event-profile="geumcheon-2026"] .leaderboard-header {
-  background: var(--deep-purple);
-  border-bottom-color: var(--geumcheon-cyan);
+  background: transparent;
+  border-bottom-color: transparent;
   color: var(--white);
 }
 
@@ -3302,9 +3302,9 @@ html[data-event-profile="geumcheon-2026"] .leaderboard-board,
 html[data-event-profile="geumcheon-2026"] .ranking-table,
 html[data-event-profile="geumcheon-2026"] .modal {
   background: rgba(255, 255, 255, 0.92);
-  border-color: var(--geumcheon-cyan);
+  border-color: rgba(0, 179, 236, 0.28);
   color: var(--deep-purple);
-  box-shadow: 0 10px 0 var(--geumcheon-purple);
+  box-shadow: none;
 }
 
 html[data-event-profile="geumcheon-2026"] .geumcheon-main-title-image {
@@ -3369,7 +3369,7 @@ html[data-event-profile="geumcheon-2026"] button:focus-visible {
 
 html[data-event-profile="geumcheon-2026"] .ranking-head,
 html[data-event-profile="geumcheon-2026"] .challenge-top {
-  background: var(--geumcheon-purple);
+  background: rgba(31, 17, 82, 0.72);
   color: var(--white);
 }
 

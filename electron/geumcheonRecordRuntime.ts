@@ -1,12 +1,22 @@
 import type { RecordRow, SaveRecordInput } from "../shared/types";
+import type { GeumcheonAttemptIdentityIds } from "../shared/nas/protocol";
+import { isPairedGeumcheonAttemptIdentity } from "../shared/nas/protocol";
+import { canonicalAiContradictionCodes } from "../shared/utils/geumcheonAiAttempt";
 
 export type ActiveAttemptCheckpoint = {
-  schemaVersion: 1;
-  eventProfileId: "geumcheon-2026";
+  schemaVersion: 2;
+  eventProfileId: string;
   variant: "ai" | "practice";
   recordId: string;
+  attemptId: string;
+  recordedAt: string;
   updatedAt: string;
   input: SaveRecordInput;
+};
+
+export type AttemptPersistenceIdentity = GeumcheonAttemptIdentityIds & {
+  deviceId: string;
+  recordedAt: string;
 };
 
 export type ActiveAttemptStoreLike = {
@@ -24,10 +34,11 @@ export type GeumcheonRecordRuntime = {
 export function createGeumcheonRecordRuntime(options: {
   eventProfileId: "geumcheon-2026";
   variant: "ai" | "practice";
+  deviceId: string;
   store: ActiveAttemptStoreLike;
-  createRecordId(): string;
+  createAttemptIdentity(): GeumcheonAttemptIdentityIds;
   now(): string;
-  persistLocal(input: SaveRecordInput, recordId: string): Promise<RecordRow>;
+  persistLocal(input: SaveRecordInput, identity: AttemptPersistenceIdentity): Promise<RecordRow>;
   enqueue(row: RecordRow): Promise<void>;
 }): GeumcheonRecordRuntime {
   let cached: ActiveAttemptCheckpoint | null | undefined;
@@ -46,13 +57,24 @@ export function createGeumcheonRecordRuntime(options: {
 
   async function writeCheckpoint(input: SaveRecordInput): Promise<ActiveAttemptCheckpoint> {
     const previous = await current();
+    const updatedAt = options.now();
+    const identity = previous ?? options.createAttemptIdentity();
+    assertTrustedIdentity(identity, options.deviceId);
+    const recordedAt = previous?.recordedAt ?? updatedAt;
     const checkpoint: ActiveAttemptCheckpoint = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       eventProfileId: options.eventProfileId,
       variant: options.variant,
-      recordId: previous?.recordId ?? options.createRecordId(),
-      updatedAt: options.now(),
-      input
+      recordId: identity.recordId,
+      attemptId: identity.attemptId,
+      recordedAt,
+      updatedAt,
+      input: withTrustedIdentity(input, {
+        recordId: identity.recordId,
+        attemptId: identity.attemptId,
+        deviceId: options.deviceId,
+        recordedAt,
+      }),
     };
     await options.store.save(checkpoint);
     cached = checkpoint;
@@ -60,7 +82,17 @@ export function createGeumcheonRecordRuntime(options: {
   }
 
   async function persist(checkpoint: ActiveAttemptCheckpoint): Promise<RecordRow> {
-    const row = await options.persistLocal(checkpoint.input, checkpoint.recordId);
+    assertTrustedIdentity(checkpoint, options.deviceId);
+    const identity = {
+      recordId: checkpoint.recordId,
+      attemptId: checkpoint.attemptId,
+      deviceId: options.deviceId,
+      recordedAt: checkpoint.recordedAt,
+    };
+    const row = await options.persistLocal(
+      withTrustedIdentity(checkpoint.input, identity),
+      identity,
+    );
     await options.enqueue(row);
     await options.store.clear();
     cached = null;
@@ -74,5 +106,39 @@ export function createGeumcheonRecordRuntime(options: {
       const checkpoint = await current();
       return checkpoint ? persist(checkpoint) : null;
     })
+  };
+}
+
+function assertTrustedIdentity(
+  identity: GeumcheonAttemptIdentityIds,
+  deviceId: string,
+): void {
+  if (!isPairedGeumcheonAttemptIdentity(identity.recordId, identity.attemptId)) {
+    throw new Error("ATTEMPT_IDENTITY_INVALID");
+  }
+  if (!identity.recordId.startsWith(`gsc26-${deviceId.toLowerCase()}-`)) {
+    throw new Error("ATTEMPT_IDENTITY_DEVICE_MISMATCH");
+  }
+}
+
+function withTrustedIdentity(
+  input: SaveRecordInput,
+  identity: AttemptPersistenceIdentity,
+): SaveRecordInput {
+  if (input.canonicalAttempt == null) return input;
+  const canonicalAttempt = {
+    ...input.canonicalAttempt,
+    attemptId: identity.attemptId,
+    recordId: identity.recordId,
+    deviceId: identity.deviceId,
+    recordedAt: identity.recordedAt,
+  };
+  canonicalAttempt.contradictionCodes = canonicalAiContradictionCodes(
+    canonicalAttempt,
+    identity,
+  );
+  return {
+    ...input,
+    canonicalAttempt,
   };
 }

@@ -4,10 +4,20 @@ import type { SessionKind } from "../../../shared/events/types.js";
 import type { NasAdminActionV1, NasSessionV1 } from "../../../shared/nas/protocol.js";
 import { AuthenticationError, AuxiliaryIpLimiter, TokenBucketLimiter, authenticateRequest, type TokenManifestV1 } from "./auth.js";
 import type { RecordValidationConfigV1 } from "./recordSchema.js";
-import { validateAndNormalizeRecord } from "./recordSchema.js";
+import {
+  RecordContradictionError,
+  validateAndNormalizeRecord,
+} from "./recordSchema.js";
 import { RecordStore } from "./recordStore.js";
 
 type AppConfig = RecordValidationConfigV1 & { tokenManifest: TokenManifestV1 };
+
+class RecordQuarantinedResponseError extends Error {
+  constructor() {
+    super("RECORD_QUARANTINED");
+    this.name = "RecordQuarantinedResponseError";
+  }
+}
 
 export type BuildNasAppDependencies = {
   config: AppConfig;
@@ -50,15 +60,23 @@ export function buildNasApp(dependencies: BuildNasAppDependencies): FastifyInsta
       reply.header("Retry-After", String(Math.max(1, Math.ceil(limited.retryAfterMs / 1000))));
       throw new Error("RATE_LIMITED");
     }
-      const record = validateAndNormalizeRecord(
+    let record;
+    try {
+      record = validateAndNormalizeRecord(
         request.body,
         principal,
         dependencies.config,
         new Date(now()).toISOString(),
       );
-    const idempotencyKey = request.headers["idempotency-key"];
-    if (typeof idempotencyKey !== "string") throw new Error("IDEMPOTENCY_KEY_REQUIRED");
-      if (idempotencyKey !== record.row.record_id) throw new Error("IDEMPOTENCY_KEY_MISMATCH");
+    } catch (error) {
+      if (!(error instanceof RecordContradictionError)) throw error;
+      assertIdempotencyKey(request.headers["idempotency-key"], error.record.row.record_id);
+      const [reasonCode] = error.reasonCodes;
+      if (reasonCode == null) throw new Error("CANONICAL_ATTEMPT_INVALID");
+      await store.putContradiction(error.record, reasonCode);
+      throw new RecordQuarantinedResponseError();
+    }
+    assertIdempotencyKey(request.headers["idempotency-key"], record.row.record_id);
     const result = await store.put(record);
     return reply.code(result.disposition === "stored" ? 201 : 200).send({
       schema_version: 1,
@@ -176,9 +194,17 @@ export function buildNasApp(dependencies: BuildNasAppDependencies): FastifyInsta
   app.setErrorHandler((error, _request, reply) => {
     const handled = error as Error & { code?: string; validation?: unknown; statusCode?: number };
     const code = errorCode(handled);
-    reply.code(statusFor(handled, code)).send({ schema_version: 1, code, message: code });
+    const message = handled instanceof RecordQuarantinedResponseError
+      ? "기록 정합성을 확인할 수 없습니다."
+      : code;
+    reply.code(statusFor(handled, code)).send({ schema_version: 1, code, message });
   });
   return app;
+}
+
+function assertIdempotencyKey(value: string | string[] | undefined, recordId: string): void {
+  if (typeof value !== "string") throw new Error("IDEMPOTENCY_KEY_REQUIRED");
+  if (value !== recordId) throw new Error("IDEMPOTENCY_KEY_MISMATCH");
 }
 
 function applyRateLimit(

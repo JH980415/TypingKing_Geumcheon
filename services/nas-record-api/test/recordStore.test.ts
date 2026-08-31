@@ -134,6 +134,19 @@ test("treats a same-hash structurally incomplete existing target as corrupt with
   assert.equal(readFileSync(target, "utf8"), original);
 });
 
+test("rejects a stored row whose optional canonical attempt is structurally invalid", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "nas-store-canonical-corrupt-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const store = new RecordStore({ dataRoot: root });
+  await store.put(validStoredRecord());
+  const target = join(incoming(root), `${RECORD_ID}.json`);
+  const damaged = JSON.parse(readFileSync(target, "utf8")) as Record<string, unknown>;
+  damaged.canonicalAttempt = { schemaVersion: 1 };
+  writeFileSync(target, JSON.stringify(damaged));
+
+  await assert.rejects(() => store.list(OFFICIAL_SESSION), /STORAGE_CORRUPT/);
+});
+
 test("rejects an incoming parent redirected through a symlink or junction before writing", async (context) => {
   const root = mkdtempSync(join(tmpdir(), "nas-store-"));
   context.after(() => rmSync(root, { recursive: true, force: true }));

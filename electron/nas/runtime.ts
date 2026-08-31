@@ -1,9 +1,17 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { createActiveAttemptStore } from "../activeAttemptStore";
-import { createGeumcheonRecordRuntime, type ActiveAttemptCheckpoint } from "../geumcheonRecordRuntime";
+import {
+  createGeumcheonRecordRuntime,
+  type AttemptPersistenceIdentity,
+} from "../geumcheonRecordRuntime";
 import type { DeviceProfile, EventProfile, RecordRow, SaveRecordInput, SessionKind } from "../../shared/types";
-import { createGeumcheonRecordId, type NasRecordEnvelopeV1, type NasSessionV1 } from "../../shared/nas/protocol";
+import {
+  createGeumcheonAttemptIdentity,
+  type GeumcheonAttemptIdentityIds,
+  type NasRecordEnvelopeV1,
+  type NasSessionV1,
+} from "../../shared/nas/protocol";
 import { NasAdminSession, type AdminActionBase } from "./adminSession";
 import { NasApiClient, type FetchLike, type TimerAdapter } from "./apiClient";
 import { NasCredentialStore, type SafeStorageAdapter } from "./credentialStore";
@@ -15,7 +23,11 @@ const EVENT_PROFILE_ID = "geumcheon-2026";
 const NAS_EVENT_ID = "geumcheon-science-festival-2026";
 
 export type GeumcheonLocalCallbacks = {
-  persist(input: SaveRecordInput, recordId: string): Promise<RecordRow>;
+  persist(
+    input: SaveRecordInput,
+    recordId: string,
+    identity: AttemptPersistenceIdentity,
+  ): Promise<RecordRow>;
   read(): Promise<RecordRow[]>;
   admin: {
     edit(recordId: string, replacement: RecordRow, adminName: string): Promise<void>;
@@ -32,7 +44,7 @@ export type GeumcheonNasRuntimeOptions = {
   safeStorage: SafeStorageAdapter;
   fetch: FetchLike;
   local: GeumcheonLocalCallbacks;
-  createRecordId?: () => string;
+  createAttemptIdentity?: () => GeumcheonAttemptIdentityIds;
   createActionId?: () => string;
   now?: () => string;
   sleep?: (ms: number) => Promise<void>;
@@ -89,19 +101,25 @@ export function createGeumcheonNasRuntime(options: GeumcheonNasRuntimeOptions): 
     eventProfileId: EVENT_PROFILE_ID,
   });
   const now = options.now ?? (() => new Date().toISOString());
-  const createRecordId = options.createRecordId ?? (() => createGeumcheonRecordId(options.device.deviceId, randomUUID));
+  const createAttemptIdentity = options.createAttemptIdentity
+    ?? (() => createGeumcheonAttemptIdentity(options.device.deviceId, randomUUID));
   const createActionId = options.createActionId ?? (() => `gsc26-action-${randomUUID()}`);
   const records = createGeumcheonRecordRuntime({
     eventProfileId: EVENT_PROFILE_ID,
     variant: options.sessionKind === "official" ? "ai" : "practice",
+    deviceId: options.device.deviceId,
     store: {
       save: (checkpoint) => activeStore.save(checkpoint),
-      read: async () => await activeStore.read() as ActiveAttemptCheckpoint | null,
+      read: () => activeStore.read(),
       clear: () => activeStore.clear(),
     },
-    createRecordId,
+    createAttemptIdentity,
     now,
-    persistLocal: options.local.persist,
+    persistLocal: (input, identity) => options.local.persist(
+      input,
+      identity.recordId,
+      identity,
+    ),
     enqueue: (row) => outbox.enqueue(options.sessionKind, {
       schema_version: 1,
       event_id: NAS_EVENT_ID,

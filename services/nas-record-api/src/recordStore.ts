@@ -12,14 +12,23 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { RECORD_HEADERS } from "../../../shared/constants/defaults.js";
 import type {
   NasAdminActionV1,
+  NasRecordEnvelopeV1,
   NasSessionV1,
 } from "../../../shared/nas/protocol.js";
 import {
   GEUMCHEON_NAS_EVENT_ID,
   canonicalStringify,
   isGeumcheonRecordId,
+  isPairedGeumcheonAttemptIdentity,
 } from "../../../shared/nas/protocol.js";
-import type { RecordRow } from "../../../shared/types/index.js";
+import type {
+  CanonicalAiContradictionCode,
+  RecordRow,
+} from "../../../shared/types/index.js";
+import {
+  isCanonicalAiAttemptPubliclyRankable,
+  isCanonicalAiAttemptV1,
+} from "../../../shared/utils/geumcheonAiAttempt.js";
 import {
   verifyWritableDirectory,
   writeFileNoReplaceAtomic,
@@ -29,6 +38,19 @@ import type { StoredNasRecordV1 } from "./recordSchema.js";
 
 const ACTION_ID = /^gsc26-action-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_STORED_BYTES = 128 * 1024;
+const CONTRADICTION_CODES = new Set<CanonicalAiContradictionCode>([
+  "METRIC_NON_FINITE",
+  "METRIC_NEGATIVE",
+  "PROGRESS_OUT_OF_RANGE",
+  "ASSIGNED_UNITS_INVALID",
+  "CPM_UNDEFINED",
+  "TOTALS_MISMATCH",
+  "STAGE_PROGRESS_CONTRADICTION",
+  "RESULT_PROGRESS_CONTRADICTION",
+  "RESULT_TIMING_CONTRADICTION",
+  "INTERRUPTION_REASON_MISMATCH",
+  "IDENTITY_MISMATCH",
+]);
 
 export type RecordPutResult = {
   disposition: "stored" | "duplicate";
@@ -36,6 +58,29 @@ export type RecordPutResult = {
   payloadSha256: string;
   storedSha256: string;
   receivedAt: string;
+};
+
+export type QuarantinedNasRecordV1 = {
+  schema_version: 1;
+  quarantine_type: "contradiction";
+  record_id: string;
+  attempt_id: string;
+  authenticated_device_id: string;
+  received_at: string;
+  payload_sha256: string;
+  reason_code: CanonicalAiContradictionCode;
+  envelope: NasRecordEnvelopeV1;
+};
+
+type RecordStorageClass = "accepted" | "contradiction";
+
+type RecordIdClaimV1 = {
+  schema_version: 1;
+  record_id: string;
+  authenticated_device_id: string;
+  payload_sha256: string;
+  storage_class: RecordStorageClass;
+  reason_code: CanonicalAiContradictionCode | null;
 };
 
 export type AdminActionPutResult = {
@@ -76,6 +121,15 @@ export class RecordStore {
 
   async put(record: StoredNasRecordV1): Promise<RecordPutResult> {
     const targetPath = await this.recordTarget(record.session, record.row.record_id);
+    const existing = await this.existingRecordIfPresent(targetPath, record);
+    if (existing != null) {
+      await this.putRecordIdClaim(record, "accepted", null);
+      return existing;
+    }
+    await this.assertTargetMissing(
+      await this.quarantineTarget(record.session, record.row.record_id),
+    );
+    await this.putRecordIdClaim(record, "accepted", null);
     const bytes = Buffer.from(canonicalStringify(record.row), "utf8");
     try {
       await writeFileNoReplaceAtomic(targetPath, bytes, this.#atomicHooks);
@@ -85,6 +139,52 @@ export class RecordStore {
         return this.existingRecordAcknowledgement(targetPath, record);
       }
       throw storageError(error);
+    }
+  }
+
+  async putContradiction(
+    record: StoredNasRecordV1,
+    reasonCode: CanonicalAiContradictionCode,
+  ): Promise<"stored" | "duplicate"> {
+    if (!CONTRADICTION_CODES.has(reasonCode)) {
+      throw new Error("QUARANTINE_REASON_INVALID");
+    }
+    const attempt = record.row.canonicalAttempt;
+    if (attempt == null) throw new Error("CANONICAL_ATTEMPT_INVALID");
+    const quarantined: QuarantinedNasRecordV1 = {
+      schema_version: 1,
+      quarantine_type: "contradiction",
+      record_id: record.row.record_id,
+      attempt_id: attempt.attemptId,
+      authenticated_device_id: record.authenticated_device_id,
+      received_at: record.received_at,
+      payload_sha256: record.payload_sha256,
+      reason_code: reasonCode,
+      envelope: {
+        schema_version: record.schema_version,
+        event_id: record.event_id,
+        session: record.session,
+        row: record.row,
+      },
+    };
+    const targetPath = await this.quarantineTarget(record.session, record.row.record_id);
+    const existing = await this.existingQuarantineIfPresent(targetPath, quarantined);
+    if (existing) {
+      await this.putRecordIdClaim(record, "contradiction", reasonCode);
+      return "duplicate";
+    }
+    await this.assertTargetMissing(
+      await this.recordTarget(record.session, record.row.record_id),
+    );
+    await this.putRecordIdClaim(record, "contradiction", reasonCode);
+    const bytes = Buffer.from(canonicalStringify(quarantined), "utf8");
+    try {
+      await writeFileNoReplaceAtomic(targetPath, bytes, this.#atomicHooks);
+      return "stored";
+    } catch (error) {
+      if (!isAlreadyExists(error)) throw storageError(error);
+      await this.existingQuarantineAcknowledgement(targetPath, quarantined);
+      return "duplicate";
     }
   }
 
@@ -178,7 +278,64 @@ export class RecordStore {
       }
     }
 
-    return [...visible.values()];
+    return [...visible.values()].filter(isEffectiveCanonicalRow);
+  }
+
+  private async existingRecordIfPresent(
+    targetPath: string,
+    record: StoredNasRecordV1,
+  ): Promise<RecordPutResult | undefined> {
+    if (!await pathExists(targetPath)) return undefined;
+    return this.existingRecordAcknowledgement(targetPath, record);
+  }
+
+  private async existingQuarantineIfPresent(
+    targetPath: string,
+    quarantined: QuarantinedNasRecordV1,
+  ): Promise<boolean> {
+    if (!await pathExists(targetPath)) return false;
+    await this.existingQuarantineAcknowledgement(targetPath, quarantined);
+    return true;
+  }
+
+  private async existingQuarantineAcknowledgement(
+    targetPath: string,
+    quarantined: QuarantinedNasRecordV1,
+  ): Promise<void> {
+    const existing = await readBoundedJson(targetPath);
+    if (!isCompleteQuarantine(existing)) throw new StorageError("STORAGE_CORRUPT");
+    if (!sameQuarantineSubmission(existing, quarantined)) {
+      throw new Error("IDEMPOTENCY_CONFLICT");
+    }
+  }
+
+  private async assertTargetMissing(targetPath: string): Promise<void> {
+    if (await pathExists(targetPath)) throw new Error("IDEMPOTENCY_CONFLICT");
+  }
+
+  private async putRecordIdClaim(
+    record: StoredNasRecordV1,
+    storageClass: RecordStorageClass,
+    reasonCode: CanonicalAiContradictionCode | null,
+  ): Promise<void> {
+    const claim: RecordIdClaimV1 = {
+      schema_version: 1,
+      record_id: record.row.record_id,
+      authenticated_device_id: record.authenticated_device_id,
+      payload_sha256: record.payload_sha256,
+      storage_class: storageClass,
+      reason_code: reasonCode,
+    };
+    const targetPath = await this.idempotencyTarget(record.session, record.row.record_id);
+    const bytes = Buffer.from(canonicalStringify(claim), "utf8");
+    try {
+      await writeFileNoReplaceAtomic(targetPath, bytes);
+    } catch (error) {
+      if (!isAlreadyExists(error)) throw storageError(error);
+      const existing = await readBoundedJson(targetPath);
+      if (!isCompleteRecordIdClaim(existing)) throw new StorageError("STORAGE_CORRUPT");
+      if (!sameRecordIdClaim(existing, claim)) throw new Error("IDEMPOTENCY_CONFLICT");
+    }
   }
 
   private async existingRecordAcknowledgement(
@@ -215,10 +372,38 @@ export class RecordStore {
     return targetPath;
   }
 
+  private async quarantineTarget(session: NasSessionV1, recordId: string): Promise<string> {
+    if (!isGeumcheonRecordId(recordId)) throw new Error("RECORD_ID_INVALID");
+    const directory = await this.quarantineDirectory(session);
+    const targetPath = resolve(directory, `${recordId}.json`);
+    if (dirname(targetPath) !== directory) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
+    return targetPath;
+  }
+
+  private async idempotencyTarget(session: NasSessionV1, recordId: string): Promise<string> {
+    if (!isGeumcheonRecordId(recordId)) throw new Error("RECORD_ID_INVALID");
+    const directory = await this.idempotencyDirectory(session);
+    const targetPath = resolve(directory, recordId + ".claim");
+    if (dirname(targetPath) !== directory) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
+    return targetPath;
+  }
+
   private async recordDirectory(session: NasSessionV1): Promise<string> {
     return this.ensureDirectory(session.kind === "official"
       ? ["기록저장", `${session.day_no}일차`, `${session.round_no}회차`, "incoming", "ai"]
       : ["기록저장", "연습회차", "incoming", "ai"]);
+  }
+
+  private async quarantineDirectory(session: NasSessionV1): Promise<string> {
+    return this.ensureDirectory(session.kind === "official"
+      ? ["기록저장", `${session.day_no}일차`, `${session.round_no}회차`, "quarantine", "contradiction"]
+      : ["기록저장", "연습회차", "quarantine", "contradiction"]);
+  }
+
+  private async idempotencyDirectory(session: NasSessionV1): Promise<string> {
+    return this.ensureDirectory(session.kind === "official"
+      ? ["기록저장", String(session.day_no) + "일차", String(session.round_no) + "회차", "idempotency"]
+      : ["기록저장", "연습회차", "idempotency"]);
   }
 
   private async adminDirectory(session: NasSessionV1): Promise<string> {
@@ -329,9 +514,145 @@ async function readBoundedBytes(targetPath: string): Promise<Buffer> {
   }
 }
 
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    const info = await lstat(targetPath);
+    if (info.isSymbolicLink() || !info.isFile()) {
+      throw new StorageError("STORAGE_PATH_SUBSTITUTION");
+    }
+    return true;
+  } catch (error) {
+    if (isMissingPath(error)) return false;
+    throw storageError(error);
+  }
+}
+
 function isCompleteRecordRow(value: unknown): value is RecordRow {
   if (!plainObject(value) || !isGeumcheonRecordId(value.record_id)) return false;
-  return RECORD_HEADERS.every((key) => typeof value[key] === "string");
+  if (!RECORD_HEADERS.every((key) => typeof value[key] === "string")) return false;
+  return value.canonicalAttempt === undefined
+    || isCanonicalAiAttemptV1(value.canonicalAttempt);
+}
+
+function isCompleteQuarantine(value: unknown): value is QuarantinedNasRecordV1 {
+  if (
+    !plainObject(value)
+    || !exactKeysBoolean(value, [
+      "schema_version",
+      "quarantine_type",
+      "record_id",
+      "attempt_id",
+      "authenticated_device_id",
+      "received_at",
+      "payload_sha256",
+      "reason_code",
+      "envelope",
+    ])
+    || value.schema_version !== 1
+    || value.quarantine_type !== "contradiction"
+    || !isGeumcheonRecordId(value.record_id)
+    || typeof value.attempt_id !== "string"
+    || typeof value.authenticated_device_id !== "string"
+    || typeof value.received_at !== "string"
+    || Number.isNaN(Date.parse(value.received_at))
+    || typeof value.payload_sha256 !== "string"
+    || !/^[0-9a-f]{64}$/.test(value.payload_sha256)
+    || typeof value.reason_code !== "string"
+    || !CONTRADICTION_CODES.has(value.reason_code as CanonicalAiContradictionCode)
+    || !plainObject(value.envelope)
+    || !exactKeysBoolean(value.envelope, ["schema_version", "event_id", "session", "row"])
+    || value.envelope.schema_version !== 1
+    || value.envelope.event_id !== GEUMCHEON_NAS_EVENT_ID
+    || !validSession(value.envelope.session)
+    || !isCompleteRecordRow(value.envelope.row)
+    || value.envelope.row.record_id !== value.record_id
+    || value.envelope.row.canonicalAttempt?.attemptId !== value.attempt_id
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function sameQuarantineSubmission(
+  left: QuarantinedNasRecordV1,
+  right: QuarantinedNasRecordV1,
+): boolean {
+  return left.schema_version === right.schema_version
+    && left.quarantine_type === right.quarantine_type
+    && left.record_id === right.record_id
+    && left.attempt_id === right.attempt_id
+    && left.authenticated_device_id === right.authenticated_device_id
+    && left.payload_sha256 === right.payload_sha256
+    && left.reason_code === right.reason_code
+    && canonicalStringify(left.envelope) === canonicalStringify(right.envelope);
+}
+
+function isCompleteRecordIdClaim(value: unknown): value is RecordIdClaimV1 {
+  if (
+    !plainObject(value)
+    || !exactKeysBoolean(value, [
+      "schema_version",
+      "record_id",
+      "authenticated_device_id",
+      "payload_sha256",
+      "storage_class",
+      "reason_code",
+    ])
+    || value.schema_version !== 1
+    || !isGeumcheonRecordId(value.record_id)
+    || typeof value.authenticated_device_id !== "string"
+    || typeof value.payload_sha256 !== "string"
+    || !/^[0-9a-f]{64}$/.test(value.payload_sha256)
+    || (value.storage_class !== "accepted" && value.storage_class !== "contradiction")
+  ) {
+    return false;
+  }
+  return value.storage_class === "accepted"
+    ? value.reason_code === null
+    : typeof value.reason_code === "string"
+      && CONTRADICTION_CODES.has(value.reason_code as CanonicalAiContradictionCode);
+}
+
+function sameRecordIdClaim(left: RecordIdClaimV1, right: RecordIdClaimV1): boolean {
+  return left.schema_version === right.schema_version
+    && left.record_id === right.record_id
+    && left.authenticated_device_id === right.authenticated_device_id
+    && left.payload_sha256 === right.payload_sha256
+    && left.storage_class === right.storage_class
+    && left.reason_code === right.reason_code;
+}
+
+function isEffectiveCanonicalRow(row: RecordRow): boolean {
+  const attempt = row.canonicalAttempt;
+  if (attempt === undefined) return true;
+  if (!isCanonicalAiAttemptV1(attempt)) return false;
+  const match = /^gsc26-(pc(?:0[1-9]|10))-[0-9a-f-]+$/.exec(row.record_id);
+  if (match == null) return false;
+  const expectedDeviceId = match[1].toUpperCase();
+  if (
+    !isPairedGeumcheonAttemptIdentity(row.record_id, attempt.attemptId)
+    || !isCanonicalAiAttemptPubliclyRankable(attempt, {
+      recordId: row.record_id,
+      deviceId: expectedDeviceId,
+    })
+    || Number(row.result_stage) !== attempt.stageReached
+  ) {
+    return false;
+  }
+  if (attempt.result === "PARTICIPANT_WIN") {
+    return row.ai_challenge_status === "SUCCESS"
+      && row.final_vs_ai_result === "USER_WIN";
+  }
+  if (attempt.result === "GEUMNARAE_WIN") {
+    return row.ai_challenge_status === "FAILED"
+      && row.final_vs_ai_result === "AI_WIN";
+  }
+  const expectedMemo = attempt.interruptionReason === "HOME"
+    ? "사용자 중단:메인화면"
+    : attempt.interruptionReason === "RETRY"
+      ? "사용자 중단:다시하기"
+      : "사용자 중단:프로그램 종료";
+  return row.ai_challenge_status === "FAILED" && row.memo === expectedMemo;
 }
 
 function validateAdminAction(value: unknown): asserts value is NasAdminActionV1 {

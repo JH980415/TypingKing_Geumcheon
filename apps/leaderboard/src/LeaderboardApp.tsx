@@ -1,7 +1,14 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { AppConfig, BootstrapData, CsvBackupStatus, LeaderboardSyncStatus, RecordRow } from "../../../shared/types";
-import { bestRecordOnly, isInterruptedRecord, sortRecords } from "../../../shared/utils/ranking";
+import {
+  bestRecordOnly,
+  compareLegacyAiRecords,
+  isInterruptedRecord,
+  rankCanonicalAiAttempts,
+  sortRecords
+} from "../../../shared/utils/ranking";
+import { isCanonicalAiAttemptPubliclyRankable } from "../../../shared/utils/geumcheonAiAttempt";
 import { calculateFinalCpm, countConvertedTypingUnits, countTypeableChars } from "../../../shared/utils/typing";
 import { resolveEventAssetUrl } from "../../../shared/events/types";
 import { OneDriveSettingsPanel } from "../../shell/src/OneDriveSettingsPanel";
@@ -49,6 +56,10 @@ type AiLeaderboardDisplay = {
 type AiLeaderboardEntry = {
   record: RecordRow;
   display: AiLeaderboardDisplay;
+};
+
+type RankedAiLeaderboardEntry = AiLeaderboardEntry & {
+  rank: number;
 };
 
 let leaderboardRefreshInFlight = false;
@@ -134,8 +145,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
     );
     const ranked = source
       .map(normalizeFinalCpmForLeaderboard)
-      .map((record) => ({ record, display: buildAiLeaderboardDisplayV2(record) }))
-      .sort(sortAiEntriesV2);
+      .map((record) => ({ record, display: buildAiLeaderboardDisplayV2(record) }));
     const visibleRanked = selectGeumcheonAiLeaderboardEntriesForMode(ranked, {
       isGeumcheonOfficialBoard,
       isGeumcheonPracticeBoard
@@ -440,8 +450,12 @@ export function LeaderboardApp({ bootstrap }: Props) {
               />
               <h2 className="leaderboard-mode-title leaderboard-ai-title">
                 <AssetImage
-                  src={`${assetBaseUrl}/ai_challenge/ai_title_oneline_trimmed.png`}
-                  fallbackSrc={`${assetBaseUrl}/ai_challenge/ai_challenge_title.png`}
+                  src={bootstrap.eventProfile.profileId === "geumcheon-2026"
+                    ? eventAsset(bootstrap.eventProfile.assets.eventTitle)
+                    : `${assetBaseUrl}/ai_challenge/ai_title_oneline_trimmed.png`}
+                  fallbackSrc={bootstrap.eventProfile.profileId === "geumcheon-2026"
+                    ? undefined
+                    : `${assetBaseUrl}/ai_challenge/ai_challenge_title.png`}
                     alt={bootstrap.variantPolicy.displayName}
                   className="leaderboard-mode-title-img leaderboard-ai-title-img"
                     fallback={<span>{bootstrap.eventProfile.gameName}</span>}
@@ -453,18 +467,18 @@ export function LeaderboardApp({ bootstrap }: Props) {
                   <span>참여자명</span>
                   <span>휴대폰번호</span>
                   <span>결과</span>
-                  <span>{isPracticeBoard ? "스테이지" : "종료 스테이지"}</span>
-                  <span>{isPracticeBoard ? "참여자" : "참여자 점수"}</span>
-                  <span>{isPracticeBoard ? "AI" : "AI 점수"}</span>
-                  <span>{isPracticeBoard ? "시간" : "대결 시간"}</span>
+                  <span>{isPracticeBoard ? "스테이지" : "종료 지점"}</span>
+                  <span>{isPracticeBoard ? "참여자" : "참여자 기록"}</span>
+                  <span>{isPracticeBoard ? "금나래" : "금나래 기록"}</span>
+                  <span>{isPracticeBoard ? "시간" : "총 대결시간"}</span>
                 </div>
-                {aiRecords.map(({ record, display }, index) => (
+                {aiRecords.map(({ record, display, rank }) => (
                   <button
                     className={selectedId === record.record_id ? "ranking-row ai-row selected" : "ranking-row ai-row"}
                     key={record.record_id}
                     onClick={() => beginEdit(record)}
                   >
-                    <span className="rank-number">{index + 1}위</span>
+                    <span className="rank-number">{rank}위</span>
                     <span>{maskParticipantName(record.participant_name)}</span>
                     <span>{record.phone_masked}</span>
                     <span className={display.resultLabel === "참여자 승리" ? "result-win" : "result-lose"}>{display.resultLabel}</span>
@@ -689,41 +703,44 @@ function normalizeFinalCpmForLeaderboard(record: RecordRow): RecordRow {
 
 export function selectGeumcheonAiLeaderboardEntriesForMode(
   entries: AiLeaderboardEntry[],
-  _mode: { isGeumcheonOfficialBoard: boolean; isGeumcheonPracticeBoard: boolean }
-): AiLeaderboardEntry[] {
-  return [...entries].sort(sortAiEntriesV2);
+  mode: { isGeumcheonOfficialBoard: boolean; isGeumcheonPracticeBoard: boolean }
+): RankedAiLeaderboardEntry[] {
+  if (!mode.isGeumcheonOfficialBoard && !mode.isGeumcheonPracticeBoard) {
+    return [...entries]
+      .sort((left, right) => compareLegacyAiRecords(left.record, right.record))
+      .map((entry, index) => ({ ...entry, rank: index + 1 }));
+  }
+
+  const canonicalEntries = entries.flatMap((entry) => {
+    const attempt = entry.record.canonicalAttempt;
+    if (!attempt || !isCanonicalAiAttemptPubliclyRankable(attempt, {
+      recordId: entry.record.record_id
+    })) {
+      return [];
+    }
+    return [{ entry, attempt }];
+  });
+  const entryByAttempt = new Map(
+    canonicalEntries.map(({ entry, attempt }) => [attempt, entry])
+  );
+  const rankedCanonical = rankCanonicalAiAttempts(
+    canonicalEntries.map(({ attempt }) => attempt)
+  ).map(({ rank, record: attempt }) => ({
+    ...entryByAttempt.get(attempt)!,
+    rank
+  }));
+  const legacyEntries = entries
+    .filter((entry) => entry.record.canonicalAttempt == null)
+    .sort((left, right) => compareLegacyAiRecords(left.record, right.record))
+    .map((entry, index) => ({
+      ...entry,
+      rank: rankedCanonical.length + index + 1
+    }));
+  return [...rankedCanonical, ...legacyEntries];
 }
 
 function enrichRecordForExport(record: RecordRow): RecordRow {
   return enrichAiRecordForExportV2(normalizeFinalCpmForLeaderboard(record));
-}
-
-function sortAiEntriesV2(a: AiLeaderboardEntry, b: AiLeaderboardEntry): number {
-  const resultDiff = aiResultRankV2(a.display) - aiResultRankV2(b.display);
-  if (resultDiff !== 0) return resultDiff;
-
-  if (a.display.resultLabel === "참여자 승리" && b.display.resultLabel === "참여자 승리") {
-    const duelDiff = sortNullableAsc(a.display.duelTimeMs) - sortNullableAsc(b.display.duelTimeMs);
-    if (duelDiff !== 0) return duelDiff;
-    const cpmDiff = sortNullableDesc(b.display.participantAvgCpm) - sortNullableDesc(a.display.participantAvgCpm);
-    if (cpmDiff !== 0) return cpmDiff;
-  } else {
-    const stageDiff = b.display.resultStage - a.display.resultStage;
-    if (stageDiff !== 0) return stageDiff;
-    const progressDiff =
-      sortNullableDesc(b.display.participantProgressPercent) - sortNullableDesc(a.display.participantProgressPercent);
-    if (progressDiff !== 0) return progressDiff;
-    const cpmDiff = sortNullableDesc(b.display.participantAvgCpm) - sortNullableDesc(a.display.participantAvgCpm);
-    if (cpmDiff !== 0) return cpmDiff;
-  }
-
-  const completedDiff = new Date(a.record.completed_at).getTime() - new Date(b.record.completed_at).getTime();
-  if (completedDiff !== 0) return completedDiff;
-  return Number(a.record.record_id || 0) - Number(b.record.record_id || 0);
-}
-
-function aiResultRankV2(display: AiLeaderboardDisplay): number {
-  return display.resultLabel === "참여자 승리" ? 0 : 1;
 }
 
 export function buildAiLeaderboardDisplayV2(record: RecordRow): AiLeaderboardDisplay {
@@ -736,7 +753,7 @@ export function buildAiLeaderboardDisplayV2(record: RecordRow): AiLeaderboardDis
     parseFiniteNumber(record.participant_progress_percent) ?? averageProgressV2(participantProgresses);
   const rawAiProgress = parseFiniteNumber(record.ai_progress_percent) ?? averageProgressV2(aiProgresses);
   const participantProgressPercent = resultLabel === "참여자 승리" ? 100 : rawParticipantProgress;
-  const aiProgressPercent = resultLabel === "참여자 패배" ? 100 : rawAiProgress;
+  const aiProgressPercent = resultLabel === "금나래 승리" ? 100 : rawAiProgress;
   const duelTimeMs = parseFiniteNumber(record.duel_time_ms) ?? estimateDuelTimeMsV2(record, stageResults, resultStage);
   // 저장된 평균 타수는 0(=입력 없음)도 유효값으로 존중한다. firstFiniteNumber는 0을 "없음"으로
   // 취급해 잘못된 보정값(final_cpm 기반)을 만들어 진행률 0%인데 평균 타수가 표시되는 모순을 유발했다.
@@ -767,7 +784,7 @@ export function buildAiLeaderboardDisplayV2(record: RecordRow): AiLeaderboardDis
     aiProgressPercent,
     duelTimeMs,
     duelTimeText: formatLeaderboardMs(duelTimeMs),
-    duelRecordText: formatLeaderboardRecord(duelTimeMs, aiDuelVisibleCharCount(record, resultStage)),
+    duelRecordText: formatLeaderboardMs(duelTimeMs),
     participantProgressText: formatProgressText(participantProgressPercent),
     aiProgressText: formatProgressText(aiProgressPercent)
   };
@@ -791,13 +808,15 @@ function enrichAiRecordForExportV2(record: RecordRow, knownDisplay?: AiLeaderboa
   };
 }
 
-function normalizeAiResultLabelV2(record: RecordRow): "참여자 승리" | "참여자 패배" | "중단 패배" {
+function normalizeAiResultLabelV2(record: RecordRow): "참여자 승리" | "금나래 승리" | "중단 패배" {
   if (record.challenge_result_label.includes("중단") || isInterruptedRecord(record)) return "중단 패배";
+  if (/금나래 승리|AI 승리|참여자 패배/.test(record.challenge_result_label)) return "금나래 승리";
+  if (/참여자 승리|금나래 패배|AI 패배/.test(record.challenge_result_label)) return "참여자 승리";
   if (record.challenge_result_label.includes("승리")) return "참여자 승리";
-  if (record.challenge_result_label.includes("패배")) return "참여자 패배";
+  if (record.challenge_result_label.includes("패배")) return "금나래 승리";
   return record.ai_challenge_status === "SUCCESS" || record.final_vs_ai_result === "USER_WIN"
     ? "참여자 승리"
-    : "참여자 패배";
+    : "금나래 승리";
 }
 
 function getAiResultStageV2(record: RecordRow, resultLabel: string): number {
@@ -984,14 +1003,6 @@ function firstFiniteNumber(value: string | number | null | undefined): number | 
   return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
 }
 
-function sortNullableAsc(value: number | null): number {
-  return value == null ? Number.MAX_SAFE_INTEGER : value;
-}
-
-function sortNullableDesc(value: number | null): number {
-  return value == null ? -1 : value;
-}
-
 function formatLeaderboardMs(value: number | null): string {
   if (value == null || !Number.isFinite(value)) return "산정불가";
   return `${formatTruncatedDecimal(value / 1000, 2, true)}초`;
@@ -1037,10 +1048,12 @@ function aiDuelVisibleCharCount(record: RecordRow, resultStage: number): number 
     .reduce((sum, value, index) => sum + (parseFiniteNumber(value) ?? countTypeableChars(stageTexts[index] ?? "")), 0);
 }
 
-function maskParticipantName(name: string): string {
+export function maskParticipantName(name: string): string {
   const chars = Array.from(String(name ?? "").trim());
   if (chars.length === 0) return "";
-  return chars.map((char, index) => (index % 2 === 0 ? char : "*")).join("");
+  if (chars.length === 1) return chars[0];
+  if (chars.length === 2) return `${chars[0]}*`;
+  return `${chars[0]}${"*".repeat(chars.length - 2)}${chars.at(-1)}`;
 }
 
 function sameLeaderboardConfig(a: AppConfig, b: AppConfig): boolean {
@@ -1112,13 +1125,13 @@ function SessionSummary({
       className={isPractice ? "leaderboard-session practice-session" : "leaderboard-session"}
       aria-label={
         isPractice
-          ? `현재 세션 ${count}명 참가 중 자유 연습회차`
-          : `현재 세션 ${count}명 참가 중 ${day}일차 ${round}회차`
+          ? `현재 세션 연습 기록 ${count}건 자유 연습회차`
+          : `현재 세션 공식 도전 기록 ${count}건 ${day}일차 ${round}회차`
       }
     >
       <div className="session-top">
         <span className="session-label">현재 세션</span>
-        <span className="session-count">{count}명 참가 중</span>
+        <span className="session-count">{isPractice ? `연습 기록 ${count}건` : `공식 도전 기록 ${count}건`}</span>
       </div>
       {isPractice && compactPractice ? (
         <span className="practice-mini-label">자유 연습회차</span>

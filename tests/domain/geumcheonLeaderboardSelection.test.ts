@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { RecordRow } from "../../shared/types";
+import type { CanonicalAiAttemptV1, RecordRow } from "../../shared/types";
 import {
   buildAiLeaderboardDisplayV2,
   selectGeumcheonAiLeaderboardEntriesForMode
 } from "../../apps/leaderboard/src/LeaderboardApp";
+import * as leaderboardModule from "../../apps/leaderboard/src/LeaderboardApp";
+import { buildCanonicalAiAttempt } from "../../shared/utils/geumcheonAiAttempt";
 
 function record(overrides: Partial<RecordRow> = {}): RecordRow {
   return {
@@ -100,6 +102,70 @@ function record(overrides: Partial<RecordRow> = {}): RecordRow {
   };
 }
 
+function builtCanonicalAttemptForRank(
+  overrides: Partial<CanonicalAiAttemptV1>
+): CanonicalAiAttemptV1 {
+  const stageReached = overrides.stageReached ?? 3;
+  const correctUnits = overrides.wholeGameProgressRaw ?? 100;
+  const participantCpm = overrides.participantAverageCpmRaw ?? 600;
+  const validUnits = participantCpm === 1 ? 1 : participantCpm / 100;
+  const activeTypingTimeMs = validUnits * 60_000 / participantCpm;
+  const duelTimeMs = overrides.totalActiveDuelTimeMs ?? 6_000;
+  const capacities = [20, 30, 50] as const;
+  const distribute = (total: number): number[] => {
+    let remaining = total;
+    return capacities.map((capacity, index) => {
+      if (index >= stageReached) return 0;
+      const value = Math.min(capacity, remaining);
+      remaining -= value;
+      return value;
+    });
+  };
+  const correctByStage = distribute(correctUnits);
+  const validByStage = distribute(validUnits);
+  const participantCompleted = stageReached === 3 && correctUnits === 100;
+  return buildCanonicalAiAttempt({
+    schemaVersion: 1,
+    attemptId: overrides.attemptId ?? "attempt-1",
+    recordId: overrides.recordId ?? "record-1",
+    deviceId: overrides.deviceId ?? "PC01",
+    recordedAt: overrides.recordedAt ?? "2026-09-18T01:00:00.000Z",
+    result: participantCompleted ? "PARTICIPANT_WIN" : "INTERRUPTED",
+    interruptionReason: participantCompleted ? null : "HOME",
+    participantFinishTimeMs: participantCompleted ? duelTimeMs : null,
+    geumnaraeFinishTimeMs: participantCompleted ? duelTimeMs : null,
+    stages: capacities.map((capacity, index) => ({
+      stageNumber: (index + 1) as 1 | 2 | 3,
+      entered: index < stageReached,
+      assignedInputUnits: capacity,
+      participantCorrectInputUnits: correctByStage[index],
+      participantValidInputUnits: validByStage[index],
+      participantActiveTypingTimeMs: index === 0 ? activeTypingTimeMs : 0,
+      geumnaraeCorrectInputUnits: correctByStage[index],
+      geumnaraeValidInputUnits: validByStage[index],
+      geumnaraeActiveTypingTimeMs: index === 0 ? activeTypingTimeMs : 0,
+      activeDuelTimeMs: index === 0 ? duelTimeMs : 0
+    }))
+  });
+}
+
+function canonicalRecord(
+  recordId: string,
+  attemptOverrides: Partial<CanonicalAiAttemptV1>,
+  recordOverrides: Partial<RecordRow> = {}
+): RecordRow {
+  const attempt = builtCanonicalAttemptForRank({
+    attemptId: `attempt-${recordId}`,
+    recordId,
+    ...attemptOverrides
+  });
+  return record({
+    record_id: recordId,
+    canonicalAttempt: attempt,
+    ...recordOverrides
+  });
+}
+
 function entry(row: RecordRow) {
   return {
     record: row,
@@ -151,36 +217,158 @@ test("Geumcheon official AI leaderboard keeps fourth attempts without server-onl
   assert.deepEqual(visible.map(({ record: row }) => row.record_id), ["fallback-only", "trusted"]);
 });
 
-test("Geumcheon official AI leaderboard puts a shorter winning duel ahead of higher CPM", () => {
+test("Geumcheon AI ranking ignores winner labels and completion timestamps", () => {
   const visible = selectGeumcheonAiLeaderboardEntriesForMode(
     [
-      entry(record({
-        record_id: "higher-cpm",
-        participant_name: "고CPM참가자",
-        participantKey: "server-hmac-higher-cpm",
-        completionStatus: "completed",
-        result_stage: "3",
-        participant_progress_percent: "100",
-        participant_avg_cpm: "900",
-        duel_time_ms: "30000"
-      })),
-      entry(record({
-        record_id: "shorter-duel",
-        participant_name: "빠른참가자",
-        duel_time_ms: "28000",
-        participant_avg_cpm: "500"
-      }))
+      entry(canonicalRecord(
+        "lower-canonical-winner",
+        {
+          stageReached: 2,
+          wholeGameProgressRaw: 49,
+          participantAverageCpmRaw: 900,
+          totalActiveDuelTimeMs: 1_000,
+          recordedAt: "2026-09-18T01:00:00.000Z"
+        },
+        {
+          challenge_result_label: "참여자 승리",
+          completed_at: "2026-09-18T01:00:01.000Z"
+        }
+      )),
+      entry(canonicalRecord(
+        "higher-canonical-loss",
+        {
+          stageReached: 3,
+          wholeGameProgressRaw: 55,
+          participantAverageCpmRaw: 1,
+          totalActiveDuelTimeMs: 99_000,
+          recordedAt: "2026-09-18T02:00:00.000Z"
+        },
+        {
+          challenge_result_label: "참여자 패배",
+          completed_at: "2026-09-18T02:00:01.000Z"
+        }
+      ))
     ],
     { isGeumcheonOfficialBoard: true, isGeumcheonPracticeBoard: false }
   );
 
   assert.deepEqual(
     visible.map(({ record: row }) => row.record_id),
-    ["shorter-duel", "higher-cpm"]
+    ["higher-canonical-loss", "lower-canonical-winner"]
   );
 });
 
-test("interrupted AI display uses stored typed character counts instead of full prompt lengths", () => {
+test("Geumcheon AI ranking uses exactly four raw keys and competition tie ranks", () => {
+  const visible = selectGeumcheonAiLeaderboardEntriesForMode(
+    [
+      entry(canonicalRecord("stage-one", {
+        stageReached: 1,
+        wholeGameProgressRaw: 15,
+        participantAverageCpmRaw: 1_000,
+        totalActiveDuelTimeMs: 100
+      })),
+      entry(canonicalRecord("same-cpm-longer", {
+        stageReached: 2,
+        wholeGameProgressRaw: 40,
+        participantAverageCpmRaw: 800,
+        totalActiveDuelTimeMs: 7_000
+      })),
+      entry(canonicalRecord("tie-newer", {
+        stageReached: 2,
+        wholeGameProgressRaw: 45,
+        participantAverageCpmRaw: 900,
+        totalActiveDuelTimeMs: 10_000,
+        recordedAt: "2026-09-18T03:00:00.000Z"
+      })),
+      entry(canonicalRecord("progress-lower", {
+        stageReached: 2,
+        wholeGameProgressRaw: 35,
+        participantAverageCpmRaw: 1_000,
+        totalActiveDuelTimeMs: 500
+      })),
+      entry(canonicalRecord("higher-cpm-longer", {
+        stageReached: 2,
+        wholeGameProgressRaw: 40,
+        participantAverageCpmRaw: 800,
+        totalActiveDuelTimeMs: 5_000
+      })),
+      entry(canonicalRecord("stage-three", {
+        stageReached: 3,
+        wholeGameProgressRaw: 55,
+        participantAverageCpmRaw: 1,
+        totalActiveDuelTimeMs: 99_000
+      })),
+      entry(canonicalRecord("lower-cpm-shorter", {
+        stageReached: 2,
+        wholeGameProgressRaw: 40,
+        participantAverageCpmRaw: 700,
+        totalActiveDuelTimeMs: 1_000
+      })),
+      entry(canonicalRecord("tie-older", {
+        stageReached: 2,
+        wholeGameProgressRaw: 45,
+        participantAverageCpmRaw: 900,
+        totalActiveDuelTimeMs: 10_000,
+        recordedAt: "2026-09-18T02:00:00.000Z"
+      }))
+    ],
+    { isGeumcheonOfficialBoard: true, isGeumcheonPracticeBoard: false }
+  );
+
+  assert.deepEqual(
+    visible.map((item) => ({
+      recordId: item.record.record_id,
+      rank: (item as typeof item & { rank: number }).rank
+    })),
+    [
+      { recordId: "stage-three", rank: 1 },
+      { recordId: "tie-older", rank: 2 },
+      { recordId: "tie-newer", rank: 2 },
+      { recordId: "higher-cpm-longer", rank: 4 },
+      { recordId: "same-cpm-longer", rank: 5 },
+      { recordId: "lower-cpm-shorter", rank: 6 },
+      { recordId: "progress-lower", rank: 7 },
+      { recordId: "stage-one", rank: 8 }
+    ]
+  );
+});
+
+test("Geumcheon official AI leaderboard keeps every repeated participant attempt", () => {
+  const visible = selectGeumcheonAiLeaderboardEntriesForMode(
+    [
+      entry(canonicalRecord("retry-third", {
+        attemptId: "attempt-third",
+        wholeGameProgressRaw: 55,
+        participantAverageCpmRaw: 300
+      })),
+      entry(canonicalRecord("retry-first", {
+        attemptId: "attempt-first",
+        wholeGameProgressRaw: 55,
+        participantAverageCpmRaw: 500
+      })),
+      entry(canonicalRecord("retry-second", {
+        attemptId: "attempt-second",
+        wholeGameProgressRaw: 55,
+        participantAverageCpmRaw: 400
+      }))
+    ],
+    { isGeumcheonOfficialBoard: true, isGeumcheonPracticeBoard: false }
+  );
+
+  assert.deepEqual(
+    visible.map((item) => ({
+      recordId: item.record.record_id,
+      rank: (item as typeof item & { rank: number }).rank
+    })),
+    [
+      { recordId: "retry-first", rank: 1 },
+      { recordId: "retry-second", rank: 2 },
+      { recordId: "retry-third", rank: 3 }
+    ]
+  );
+});
+
+test("interrupted AI display shows cumulative duel time without a character count", () => {
   const display = buildAiLeaderboardDisplayV2(record({
     challenge_result_label: "중단 패배",
     ai_challenge_status: "FAILED",
@@ -199,7 +387,30 @@ test("interrupted AI display uses stored typed character counts instead of full 
     duel_time_ms: "11500"
   }));
 
-  assert.equal(display.duelRecordText, "11.50초, 7글자");
+  assert.equal(display.duelRecordText, "11.50초");
+});
+
+test("participant name masking exposes only the first and final characters", () => {
+  const maskParticipantName = (leaderboardModule as typeof leaderboardModule & {
+    maskParticipantName?: (name: string) => string;
+  }).maskParticipantName;
+
+  assert.equal(typeof maskParticipantName, "function");
+  assert.equal(maskParticipantName("박재환"), "박*환");
+  assert.equal(maskParticipantName("김철"), "김*");
+  assert.equal(maskParticipantName("합성참가자1"), "합****1");
+  assert.equal(maskParticipantName("박"), "박");
+});
+
+test("a failed Geumcheon challenge is labeled as a Geumnarae win", () => {
+  const display = buildAiLeaderboardDisplayV2(record({
+    challenge_result_label: "참여자 패배",
+    ai_challenge_status: "FAILED",
+    final_vs_ai_result: "AI_WIN",
+    ai_progress_percent: "100"
+  }));
+
+  assert.equal(display.resultLabel, "금나래 승리");
 });
 
 test("countdown interruption displays stored zero time, CPM, and progress as zero values", () => {
@@ -242,7 +453,7 @@ test("countdown interruption displays stored zero time, CPM, and progress as zer
     },
     {
       duelTimeMs: 0,
-      duelRecordText: "0.00초, 0글자",
+      duelRecordText: "0.00초",
       participantAvgCpm: 0,
       participantCpmText: "평균 0타",
       participantProgressPercent: 0,

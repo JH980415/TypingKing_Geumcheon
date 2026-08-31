@@ -42,7 +42,7 @@ type CaseSpec = {
   deviceId: "PC01" | "LEADERBOARD01";
   sessionKind: SessionKind;
   uiSelector: ".entry-panel" | ".leaderboard-app";
-  imageSelector: ".brand-header img" | ".geumcheon-header-title";
+  imageSelector: ".geumcheon-main-title-image" | ".geumcheon-header-title";
 };
 
 type Check = {
@@ -139,7 +139,7 @@ const cases: CaseSpec[] = [
     deviceId: "PC01",
     sessionKind: "official",
     uiSelector: ".entry-panel",
-    imageSelector: ".brand-header img"
+    imageSelector: ".geumcheon-main-title-image"
   },
   {
     variant: "ai-leaderboard",
@@ -161,7 +161,7 @@ const cases: CaseSpec[] = [
     deviceId: "PC01",
     sessionKind: "practice",
     uiSelector: ".entry-panel",
-    imageSelector: ".brand-header img"
+    imageSelector: ".geumcheon-main-title-image"
   },
   {
     variant: "practice-leaderboard",
@@ -1013,7 +1013,7 @@ async function runCase(options: {
     const pageTitle = await page.title();
     addCheck(checks, "document title", pageTitle, testCase.title, pageTitle === testCase.title);
     let nativeTitleProbe = probeNativeWindowTitles(child.pid!);
-    const nativeTitleDeadline = Date.now() + 8_000;
+    const nativeTitleDeadline = Date.now() + 1_000;
     while (!nativeTitleProbe.titles.includes(testCase.title) && Date.now() < nativeTitleDeadline) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       nativeTitleProbe = probeNativeWindowTitles(child.pid!);

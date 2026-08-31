@@ -133,6 +133,74 @@ export type GeumcheonFairnessInput = {
   stages: readonly GeumcheonStageResultInput[];
 };
 
+export type CanonicalAiAttemptResult =
+  | "PARTICIPANT_WIN"
+  | "GEUMNARAE_WIN"
+  | "INTERRUPTED";
+
+export type CanonicalAiStageState = "IN_PROGRESS" | "COMPLETED";
+
+export type CanonicalAiInterruptionReason = "HOME" | "RETRY" | "EXIT" | null;
+
+export type CanonicalAiContradictionCode =
+  | "METRIC_NON_FINITE"
+  | "METRIC_NEGATIVE"
+  | "PROGRESS_OUT_OF_RANGE"
+  | "ASSIGNED_UNITS_INVALID"
+  | "CPM_UNDEFINED"
+  | "TOTALS_MISMATCH"
+  | "STAGE_PROGRESS_CONTRADICTION"
+  | "RESULT_PROGRESS_CONTRADICTION"
+  | "RESULT_TIMING_CONTRADICTION"
+  | "INTERRUPTION_REASON_MISMATCH"
+  | "IDENTITY_MISMATCH";
+
+export type CanonicalAiStageEvidenceV1 = {
+  stageNumber: 1 | 2 | 3;
+  entered: boolean;
+  assignedInputUnits: number;
+  participantCorrectInputUnits: number;
+  participantValidInputUnits: number;
+  participantActiveTypingTimeMs: number;
+  geumnaraeCorrectInputUnits: number;
+  geumnaraeValidInputUnits: number;
+  geumnaraeActiveTypingTimeMs: number;
+  activeDuelTimeMs: number;
+};
+
+export type CanonicalAiAttemptEvidenceV1 = {
+  schemaVersion: 1;
+  attemptId: string;
+  recordId: string;
+  deviceId: string;
+  recordedAt: string;
+  result: CanonicalAiAttemptResult;
+  interruptionReason: CanonicalAiInterruptionReason;
+  participantFinishTimeMs: number | null;
+  geumnaraeFinishTimeMs: number | null;
+  stages: readonly CanonicalAiStageEvidenceV1[];
+};
+
+export type CanonicalAiAttemptV1 = CanonicalAiAttemptEvidenceV1 & {
+  stageReached: 1 | 2 | 3;
+  stageState: CanonicalAiStageState;
+  wholeGameProgressRaw: number;
+  participantAverageCpmRaw: number;
+  geumnaraeProgressRaw: number;
+  geumnaraeAverageCpmRaw: number;
+  totalActiveDuelTimeMs: number;
+  assignedInputUnits: number;
+  participantCorrectInputUnits: number;
+  participantValidInputUnits: number;
+  participantActiveTypingTimeMs: number;
+  geumnaraeCorrectInputUnits: number;
+  geumnaraeValidInputUnits: number;
+  geumnaraeActiveTypingTimeMs: number;
+  participantCompleted: boolean;
+  geumnaraeCompleted: boolean;
+  contradictionCodes: readonly CanonicalAiContradictionCode[];
+};
+
 export type RecordRow = {
   record_id: string;
   created_at: string;
@@ -216,6 +284,7 @@ export type RecordRow = {
   completionStatus?: string;
   totalTypingUnits?: number | string;
   totalUserTimeMs?: number | string;
+  canonicalAttempt?: CanonicalAiAttemptV1;
 };
 
 export type SaveRecordInput = {
@@ -232,6 +301,7 @@ export type SaveRecordInput = {
   stageTextSelections?: readonly [StageTextSelection, StageTextSelection, StageTextSelection];
   stageTimesMs: [number, number, number];
   fairness?: GeumcheonFairnessInput;
+  canonicalAttempt?: CanonicalAiAttemptV1;
   game_mode?: "normal" | "ai_challenge";
   final_accuracy?: number;
   ai?: {

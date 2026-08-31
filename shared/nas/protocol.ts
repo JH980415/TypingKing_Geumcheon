@@ -61,6 +61,7 @@ export type NasAdminActionV1 =
 
 const UUID_V4 = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const RECORD_ID = new RegExp(`^gsc26-pc(?:0[1-9]|10)-${UUID_V4}$`);
+const RECORD_ID_WITH_UUID = new RegExp(`^gsc26-pc(?:0[1-9]|10)-(${UUID_V4})$`);
 const SHA256 = /^[0-9a-f]{64}$/;
 const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 
@@ -72,7 +73,15 @@ export function payloadSha256(value: unknown): string {
   return createHash("sha256").update(canonicalStringify(value), "utf8").digest("hex");
 }
 
-export function createGeumcheonRecordId(deviceId: string, uuidV4: () => string): string {
+export type GeumcheonAttemptIdentityIds = {
+  attemptId: string;
+  recordId: string;
+};
+
+export function createGeumcheonAttemptIdentity(
+  deviceId: string,
+  uuidV4: () => string,
+): GeumcheonAttemptIdentityIds {
   const normalizedDeviceId = deviceId.toLowerCase();
   if (!/^pc(?:0[1-9]|10)$/.test(normalizedDeviceId)) {
     throw new Error("NAS_RECORD_ID_INVALID_DEVICE");
@@ -82,11 +91,27 @@ export function createGeumcheonRecordId(deviceId: string, uuidV4: () => string):
   if (!new RegExp(`^${UUID_V4}$`).test(uuid)) {
     throw new Error("NAS_RECORD_ID_INVALID_UUID");
   }
-  return `gsc26-${normalizedDeviceId}-${uuid}`;
+  return {
+    attemptId: `gsc26-attempt-${uuid}`,
+    recordId: `gsc26-${normalizedDeviceId}-${uuid}`,
+  };
+}
+
+export function createGeumcheonRecordId(deviceId: string, uuidV4: () => string): string {
+  return createGeumcheonAttemptIdentity(deviceId, uuidV4).recordId;
 }
 
 export function isGeumcheonRecordId(value: unknown): value is string {
   return typeof value === "string" && RECORD_ID.test(value);
+}
+
+export function isPairedGeumcheonAttemptIdentity(
+  recordId: unknown,
+  attemptId: unknown,
+): recordId is string {
+  if (typeof recordId !== "string" || typeof attemptId !== "string") return false;
+  const match = RECORD_ID_WITH_UUID.exec(recordId);
+  return match != null && attemptId === `gsc26-attempt-${match[1]}`;
 }
 
 export function buildNasRecordEnvelope(

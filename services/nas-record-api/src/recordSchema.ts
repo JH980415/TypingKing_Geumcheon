@@ -3,10 +3,19 @@ import type { NasRecordEnvelopeV1, NasSessionV1 } from "../../../shared/nas/prot
 import {
   GEUMCHEON_NAS_EVENT_ID,
   canonicalStringify,
+  isPairedGeumcheonAttemptIdentity,
   isGeumcheonRecordId,
   payloadSha256,
 } from "../../../shared/nas/protocol.js";
-import type { RecordRow, StageText } from "../../../shared/types/index.js";
+import type {
+  CanonicalAiContradictionCode,
+  RecordRow,
+  StageText,
+} from "../../../shared/types/index.js";
+import {
+  canonicalAiContradictionCodes,
+  isCanonicalAiAttemptV1,
+} from "../../../shared/utils/geumcheonAiAttempt.js";
 import { calculateFinalCpm, countTypeableChars } from "../../../shared/utils/typing.js";
 import type { AuthenticatedPrincipal } from "./auth.js";
 import type { NasServerConfigV1 } from "./config.js";
@@ -26,6 +35,7 @@ const OPTIONAL_ROW_KEYS = new Set([
   "completionStatus",
   "totalTypingUnits",
   "totalUserTimeMs",
+  "canonicalAttempt",
 ]);
 
 export type RecordValidationConfigV1 = NasServerConfigV1 & {
@@ -38,6 +48,16 @@ export type StoredNasRecordV1 = NasRecordEnvelopeV1 & {
   authenticated_device_id: string;
   received_at: string;
 };
+
+export class RecordContradictionError extends Error {
+  constructor(
+    readonly record: StoredNasRecordV1,
+    readonly reasonCodes: readonly CanonicalAiContradictionCode[],
+  ) {
+    super("RECORD_QUARANTINED");
+    this.name = "RecordContradictionError";
+  }
+}
 
 export function validateAndNormalizeRecord(
   value: unknown,
@@ -79,12 +99,31 @@ export function validateAndNormalizeRecord(
     session,
     row,
   };
-  return {
+  const stored: StoredNasRecordV1 = {
     ...normalizedEnvelope,
     payload_sha256: payloadSha256(normalizedEnvelope),
     authenticated_device_id: principal.deviceId,
     received_at: receivedAt,
   };
+  const attempt = row.canonicalAttempt;
+  if (attempt === undefined) return stored;
+  if (!isCanonicalAiAttemptV1(attempt)) {
+    throw new Error("CANONICAL_ATTEMPT_INVALID");
+  }
+  const reasonCodes = canonicalAiContradictionCodes(attempt, {
+    recordId: row.record_id,
+    deviceId: principal.deviceId,
+  });
+  if (
+    !isPairedGeumcheonAttemptIdentity(row.record_id, attempt.attemptId)
+    && !reasonCodes.includes("IDENTITY_MISMATCH")
+  ) {
+    reasonCodes.push("IDENTITY_MISMATCH");
+  }
+  if (reasonCodes.length > 0) {
+    throw new RecordContradictionError(stored, reasonCodes);
+  }
+  return stored;
 }
 
 function validateRecordRow(value: unknown): RecordRow {

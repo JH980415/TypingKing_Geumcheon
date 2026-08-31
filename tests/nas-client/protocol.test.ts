@@ -7,6 +7,7 @@ import {
   assertNasRecordAck,
   buildNasRecordEnvelope,
   canonicalStringify,
+  createGeumcheonAttemptIdentity,
   createGeumcheonRecordId,
   isGeumcheonRecordId,
   payloadSha256,
@@ -57,6 +58,18 @@ test("creates device-scoped UUID record IDs", () => {
   assert.equal(id, RECORD_ID);
   assert.equal(isGeumcheonRecordId(id), true);
   assert.equal(isGeumcheonRecordId("gsc26-pc10-../../record"), false);
+});
+
+test("derives one attempt ID and record ID from the same UUID", () => {
+  const identity = createGeumcheonAttemptIdentity(
+    "PC10",
+    () => "123e4567-e89b-42d3-a456-426614174000",
+  );
+
+  assert.deepEqual(identity, {
+    attemptId: "gsc26-attempt-123e4567-e89b-42d3-a456-426614174000",
+    recordId: "gsc26-pc10-123e4567-e89b-42d3-a456-426614174000",
+  });
 });
 
 test("canonical JSON and payload hashes do not depend on object insertion order", () => {

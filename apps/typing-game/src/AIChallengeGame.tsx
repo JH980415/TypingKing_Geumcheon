@@ -1,9 +1,19 @@
 ﻿import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { AppConfig, EventProfile, GeumcheonFairnessInput, RecordRow, SaveRecordInput, StageTextSelection } from "../../../shared/types";
+import type {
+  AppConfig,
+  CanonicalAiAttemptV1,
+  CanonicalAiStageEvidenceV1,
+  EventProfile,
+  GeumcheonFairnessInput,
+  RecordRow,
+  SaveRecordInput,
+  StageTextSelection
+} from "../../../shared/types";
 import { resolveEventAssetUrl } from "../../../shared/events/types";
 import { formatBirthdate } from "../../../shared/utils/date";
 import { buildPhoneFull } from "../../../shared/utils/masking";
+import { buildCanonicalAiAttempt } from "../../../shared/utils/geumcheonAiAttempt";
 import {
   calculateAccuracy,
   calculateCurrentCpm,
@@ -36,6 +46,7 @@ type Participant = {
 
 type StageBattle = {
   stage: number;
+  entered?: boolean;
   text: string;
   userTimeMs: number;
   userCpm: number;
@@ -49,6 +60,9 @@ type StageBattle = {
   result: "USER_WIN" | "AI_WIN";
   userInput: string;
 };
+
+const RUNTIME_IDENTITY_PLACEHOLDER = "__ASSIGNED_BY_MAIN_PROCESS__";
+const RUNTIME_RECORDED_AT_PLACEHOLDER = "1970-01-01T00:00:00.000Z";
 
 export type GeumcheonFairnessBattle = Pick<
   StageBattle,
@@ -122,7 +136,7 @@ export function createGeumcheonFairness(
   };
 }
 
-function createChallengeSaveInput({
+export function createChallengeSaveInput({
   participant,
   stageTexts,
   stageTextSelections,
@@ -174,6 +188,14 @@ function createChallengeSaveInput({
   const fairness = isGeumcheon
     ? createGeumcheonFairness(battleRows, stageTextSelections, interruptionAction, terminalStage)
     : undefined;
+  const canonicalAttempt = isGeumcheon && stageTextSelections
+    ? createCanonicalAttempt({
+        selections: stageTextSelections,
+        battleRows,
+        status,
+        interruptionAction
+      })
+    : undefined;
   return {
     participant_name: participant.name,
     phone_part1: participant.phone1,
@@ -188,6 +210,7 @@ function createChallengeSaveInput({
     stageTextSelections,
     stageTimesMs: userTimes,
     fairness,
+    canonicalAttempt,
     game_mode: "ai_challenge",
     final_accuracy: status === "SUCCESS" ? 100 : Math.round(lastAccuracy),
     ai: {
@@ -250,6 +273,7 @@ export function createInterruptedChallengeSaveInput({
   const currentAiInput = getTextPrefixByTypingUnits(text, safeAiTypedUnits);
   const interruptedBattle: StageBattle = {
     stage,
+    entered: interruptionStageIndex === stageIndex,
     text,
     userTimeMs: currentElapsedMs,
     userCpm: calculateCurrentCpm(currentInput, currentElapsedMs, text),
@@ -277,6 +301,87 @@ export function createInterruptedChallengeSaveInput({
     terminalStage: stage,
     isGeumcheon,
     debugModeType
+  });
+}
+
+function createCanonicalAttempt({
+  selections,
+  battleRows,
+  status,
+  interruptionAction
+}: {
+  selections: readonly [StageTextSelection, StageTextSelection, StageTextSelection];
+  battleRows: readonly StageBattle[];
+  status: "SUCCESS" | "FAILED";
+  interruptionAction?: ChallengeInterruptionAction;
+}): CanonicalAiAttemptV1 {
+  const stages = selections.map((selection): CanonicalAiStageEvidenceV1 => {
+    const battle = battleRows.find((candidate) => candidate.stage === selection.stageNumber);
+    const entered = battle != null && battle.entered !== false;
+    const assignedInputUnits = countConvertedTypingUnits(selection.text);
+    if (!battle || !entered) {
+      return {
+        stageNumber: selection.stageNumber,
+        entered: false,
+        assignedInputUnits,
+        participantCorrectInputUnits: 0,
+        participantValidInputUnits: 0,
+        participantActiveTypingTimeMs: 0,
+        geumnaraeCorrectInputUnits: 0,
+        geumnaraeValidInputUnits: 0,
+        geumnaraeActiveTypingTimeMs: 0,
+        activeDuelTimeMs: 0
+      };
+    }
+    const geumnaraeTypedUnits = countConvertedTypingUnits(
+      getTextPrefixByTypingUnits(selection.text, battle.aiTypedUnits)
+    );
+    return {
+      stageNumber: selection.stageNumber,
+      entered: true,
+      assignedInputUnits,
+      participantCorrectInputUnits: countMatchingPrefixTypingUnits(
+        battle.userInput,
+        selection.text
+      ),
+      participantValidInputUnits: countConvertedTypingUnits(battle.userInput),
+      participantActiveTypingTimeMs: Math.max(0, Math.round(battle.userTimeMs)),
+      geumnaraeCorrectInputUnits: geumnaraeTypedUnits,
+      geumnaraeValidInputUnits: geumnaraeTypedUnits,
+      geumnaraeActiveTypingTimeMs: Math.max(0, Math.round(battle.aiElapsedMs)),
+      activeDuelTimeMs: Math.max(0, Math.round(battle.aiElapsedMs))
+    };
+  });
+  const enteredBattles = battleRows.filter((battle) => battle.entered !== false);
+  const participantCompleted = status === "SUCCESS" && !interruptionAction;
+  const terminalBattle = enteredBattles.at(-1);
+  const geumnaraeCompleted = terminalBattle != null &&
+    terminalBattle.aiTypedUnits >= countConvertedTypingUnits(terminalBattle.text);
+  const participantFinishTimeMs = participantCompleted
+    ? enteredBattles.reduce((sum, battle) => sum + Math.max(0, Math.round(battle.userTimeMs)), 0)
+    : null;
+  const geumnaraeFinishTimeMs = geumnaraeCompleted
+    ? enteredBattles.reduce((sum, battle) => sum + Math.max(0, Math.round(battle.aiElapsedMs)), 0)
+    : null;
+  const interruptionReason = interruptionAction
+    ? interruptionAction.toUpperCase() as "HOME" | "RETRY" | "EXIT"
+    : null;
+
+  return buildCanonicalAiAttempt({
+    schemaVersion: 1,
+    attemptId: RUNTIME_IDENTITY_PLACEHOLDER,
+    recordId: RUNTIME_IDENTITY_PLACEHOLDER,
+    deviceId: RUNTIME_IDENTITY_PLACEHOLDER,
+    recordedAt: RUNTIME_RECORDED_AT_PLACEHOLDER,
+    result: interruptionAction
+      ? "INTERRUPTED"
+      : status === "SUCCESS"
+        ? "PARTICIPANT_WIN"
+        : "GEUMNARAE_WIN",
+    interruptionReason,
+    participantFinishTimeMs,
+    geumnaraeFinishTimeMs,
+    stages
   });
 }
 
@@ -364,6 +469,16 @@ export function startActiveAttemptCheckpointLoop<T>({
 
 const INTERRUPTION_SAVE_ERROR =
   "중단 기록을 저장하지 못했습니다. 기록이 저장될 때까지 다시 시도해 주세요.";
+const DEFAULT_SAVE_ERROR =
+  "기록 저장에 실패했습니다. 앱을 종료하지 말고 현장 관리자에게 문의해 주세요. 저장 복구를 다시 시도할 수 있습니다.";
+const INTERNAL_ERROR_DETAIL_PATTERN =
+  /\b(?:ACTIVE_ATTEMPT|CHECKPOINT|RECORD|BOOTSTRAP|CREDENTIAL|NAS|OUTBOX|GEUMCHEON|RENDERER)_[A-Z0-9_]+\b|\bENOENT\b|[A-Za-z]:\\|(?:^|\n)\s*at\s+\S+/;
+
+export function formatChallengeSaveErrorForDisplay(error: string | undefined): string {
+  const trimmed = error?.trim();
+  if (!trimmed || INTERNAL_ERROR_DETAIL_PATTERN.test(trimmed)) return DEFAULT_SAVE_ERROR;
+  return trimmed;
+}
 
 export async function persistInterruptedChallengeBeforeLeave({
   input,
@@ -884,7 +999,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
       checkpointLoopRef.current = null;
       return { row: saved.data };
     }
-    return { error: saved.error || "기록 저장에 실패했습니다. 복구 파일에 임시 저장합니다." };
+    return { error: formatChallengeSaveErrorForDisplay(saved.error) };
   }
 
   if (resultReady) {
@@ -892,7 +1007,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
       <section className="challenge-result-panel">
         <AiTitle assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} className="challenge-result-title" />
         <p className="eyebrow">AI 챌린지 성공</p>
-        <h1>인간 승리. AI보다 빠르고 정확하게 완주했습니다.</h1>
+        <h1>참여자 승리. 금나래보다 빠르고 정확하게 완주했습니다.</h1>
         {debugModeType === "ai_challenge_debug" && (
           <p className="notice-text debug-result-note">디버그 모드 기록은 리더보드에 반영되지 않습니다.</p>
         )}
@@ -1004,7 +1119,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
           active={false}
         >
           <div className="ai-typing-line">
-            {aiInput ? <ColorChars target={target} input={aiInput} includePending={false} /> : "AI 입력 대기 중"}
+            {aiInput ? <ColorChars target={target} input={aiInput} includePending={false} /> : "금나래 입력 대기 중"}
           </div>
         </DuelPanel>
       </div>
@@ -1019,7 +1134,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
         onConfirm={() => void confirmChallengeControl()}
         />
       )}
-      <p className="challenge-guide">문장 전체가 100% 일치하면 자동으로 완료됩니다. AI보다 먼저 완성하세요.</p>
+      <p className="challenge-guide">문장 전체가 100% 일치하면 자동으로 완료됩니다. 금나래보다 먼저 완성하세요.</p>
       {modalBattle && !pendingControlAction && (
         <BattlePopup
           battle={modalBattle}
@@ -1249,7 +1364,7 @@ function buildChallengeDisplayMetrics(
     aiAvgCpm: aiElapsedMs > 0
       ? Math.round((aiTypedChars / aiElapsedMs) * 60000)
       : averagePositive(relevantBattles.map((battle) => battle.aiCpm)),
-    resultLabel: status === "SUCCESS" ? "참여자 승리" : interrupted ? "중단 패배" : "참여자 패배",
+    resultLabel: status === "SUCCESS" ? "참여자 승리" : interrupted ? "중단 패배" : "금나래 승리",
     participantProgressPercent,
     aiProgressPercent,
     duelTimeMs,
@@ -1339,14 +1454,14 @@ function BattlePopup({
           <div>
             <StageBadges assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} badgePaths={eventProfile.assets.stageBadges} currentStage={battle.stage} completedStages={userWin ? [battle.stage] : []} compact />
             <p className="eyebrow">Stage {battle.stage}</p>
-            <h2>{userWin ? "승리했습니다. AI보다 빠르게 입력했습니다." : "아쉽습니다. AI가 먼저 입력을 완료했습니다."}</h2>
+            <h2>{userWin ? "승리했습니다. 금나래보다 빠르게 입력했습니다." : "아쉽습니다. 금나래가 먼저 입력을 완료했습니다."}</h2>
           </div>
         </div>
         <div className="battle-stats">
           <span>사용자 기록 <strong>{formatRecordDisplay(battle.userTimeMs, battleUserCharCount(battle))}</strong></span>
-          <span>AI 기록 <strong>{formatRecordDisplay(battle.aiElapsedMs, battleAiCharCount(battle))}</strong></span>
+          <span>금나래 기록 <strong>{formatRecordDisplay(battle.aiElapsedMs, battleAiCharCount(battle))}</strong></span>
           <span>{userWin ? "사용자 타수" : "사용자 현재 타수"} <strong>{formatDisplayNumber(battle.userCpm, 2)}타/분</strong></span>
-          <span>AI 평균 타수 <strong>{formatDisplayNumber(battle.aiCpm, 2)}타/분</strong></span>
+          <span>금나래 평균 타수 <strong>{formatDisplayNumber(battle.aiCpm, 2)}타/분</strong></span>
         </div>
         {isDebug && <p className="notice-text debug-result-note">디버그 모드 기록은 리더보드에 반영되지 않습니다.</p>}
         {saveError && <p className="error-text">{saveError}</p>}
@@ -1425,7 +1540,7 @@ function ChallengeSummary({
         <div key={battle.stage}>
           <StageBadge assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} assetPath={eventProfile.assets.stageBadges[battle.stage - 1]} stage={battle.stage} state="complete" compact />
           <strong>
-            사용자 {formatRecordDisplay(battle.userTimeMs, battleUserCharCount(battle))} / AI {formatRecordDisplay(battle.aiElapsedMs, battleAiCharCount(battle))} / AI 평균 {formatDisplayNumber(battle.aiCpm, 2)}타
+            사용자 {formatRecordDisplay(battle.userTimeMs, battleUserCharCount(battle))} / 금나래 {formatRecordDisplay(battle.aiElapsedMs, battleAiCharCount(battle))} / 금나래 평균 {formatDisplayNumber(battle.aiCpm, 2)}타
           </strong>
         </div>
       ))}
@@ -1434,7 +1549,7 @@ function ChallengeSummary({
         <strong>{formatRecordDisplay(userTotal, userCharTotal)}</strong>
       </div>
       <div>
-        <span>AI 총 기록</span>
+        <span>금나래 총 기록</span>
         <strong>{formatRecordDisplay(aiTotal, aiCharTotal)}</strong>
       </div>
       <div>

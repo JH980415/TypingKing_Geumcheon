@@ -2,12 +2,25 @@ import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { SaveRecordInput } from "../shared/types";
+import { isPairedGeumcheonAttemptIdentity } from "../shared/nas/protocol";
+import { isCanonicalAiAttemptV1 } from "../shared/utils/geumcheonAiAttempt";
 
 export type ActiveAttemptCheckpointV1 = {
   schemaVersion: 1;
   eventProfileId: string;
   variant: "ai" | "practice";
   recordId: string;
+  updatedAt: string;
+  input: SaveRecordInput;
+};
+
+export type ActiveAttemptCheckpointV2 = {
+  schemaVersion: 2;
+  eventProfileId: string;
+  variant: "ai" | "practice";
+  recordId: string;
+  attemptId: string;
+  recordedAt: string;
   updatedAt: string;
   input: SaveRecordInput;
 };
@@ -19,8 +32,8 @@ export type ActiveAttemptEncryption = {
 };
 
 export type ActiveAttemptStore = {
-  save(checkpoint: ActiveAttemptCheckpointV1): Promise<void>;
-  read(): Promise<ActiveAttemptCheckpointV1 | null>;
+  save(checkpoint: ActiveAttemptCheckpointV2): Promise<void>;
+  read(): Promise<ActiveAttemptCheckpointV2 | null>;
   clear(): Promise<void>;
 };
 
@@ -235,6 +248,7 @@ function isSaveRecordInput(value: unknown): value is SaveRecordInput {
       "stageTextSelections",
       "stageTimesMs",
       "fairness",
+      "canonicalAttempt",
       "game_mode",
       "final_accuracy",
       "ai",
@@ -269,6 +283,7 @@ function isSaveRecordInput(value: unknown): value is SaveRecordInput {
     return false;
   }
   if ("fairness" in value && !isFairness(value.fairness)) return false;
+  if ("canonicalAttempt" in value && !isCanonicalAiAttemptV1(value.canonicalAttempt)) return false;
   if ("game_mode" in value && value.game_mode !== "normal" && value.game_mode !== "ai_challenge") return false;
   if ("final_accuracy" in value && (!isFiniteNumber(value.final_accuracy) || value.final_accuracy < 0 || value.final_accuracy > 100)) return false;
   if ("ai" in value && !isAi(value.ai)) return false;
@@ -286,7 +301,7 @@ function isSaveRecordInput(value: unknown): value is SaveRecordInput {
   return !("interruption" in value) || isInterruption(value.interruption);
 }
 
-function isCheckpoint(value: unknown, eventProfileId: string): value is ActiveAttemptCheckpointV1 {
+function isCheckpointV1(value: unknown, eventProfileId: string): value is ActiveAttemptCheckpointV1 {
   return (
     isObject(value) &&
     hasOnlyKeys(value, ["schemaVersion", "eventProfileId", "variant", "recordId", "updatedAt", "input"]) &&
@@ -301,6 +316,55 @@ function isCheckpoint(value: unknown, eventProfileId: string): value is ActiveAt
     Number.isFinite(Date.parse(value.updatedAt)) &&
     isSaveRecordInput(value.input)
   );
+}
+
+function isCheckpointV2(value: unknown, eventProfileId: string): value is ActiveAttemptCheckpointV2 {
+  return (
+    isObject(value) &&
+    hasOnlyKeys(value, [
+      "schemaVersion",
+      "eventProfileId",
+      "variant",
+      "recordId",
+      "attemptId",
+      "recordedAt",
+      "updatedAt",
+      "input",
+    ]) &&
+    value.schemaVersion === 2 &&
+    value.eventProfileId === eventProfileId &&
+    (value.variant === "ai" || value.variant === "practice") &&
+    isString(value.recordId) &&
+    value.recordId.length > 0 &&
+    value.recordId.length <= 200 &&
+    isPairedGeumcheonAttemptIdentity(value.recordId, value.attemptId) &&
+    isIsoTimestamp(value.recordedAt) &&
+    isIsoTimestamp(value.updatedAt) &&
+    isSaveRecordInput(value.input)
+  );
+}
+
+function isIsoTimestamp(value: unknown): value is string {
+  return (
+    isString(value) &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) &&
+    Number.isFinite(Date.parse(value))
+  );
+}
+
+function upgradeCheckpointV1(
+  checkpoint: ActiveAttemptCheckpointV1,
+): ActiveAttemptCheckpointV2 | null {
+  const match = /^gsc26-pc(?:0[1-9]|10)-([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/.exec(
+    checkpoint.recordId,
+  );
+  if (match == null) return null;
+  return {
+    ...checkpoint,
+    schemaVersion: 2,
+    attemptId: `gsc26-attempt-${match[1]}`,
+    recordedAt: checkpoint.updatedAt,
+  };
 }
 
 export function createActiveAttemptStore(options: ActiveAttemptStoreOptions): ActiveAttemptStore {
@@ -324,7 +388,7 @@ export function createActiveAttemptStore(options: ActiveAttemptStoreOptions): Ac
 
   return {
     async save(checkpoint) {
-      if (!isCheckpoint(checkpoint, eventProfileId)) fail("INVALID_CHECKPOINT");
+      if (!isCheckpointV2(checkpoint, eventProfileId)) fail("INVALID_CHECKPOINT");
       requireEncryption(encryption);
       const plaintext = JSON.stringify(checkpoint);
       if (Buffer.byteLength(plaintext, "utf8") > maxPlaintextBytes) fail("TOO_LARGE");
@@ -386,8 +450,12 @@ export function createActiveAttemptStore(options: ActiveAttemptStoreOptions): Ac
       } catch {
         fail("INVALID_CHECKPOINT");
       }
-      if (!isCheckpoint(parsed, eventProfileId)) fail("INVALID_CHECKPOINT");
-      return parsed;
+      if (isCheckpointV2(parsed, eventProfileId)) return parsed;
+      if (isCheckpointV1(parsed, eventProfileId)) {
+        const upgraded = upgradeCheckpointV1(parsed);
+        if (upgraded != null) return upgraded;
+      }
+      fail("INVALID_CHECKPOINT");
     },
 
     async clear() {

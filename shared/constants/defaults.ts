@@ -204,12 +204,12 @@ export const RECORD_HEADER_LABELS: Record<(typeof RECORD_HEADERS)[number], strin
   participant_result_time_ms: "참여자 결과 시간(ms)",
   ai_result_time_ms: "AI 결과 시간(ms)",
   participant_avg_cpm: "참여자 평균 타수",
-  ai_avg_cpm: "AI 평균 타수",
+  ai_avg_cpm: "금나래 평균 타수",
   challenge_result_label: "AI 대결 결과",
   participant_progress_percent: "참여자 진행률",
-  ai_progress_percent: "AI 진행률",
-  duel_time_ms: "대결 시간(ms)",
-  result_stage: "종료 스테이지",
+  ai_progress_percent: "금나래 진행률",
+  duel_time_ms: "총 대결시간(ms)",
+  result_stage: "종료 지점",
   original_record_id: "원본 기록 ID",
   is_admin_edited: "관리자 수정 여부"
 };

@@ -81,13 +81,13 @@ const MODE_GUIDES: Record<GameMode, { title: string; items: string[] }> = {
     ]
   },
   ai_challenge: {
-    title: "AI 타자왕을 이겨라! 도전 안내",
+    title: "AI 타자왕 금나래를 이겨라! 도전 안내",
     items: [
       "3, 2, 1 카운트 후 START가 표시되면 게임이 시작됩니다.",
       "문장의 줄바꿈은 자동으로 진행되며, 화면에 보이는 문장만 정확히 입력하면 됩니다.",
       "일치하는 글자는 파란색, 틀린 글자는 빨간색으로 표시됩니다.",
       "문장 전체가 100% 일치하면 Enter를 누르지 않아도 다음 스테이지로 이동합니다.",
-      "AI보다 먼저 정확도 100%로 문장을 완성하면 승리합니다."
+      "금나래보다 먼저 정확도 100%로 문장을 완성하면 승리합니다."
     ]
   }
 };
@@ -812,7 +812,7 @@ export function TypingGameApp({ bootstrap }: Props) {
 
   return (
     <main className="app game-app" style={{ backgroundImage: `url("${screenBackground}")` }}>
-      <BrandHeader bootstrap={bootstrap} />
+      {bootstrap.eventProfile.profileId !== "geumcheon-2026" && <BrandHeader bootstrap={bootstrap} />}
       <section className="start-grid" key={startFormKey}>
         <div className="hero-panel">
           <div className="brand-slogan-row">
@@ -826,13 +826,13 @@ export function TypingGameApp({ bootstrap }: Props) {
                   ? profileAsset(bootstrap.eventProfile.assets.eventTitle)
                   : asset("ai_challenge/ai_title_oneline_trimmed.png")}
                 fallbackSrc={asset("ai_challenge/ai_challenge_title.png")}
-                alt={bootstrap.variantPolicy.displayName}
+                alt={bootstrap.eventProfile.profileId === "geumcheon-2026" ? "AI 타자왕 금나래를 이겨라!" : bootstrap.variantPolicy.displayName}
                 className={bootstrap.eventProfile.profileId === "geumcheon-2026"
                   ? "mode-title-image start-ai-title-image ai-title-image geumcheon-main-title-image"
                   : "mode-title-image start-ai-title-image ai-title-image"}
-                fallback={<h1>{bootstrap.variantPolicy.displayName}</h1>}
+                fallback={<h1>{bootstrap.eventProfile.profileId === "geumcheon-2026" ? "AI 타자왕 금나래를 이겨라!" : bootstrap.variantPolicy.displayName}</h1>}
               />
-              <p className="hero-copy">3개의 스테이지에서 가상 AI 챌린저보다 먼저 정확하게 입력하세요.</p>
+              <p className="hero-copy">3개의 스테이지에서 금나래보다 먼저 정확하게 입력하세요.</p>
               {bootstrap.eventProfile.profileId === "geumcheon-2026" && (
                 <FallbackAssetImage
                   src={profileAsset(bootstrap.eventProfile.assets.aiBossMain)}
@@ -900,8 +900,8 @@ export function TypingGameApp({ bootstrap }: Props) {
                   alt=""
                   className="mode-card-art"
                 />
-                <strong>{bootstrap.variantPolicy.displayName}</strong>
-                <small>가상 AI 챌린저와 1:1 대결</small>
+                <strong>{bootstrap.eventProfile.profileId === "geumcheon-2026" ? "AI 타자왕 금나래를 이겨라!" : bootstrap.variantPolicy.displayName}</strong>
+                <small>{bootstrap.eventProfile.profileId === "geumcheon-2026" ? "금나래와 1:1 대결" : "가상 AI 챌린저와 1:1 대결"}</small>
               </button>
               )}
             </div>

@@ -847,7 +847,7 @@ async function runLeaderboard(
       };
     });
     assert.match(structure.background, /stage_01_03_science_classroom\.png/);
-    assert.match(structure.titleSrc, /ai_title_oneline_trimmed\.png$/);
+    assert.match(structure.titleSrc, /title_04_science_hologram\.png$/);
     assert.equal(structure.titleTag, "IMG");
     assert.equal(structure.titleDisplay, "block");
     assert.equal(structure.titleObjectFit, "contain");

@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   createActiveAttemptStore,
   type ActiveAttemptCheckpointV1,
+  type ActiveAttemptCheckpointV2,
   type ActiveAttemptEncryption,
 } from "../../electron/activeAttemptStore";
 import type { SaveRecordInput } from "../../shared/types";
@@ -54,6 +55,41 @@ function saveInput(): SaveRecordInput {
   };
 }
 
+function saveInputWithCanonicalAttempt(): SaveRecordInput {
+  return {
+    ...saveInput(),
+    canonicalAttempt: {
+      schemaVersion: 1,
+      attemptId: "gsc26-attempt-123e4567-e89b-42d3-a456-426614174000",
+      recordId: "gsc26-pc01-123e4567-e89b-42d3-a456-426614174000",
+      deviceId: "PC01",
+      recordedAt: "2026-08-26T01:02:00.000Z",
+      result: "INTERRUPTED",
+      interruptionReason: "RETRY",
+      participantFinishTimeMs: null,
+      geumnaraeFinishTimeMs: null,
+      stages: [],
+      stageReached: 1,
+      stageState: "IN_PROGRESS",
+      wholeGameProgressRaw: 0,
+      participantAverageCpmRaw: 0,
+      geumnaraeProgressRaw: 0,
+      geumnaraeAverageCpmRaw: 0,
+      totalActiveDuelTimeMs: 0,
+      assignedInputUnits: 0,
+      participantCorrectInputUnits: 0,
+      participantValidInputUnits: 0,
+      participantActiveTypingTimeMs: 0,
+      geumnaraeCorrectInputUnits: 0,
+      geumnaraeValidInputUnits: 0,
+      geumnaraeActiveTypingTimeMs: 0,
+      participantCompleted: false,
+      geumnaraeCompleted: false,
+      contradictionCodes: [],
+    },
+  };
+}
+
 function checkpoint(): ActiveAttemptCheckpointV1 {
   return {
     schemaVersion: 1,
@@ -65,6 +101,130 @@ function checkpoint(): ActiveAttemptCheckpointV1 {
   };
 }
 
+function checkpointV2(): ActiveAttemptCheckpointV2 {
+  return {
+    ...checkpoint(),
+    schemaVersion: 2,
+    attemptId: "gsc26-attempt-123e4567-e89b-42d3-a456-426614174000",
+    recordedAt: "2026-08-26T01:02:00.000Z",
+  };
+}
+
+test("stores and restores a V2 checkpoint with the paired attempt identity", async () => {
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-active-attempt-v2-"));
+  const checkpointPath = path.join(runtimeRoot, "active-attempt.bin");
+  try {
+    const store = createActiveAttemptStore({
+      checkpointPath,
+      encryption: encryptionAdapter(),
+      eventProfileId: "geumcheon-2026",
+    });
+    const activeAttempt = checkpointV2();
+
+    await store.save(activeAttempt);
+
+    assert.deepEqual(await store.read(), activeAttempt);
+  } finally {
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test("stores a V2 checkpoint containing canonical attempt evidence", async () => {
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-active-attempt-canonical-"));
+  const checkpointPath = path.join(runtimeRoot, "active-attempt.bin");
+  try {
+    const store = createActiveAttemptStore({
+      checkpointPath,
+      encryption: encryptionAdapter(),
+      eventProfileId: "geumcheon-2026",
+    });
+    const activeAttempt = {
+      ...checkpointV2(),
+      input: saveInputWithCanonicalAttempt(),
+    };
+
+    await store.save(activeAttempt);
+
+    assert.deepEqual(await store.read(), activeAttempt);
+  } finally {
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test("rejects malformed canonical attempt evidence", async () => {
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-active-attempt-canonical-invalid-"));
+  const checkpointPath = path.join(runtimeRoot, "active-attempt.bin");
+  try {
+    const store = createActiveAttemptStore({
+      checkpointPath,
+      encryption: encryptionAdapter(),
+      eventProfileId: "geumcheon-2026",
+    });
+    const inputWithMalformedAttempt = saveInputWithCanonicalAttempt() as SaveRecordInput & {
+      canonicalAttempt: NonNullable<SaveRecordInput["canonicalAttempt"]> & { unexpected?: boolean };
+    };
+    inputWithMalformedAttempt.canonicalAttempt.unexpected = true;
+
+    await assert.rejects(
+      store.save({
+        ...checkpointV2(),
+        input: inputWithMalformedAttempt,
+      }),
+      { message: "ACTIVE_ATTEMPT_INVALID_CHECKPOINT" },
+    );
+    assert.equal(fs.existsSync(checkpointPath), false);
+  } finally {
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test("reads a V1 checkpoint as V2 without changing its record identity", async () => {
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-active-attempt-v1-"));
+  const checkpointPath = path.join(runtimeRoot, "active-attempt.bin");
+  const encryption = encryptionAdapter();
+  try {
+    const legacy = checkpoint();
+    fs.writeFileSync(checkpointPath, encryption.encryptString(JSON.stringify(legacy)));
+    const store = createActiveAttemptStore({
+      checkpointPath,
+      encryption,
+      eventProfileId: "geumcheon-2026",
+    });
+
+    assert.deepEqual(await store.read(), {
+      ...legacy,
+      schemaVersion: 2,
+      attemptId: "gsc26-attempt-123e4567-e89b-42d3-a456-426614174000",
+      recordedAt: legacy.updatedAt,
+    });
+  } finally {
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test("rejects a V2 checkpoint whose attempt ID is not paired to its record ID", async () => {
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-active-attempt-pair-"));
+  const checkpointPath = path.join(runtimeRoot, "active-attempt.bin");
+  try {
+    const store = createActiveAttemptStore({
+      checkpointPath,
+      encryption: encryptionAdapter(),
+      eventProfileId: "geumcheon-2026",
+    });
+
+    await assert.rejects(
+      store.save({
+        ...checkpointV2(),
+        attemptId: "gsc26-attempt-123e4567-e89b-42d3-a456-426614174001",
+      }),
+      { message: "ACTIVE_ATTEMPT_INVALID_CHECKPOINT" },
+    );
+    assert.equal(fs.existsSync(checkpointPath), false);
+  } finally {
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
 test("stores an active attempt encrypted and restores the same checkpoint", async () => {
   const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-active-attempt-"));
   const checkpointPath = path.join(runtimeRoot, "active-attempt.bin");
@@ -74,7 +234,7 @@ test("stores an active attempt encrypted and restores the same checkpoint", asyn
       encryption: encryptionAdapter(),
       eventProfileId: "geumcheon-2026",
     });
-    const activeAttempt = checkpoint();
+    const activeAttempt = checkpointV2();
 
     await store.save(activeAttempt);
 
@@ -95,7 +255,7 @@ test("stores a program-exit interruption checkpoint for recovery after forced sh
       encryption: encryptionAdapter(),
       eventProfileId: "geumcheon-2026",
     });
-    const activeAttempt = checkpoint();
+    const activeAttempt = checkpointV2();
     activeAttempt.input.interruption!.action = "exit";
 
     await store.save(activeAttempt);
@@ -177,7 +337,7 @@ test("never writes plaintext when encryption is unavailable", async () => {
   try {
     const unavailable: ActiveAttemptEncryption = {
       isEncryptionAvailable: () => false,
-      encryptString: () => Buffer.from(JSON.stringify(checkpoint())),
+      encryptString: () => Buffer.from(JSON.stringify(checkpointV2())),
       decryptString: () => "",
     };
     const store = createActiveAttemptStore({
@@ -186,7 +346,7 @@ test("never writes plaintext when encryption is unavailable", async () => {
       eventProfileId: "geumcheon-2026",
     });
 
-    await assert.rejects(store.save(checkpoint()), {
+    await assert.rejects(store.save(checkpointV2()), {
       message: "ACTIVE_ATTEMPT_ENCRYPTION_UNAVAILABLE",
     });
     assert.equal(fs.existsSync(checkpointPath), false);
@@ -212,7 +372,7 @@ test("hides errors thrown while checking encryption availability", async () => {
       eventProfileId: "geumcheon-2026",
     });
 
-    await assert.rejects(store.save(checkpoint()), {
+    await assert.rejects(store.save(checkpointV2()), {
       message: "ACTIVE_ATTEMPT_ENCRYPTION_UNAVAILABLE",
     });
     assert.equal(fs.existsSync(checkpointPath), false);
@@ -231,7 +391,7 @@ test("preserves the previous checkpoint when encryption of an update fails", asy
       encryption,
       eventProfileId: "geumcheon-2026",
     });
-    const original = checkpoint();
+    const original = checkpointV2();
     await store.save(original);
 
     const failingEncryption: ActiveAttemptEncryption = {
@@ -265,7 +425,7 @@ test("clear removes only the exact checkpoint file", async () => {
       encryption: encryptionAdapter(),
       eventProfileId: "geumcheon-2026",
     });
-    await store.save(checkpoint());
+    await store.save(checkpointV2());
     fs.writeFileSync(siblingPath, "keep");
 
     await store.clear();
@@ -324,7 +484,7 @@ test("atomically replaces an earlier checkpoint without leftover temporary files
       encryption: encryptionAdapter(),
       eventProfileId: "geumcheon-2026",
     });
-    const original = checkpoint();
+    const original = checkpointV2();
     const updated = {
       ...original,
       updatedAt: "2026-08-26T01:04:00.000Z",

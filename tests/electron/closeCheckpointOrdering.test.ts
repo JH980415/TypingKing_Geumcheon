@@ -24,6 +24,7 @@ test("queues the close-time snapshot before fallback recovery to avoid a duplica
   const runtime = createGeumcheonRecordRuntime({
     eventProfileId: "geumcheon-2026",
     variant: "ai",
+    deviceId: "PC01",
     store: {
       async save(checkpoint) {
         saveCalls += 1;
@@ -40,11 +41,14 @@ test("queues the close-time snapshot before fallback recovery to avoid a duplica
         stored = null;
       }
     },
-    createRecordId: () => "gsc26-pc01-123e4567-e89b-42d3-a456-426614174000",
+    createAttemptIdentity: () => ({
+      recordId: "gsc26-pc01-123e4567-e89b-42d3-a456-426614174000",
+      attemptId: "gsc26-attempt-123e4567-e89b-42d3-a456-426614174000",
+    }),
     now: () => "2026-08-26T00:00:00.000Z",
-    async persistLocal(input, recordId) {
+    async persistLocal(input, identity) {
       persistedInputs.push(input);
-      return { record_id: recordId } as RecordRow;
+      return { record_id: identity.recordId } as RecordRow;
     },
     async enqueue() {}
   });
