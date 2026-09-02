@@ -215,6 +215,12 @@ function buildSafeSystemEnvironment(inherited, overrides = {}) {
   return environment;
 }
 
+function buildIsolatedAppArguments(userDataPath) {
+  if (typeof userDataPath !== "string" || !path.isAbsolute(userDataPath)) {
+    throw new Error("UAT_USER_DATA_PATH_MUST_BE_ABSOLUTE");
+  }
+  return [`--user-data-dir=${path.resolve(userDataPath)}`];
+}
 function buildIsolatedChildEnvironment({ inherited, caseRoot, executablePath, caPemPath }) {
   const localAppData = path.join(caseRoot, "LocalAppData");
   const appData = path.join(caseRoot, "RoamingAppData");
@@ -872,7 +878,7 @@ async function runOneApp({ layout, config, app, mock, tokens, caseRoot, lifecycl
     isPracticeSession: app.sessionKind === "practice",
     sessionName: app.sessionKind === "practice" ? "R2 초안 UAT 연습" : "R2 초안 UAT 공식"
   };
-  writeSyntheticProfile({
+  const syntheticProfile = writeSyntheticProfile({
     caseRoot,
     executableDirectory: staged.executableDirectory,
     app,
@@ -895,7 +901,7 @@ async function runOneApp({ layout, config, app, mock, tokens, caseRoot, lifecycl
   console.log("");
   console.log(`[UAT] Starting: ${app.displayName}`);
   console.log("[UAT] Use synthetic participant data only. Close the app window to continue.");
-  const child = spawn(staged.executablePath, [], {
+  const child = spawn(staged.executablePath, buildIsolatedAppArguments(syntheticProfile.userDataPath), {
     cwd: staged.executableDirectory,
     env: environment,
     stdio: "ignore",
@@ -1104,6 +1110,7 @@ async function main() {
 }
 
 module.exports = {
+  buildIsolatedAppArguments,
   buildIsolatedChildEnvironment,
   cleanupLifecycle,
   createLifecycle,
