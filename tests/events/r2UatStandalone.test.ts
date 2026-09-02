@@ -33,7 +33,8 @@ function runPackage(root: string, ...args: string[]) {
 
 function makeRunnableRelease(root: string): void {
   const config = JSON.parse(fs.readFileSync(path.join(projectRoot, "scripts", "r2-uat", "uat-default-config.json"), "utf8")) as { apps: Array<{ fileName: string }>; requiredResources: string[] };
-  for (const app of config.apps) fs.copyFileSync(process.execPath, path.join(root, app.fileName));
+  const noOpExecutable = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "rundll32.exe");
+  for (const app of config.apps) fs.copyFileSync(noOpExecutable, path.join(root, app.fileName));
   for (const resource of config.requiredResources) {
     const target = path.join(root, resource);
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -327,3 +328,4 @@ test("break: an isolated device profile uses synthetic loopback credentials and 
     fs.rmSync(release, { recursive: true, force: true });
   }
 });
+
