@@ -1,6 +1,15 @@
-﻿import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { BootstrapData, RecordRow, SaveRecordInput, StageText, StageTextSelection } from "../../../shared/types";
+import type {
+  ApiResult,
+  BootstrapData,
+  EventProfileId,
+  GameStartReadiness,
+  RecordRow,
+  SaveRecordInput,
+  StageText,
+  StageTextSelection
+} from "../../../shared/types";
 import { daysInMonth, formatBirthdate, isValidBirthdate } from "../../../shared/utils/date";
 import { buildPhoneFull, onlyDigits, validatePhoneParts } from "../../../shared/utils/masking";
 import { bestRecordOnly, sortRecords } from "../../../shared/utils/ranking";
@@ -29,6 +38,7 @@ import { mergeRuntimeConfigWithEventProfile } from "../../../shared/events/boots
 import { resolveEventAssetUrl } from "../../../shared/events/types";
 import { AIChallengeGame } from "./AIChallengeGame";
 import { StageTextAdmin } from "./StageTextAdmin";
+import { storageErrorForDisplay } from "../../shell/src/OneDriveSettingsPanel";
 
 type Props = {
   bootstrap: BootstrapData;
@@ -37,6 +47,22 @@ type Props = {
 type GameMode = "normal" | "ai_challenge";
 type DebugModeType = "" | "normal_typing_debug" | "ai_challenge_debug";
 type GameControlAction = "home" | "retry";
+
+const GEUMCHEON_GAME_START_STORAGE_FALLBACK =
+  "중앙 기록 API 준비가 완료되지 않았습니다.\n관리자 모드에서 [연결·장치 역할·세션 검증]을 실행해 주세요.";
+const SKILLUP_GAME_START_STORAGE_FALLBACK =
+  "기록 저장 폴더 설정이 완료되지 않았습니다.\n관리자 모드에서 OneDrive 루트 폴더를 선택한 뒤 [폴더 생성 및 검증]을 먼저 실행해 주세요.";
+
+export function formatGameStartReadinessFailure(
+  result: ApiResult<GameStartReadiness>,
+  eventProfileId: EventProfileId = "geumcheon-2026"
+): string {
+  const fallback =
+    eventProfileId === "geumcheon-2026"
+      ? GEUMCHEON_GAME_START_STORAGE_FALLBACK
+      : SKILLUP_GAME_START_STORAGE_FALLBACK;
+  return storageErrorForDisplay(result.data?.message || result.error, fallback);
+}
 
 export function resolveTypingScreenBackground(
   screen: "start" | "game" | "ai" | "result",
@@ -368,10 +394,7 @@ export function TypingGameApp({ bootstrap }: Props) {
 
     const storageReady = await window.typingKing.checkGameStartReadiness(modeToStart);
     if (!storageReady.ok || !storageReady.data?.ready) {
-      const message =
-        storageReady.data?.message ||
-          storageReady.error ||
-          "기록 저장 폴더 설정이 완료되지 않았습니다.\n관리자 모드에서 OneDrive 루트 폴더를 선택한 뒤 [폴더 생성 및 검증]을 먼저 실행해 주세요.";
+      const message = formatGameStartReadinessFailure(storageReady, bootstrap.eventProfile.profileId);
       setFormMessage(message);
       if (message.includes("회차로 변경해 주세요")) setBlockingModalMessage(message);
       return;
@@ -383,7 +406,7 @@ export function TypingGameApp({ bootstrap }: Props) {
         gameMode: "ai_challenge"
       });
       if (!drawn.ok || !drawn.data) {
-        setFormMessage(drawn.error || "대회 문구를 불러오지 못했습니다. 관리자에게 문의해 주세요.");
+        setFormMessage(storageErrorForDisplay(drawn.error, "대회 문구를 불러오지 못했습니다. 관리자에게 문의해 주세요."));
         return;
       }
       setStageTexts(drawn.data.selections.map((selection) => selection.text) as [string, string, string]);
@@ -406,7 +429,7 @@ export function TypingGameApp({ bootstrap }: Props) {
 
     const result = await window.typingKing.listStageTexts();
     if (!result.ok || !result.data) {
-      setFormMessage(result.error || "문구 파일 형식에 오류가 있습니다. 백업 파일에서 복원해 주세요.");
+      setFormMessage(storageErrorForDisplay(result.error, "문구 파일 형식에 오류가 있습니다. 관리자에게 복원을 요청해 주세요."));
       return;
     }
 
@@ -515,7 +538,12 @@ export function TypingGameApp({ bootstrap }: Props) {
       stageTexts,
       stageTimes: nextTimes as [number, number, number],
       debugModeType,
-      saveError: saved.ok ? undefined : saved.error || "기록 저장에 실패했습니다. 복구 파일에 임시 저장합니다."
+      saveError: saved.ok
+        ? undefined
+        : storageErrorForDisplay(
+            saved.error,
+            "기록 저장에 실패했습니다. 이 PC에 임시 보관했으며 관리자에게 NAS 연결 확인을 요청해 주세요."
+          )
     });
     setStageTimes(nextTimes);
     setScreen("result");
@@ -825,7 +853,9 @@ export function TypingGameApp({ bootstrap }: Props) {
                 src={bootstrap.eventProfile.profileId === "geumcheon-2026"
                   ? profileAsset(bootstrap.eventProfile.assets.eventTitle)
                   : asset("ai_challenge/ai_title_oneline_trimmed.png")}
-                fallbackSrc={asset("ai_challenge/ai_challenge_title.png")}
+                fallbackSrc={bootstrap.eventProfile.profileId === "geumcheon-2026"
+                    ? profileAsset(bootstrap.eventProfile.assets.eventTitle)
+                    : asset("ai_challenge/ai_challenge_title.png")}
                 alt={bootstrap.eventProfile.profileId === "geumcheon-2026" ? "AI 타자왕 금나래를 이겨라!" : bootstrap.variantPolicy.displayName}
                 className={bootstrap.eventProfile.profileId === "geumcheon-2026"
                   ? "mode-title-image start-ai-title-image ai-title-image geumcheon-main-title-image"
@@ -895,8 +925,12 @@ export function TypingGameApp({ bootstrap }: Props) {
                 onClick={() => setGameMode("ai_challenge")}
               >
                 <FallbackAssetImage
-                  src={asset("ai_challenge/ai_title_compact.png")}
-                  fallbackSrc={asset("ai_challenge/ai_challenge_title.png")}
+                  src={bootstrap.eventProfile.profileId === "geumcheon-2026"
+                    ? profileAsset(bootstrap.eventProfile.assets.eventTitle)
+                    : asset("ai_challenge/ai_title_compact.png")}
+                  fallbackSrc={bootstrap.eventProfile.profileId === "geumcheon-2026"
+                    ? profileAsset(bootstrap.eventProfile.assets.eventTitle)
+                    : asset("ai_challenge/ai_challenge_title.png")}
                   alt=""
                   className="mode-card-art"
                 />
@@ -1019,6 +1053,9 @@ export function TypingGameApp({ bootstrap }: Props) {
           }}
           allowedMode={forcedGameMode ?? gameMode}
           isPractice={isPracticeApp}
+          eventProfileId={bootstrap.eventProfile.profileId}
+          deviceProfile={bootstrap.deviceProfile}
+          sessionKind={bootstrap.variantPolicy.sessionKind}
         />
       )}
       {bootstrap.notices.map((notice) => (

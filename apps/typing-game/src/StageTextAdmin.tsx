@@ -1,12 +1,19 @@
 ﻿import { useEffect, useMemo, useState } from "react";
-import type { StageText } from "../../../shared/types";
-import { OneDriveSettingsPanel } from "../../shell/src/OneDriveSettingsPanel";
+import type { DeviceProfile, EventProfileId, SessionKind, StageText } from "../../../shared/types";
+import {
+  formatQueuedRecordFlushMessage,
+  OneDriveSettingsPanel,
+  storageErrorForDisplay
+} from "../../shell/src/OneDriveSettingsPanel";
 
 type Props = {
   onClose: () => void;
   onStartDebug: (mode: TextMode) => void;
   allowedMode?: TextMode;
   isPractice?: boolean;
+  eventProfileId?: EventProfileId;
+  deviceProfile?: DeviceProfile;
+  sessionKind?: SessionKind;
 };
 
 type TextMode = "normal" | "ai_challenge";
@@ -20,7 +27,19 @@ function modeOf(row: StageText): TextMode {
   return row.game_mode === "ai_challenge" ? "ai_challenge" : "normal";
 }
 
-export function StageTextAdmin({ onClose, onStartDebug, allowedMode = "normal", isPractice = false }: Props) {
+export function formatStageTextPublishSuccess(count: number): string {
+  return `문구 설정을 NAS 운영 저장소에 공유했습니다.\n다른 PC는 잠시 후 자동으로 갱신됩니다.\n저장 문구: ${count}건`;
+}
+
+export function StageTextAdmin({
+  onClose,
+  onStartDebug,
+  allowedMode = "normal",
+  isPractice = false,
+  eventProfileId,
+  deviceProfile,
+  sessionKind
+}: Props) {
   const [authorized, setAuthorized] = useState(false);
   const [password, setPassword] = useState("");
   const [adminName, setAdminName] = useState("admin");
@@ -75,14 +94,14 @@ export function StageTextAdmin({ onClose, onStartDebug, allowedMode = "normal", 
       setAuthorized(true);
       setMessage("");
     } else {
-      setMessage(result.error || "관리자 비밀번호가 올바르지 않습니다.");
+      setMessage("관리자 비밀번호가 올바르지 않습니다.");
     }
   }
 
   async function reload() {
     const result = await window.typingKing.listStageTexts();
     if (result.ok && result.data) setRows(result.data);
-    else setMessage(result.error || "문구 목록을 불러오지 못했습니다.");
+    else setMessage("문구 목록을 불러오지 못했습니다.");
   }
 
   async function loadQueuedStatus() {
@@ -96,21 +115,14 @@ export function StageTextAdmin({ onClose, onStartDebug, allowedMode = "normal", 
     const result = await window.typingKing.flushQueuedRecords();
     setQueueBusy(false);
     if (result.ok && result.data) {
-      const sent = result.data.sent;
-      const failed = result.data.failed;
-      if (sent > 0 && failed === 0) {
-        setQueueMessage(`임시 저장 기록 ${sent}건을 기록 폴더에 다시 올렸습니다.\n리더보드는 OneDrive 동기화 후 반영됩니다.`);
-      } else if (sent > 0 && failed > 0) {
-        setQueueMessage(
-          `임시 저장 기록 ${sent}건을 기록 폴더에 다시 올렸습니다.\n다만 ${failed}건은 다시 올리지 못했습니다.\nOneDrive 상태, 기록 폴더 설정, 디스크 권한을 확인해 주세요.`
-        );
-      } else if (sent === 0 && failed > 0) {
-        setQueueMessage("기록 폴더에 다시 올리지 못했습니다.\nOneDrive 상태, 기록 폴더 설정, 디스크 권한을 확인해 주세요.");
-      } else {
-        setQueueMessage("다시 올릴 누락 기록이 없습니다.");
-      }
+      setQueueMessage(formatQueuedRecordFlushMessage(result.data));
     } else {
-      setQueueMessage(result.error || "기록 폴더에 다시 올리지 못했습니다.\nOneDrive 상태, 기록 폴더 설정, 디스크 권한을 확인해 주세요.");
+      setQueueMessage(
+        storageErrorForDisplay(
+          result.error,
+          "누락 기록을 NAS 기록 저장소에 반영하지 못했습니다.\nNAS 연결과 역할별 권한을 확인해 주세요."
+        )
+      );
     }
     await loadQueuedStatus();
   }
@@ -125,7 +137,7 @@ export function StageTextAdmin({ onClose, onStartDebug, allowedMode = "normal", 
       setMessage(`${MODE_LABELS[mode]} 문구를 저장했습니다.`);
       await reload();
     } else {
-      setMessage(result.error || "문구 저장 중 오류가 발생했습니다. 다시 시도해 주세요.");
+      setMessage("문구 저장 중 오류가 발생했습니다. 다시 시도해 주세요.");
     }
   }
 
@@ -133,21 +145,21 @@ export function StageTextAdmin({ onClose, onStartDebug, allowedMode = "normal", 
     const result = await window.typingKing.updateStageText(row.id, {
       is_active: row.is_active === "true" ? "false" : "true"
     });
-    if (!result.ok) setMessage(result.error || "문구 저장 중 오류가 발생했습니다. 다시 시도해 주세요.");
+    if (!result.ok) setMessage("문구 저장 중 오류가 발생했습니다. 다시 시도해 주세요.");
     await reload();
   }
 
   async function softDelete(row: StageText) {
     if (!window.confirm("선택한 문구를 삭제 또는 비활성화하시겠습니까?")) return;
     const result = await window.typingKing.softDeleteStageText(row.id);
-    if (!result.ok) setMessage(result.error || "문구 저장 중 오류가 발생했습니다. 다시 시도해 주세요.");
+    if (!result.ok) setMessage("문구 저장 중 오류가 발생했습니다. 다시 시도해 주세요.");
     await reload();
   }
 
   async function hardDelete(row: StageText) {
     if (!window.confirm("선택한 문구를 완전히 삭제하시겠습니까?")) return;
     const result = await window.typingKing.hardDeleteStageText(row.id);
-    if (!result.ok) setMessage(result.error || "문구 저장 중 오류가 발생했습니다. 다시 시도해 주세요.");
+    if (!result.ok) setMessage("문구 저장 중 오류가 발생했습니다. 다시 시도해 주세요.");
     await reload();
   }
 
@@ -156,10 +168,15 @@ export function StageTextAdmin({ onClose, onStartDebug, allowedMode = "normal", 
     const result = await window.typingKing.publishStageTextsToOneDrive();
     setSyncBusy(false);
     if (result.ok && result.data) {
-      setMessage(`문구 설정을 OneDrive에 저장했습니다.\n다른 PC는 잠시 후 자동으로 갱신됩니다.\n저장 문구: ${result.data.count}건`);
+      setMessage(formatStageTextPublishSuccess(result.data.count));
       await reload();
     } else {
-      setMessage(result.error || "문구 설정을 OneDrive에 저장하지 못했습니다. OneDrive 폴더 설정을 확인해 주세요.");
+      setMessage(
+        storageErrorForDisplay(
+          result.error,
+          "문구 설정을 NAS 운영 저장소에 공유하지 못했습니다. NAS 운영 루트와 폴더 검증 상태를 확인해 주세요."
+        )
+      );
     }
   }
 
@@ -208,7 +225,7 @@ export function StageTextAdmin({ onClose, onStartDebug, allowedMode = "normal", 
       <section className="modal admin-modal wide">
         <header className="modal-header">
           <div>
-            <p className="eyebrow">Stage Text Manager</p>
+            <p className="eyebrow">문구 관리</p>
             <div className="mode-manager-tabs" aria-label="문구 관리 모드 선택">
               {([allowedMode] as const).map((value) => (
                 <button
@@ -248,15 +265,22 @@ export function StageTextAdmin({ onClose, onStartDebug, allowedMode = "normal", 
           </div>
         </section>
 
-        <OneDriveSettingsPanel role="player" isPractice={isPractice} />
+        <OneDriveSettingsPanel
+          role="player"
+          isPractice={isPractice}
+          eventProfileId={eventProfileId}
+          deviceProfile={deviceProfile}
+          sessionKind={sessionKind}
+          gameMode={allowedMode}
+        />
 
         <section className="queued-records-panel">
           <div>
             <p className="eyebrow">누락 기록</p>
             <h3>누락 기록 {queuedCount}건</h3>
             <p>
-              OneDrive 저장에 실패해 이 PC에 임시 보관된 기록입니다.
-              관리자 설정이 완료된 뒤 기록 폴더에 다시 올릴 수 있습니다.
+              NAS 기록 저장소에 제출하지 못해 이 PC에 임시 보관된 기록입니다.
+              관리자 설정과 폴더 검증이 완료된 뒤 다시 반영할 수 있습니다.
             </p>
           </div>
           <button className="primary-button" onClick={flushQueuedRecords} disabled={queueBusy || queuedCount === 0}>
@@ -294,7 +318,7 @@ export function StageTextAdmin({ onClose, onStartDebug, allowedMode = "normal", 
           <div className="stacked-actions">
             <button className="primary-button" onClick={save}>{editingId ? "수정 저장" : "추가"}</button>
             <button className="secondary-button" onClick={publishSharedSettings} disabled={syncBusy}>
-              설정 저장
+              문구 설정 공유
             </button>
             {editingId && (
               <button className="secondary-button" onClick={() => resetEditor()}>

@@ -13,6 +13,7 @@ import {
   buildPackagedSmokeChildEnvironment,
   buildPackagedSmokeRuntimeConfig
 } from "../../scripts/e2e-geumcheon-packaged-smoke-check";
+import * as packagedSmokeModule from "../../scripts/e2e-geumcheon-packaged-smoke-check";
 
 const inheritedEnvironment = {
   PATH: "C:\\Windows\\System32",
@@ -94,6 +95,79 @@ test("packaged-smoke runtime config uses a non-placeholder synthetic admin passw
   assert.equal(config.adminPassword, "synthetic-admin-password-20260828");
   assert.notEqual(config.adminPassword, DEFAULT_CONFIG.adminPassword);
   assert.notEqual(config.adminPassword, "CHANGE_ME_BEFORE_EVENT");
+});
+
+test("packaged-smoke leaderboard credentials separate read and operator bootstrap scopes", () => {
+  const buildCredentialPlan = (packagedSmokeModule as unknown as Record<string, unknown>)
+    .buildPackagedSmokeCredentialPlan;
+  assert.equal(typeof buildCredentialPlan, "function");
+
+  const tokens = {
+    PC01: "p".repeat(43),
+    LEADERBOARD01: "l".repeat(43),
+    LEADERBOARD01_OPERATOR: "o".repeat(43)
+  };
+  const plan = (buildCredentialPlan as (
+    role: "player" | "leaderboard",
+    tokenSet: typeof tokens
+  ) => unknown)("leaderboard", tokens);
+
+  assert.deepEqual(plan, [
+    {
+      scope: "leaderboard",
+      token: tokens.LEADERBOARD01,
+      bootstrapFileName: "bootstrap-credentials.json",
+      encryptedFileName: "leaderboard-token.bin"
+    },
+    {
+      scope: "operator",
+      token: tokens.LEADERBOARD01_OPERATOR,
+      bootstrapFileName: "bootstrap-operator-credentials.json",
+      encryptedFileName: "operator-token.bin"
+    }
+  ]);
+});
+
+test("packaged-smoke ready authentication distinguishes leaderboard and operator tokens", () => {
+  const resolveReadyRole = (packagedSmokeModule as unknown as Record<string, unknown>)
+    .resolvePackagedSmokeReadyRole;
+  assert.equal(typeof resolveReadyRole, "function");
+
+  const tokens = {
+    PC01: "p".repeat(43),
+    LEADERBOARD01: "l".repeat(43),
+    LEADERBOARD01_OPERATOR: "o".repeat(43)
+  };
+  const resolve = resolveReadyRole as (
+    deviceId: string | undefined,
+    authorization: string | undefined,
+    tokenSet: typeof tokens
+  ) => unknown;
+
+  assert.equal(resolve("LEADERBOARD01", `Bearer ${tokens.LEADERBOARD01}`, tokens), "leaderboard");
+  assert.equal(resolve("LEADERBOARD01", `Bearer ${tokens.LEADERBOARD01_OPERATOR}`, tokens), "operator");
+  assert.equal(resolve("LEADERBOARD01", `Bearer ${tokens.PC01}`, tokens), undefined);
+});
+
+test("packaged-smoke records endpoint accepts only the leaderboard read token", () => {
+  const authorizeRecordsRead = (packagedSmokeModule as unknown as Record<string, unknown>)
+    .isPackagedSmokeRecordsReadAuthorized;
+  assert.equal(typeof authorizeRecordsRead, "function");
+
+  const tokens = {
+    PC01: "p".repeat(43),
+    LEADERBOARD01: "l".repeat(43),
+    LEADERBOARD01_OPERATOR: "o".repeat(43)
+  };
+  const authorize = authorizeRecordsRead as (
+    deviceId: string | undefined,
+    authorization: string | undefined,
+    tokenSet: typeof tokens
+  ) => boolean;
+
+  assert.equal(authorize("LEADERBOARD01", `Bearer ${tokens.LEADERBOARD01}`, tokens), true);
+  assert.equal(authorize("LEADERBOARD01", `Bearer ${tokens.LEADERBOARD01_OPERATOR}`, tokens), false);
+  assert.equal(authorize("PC01", `Bearer ${tokens.PC01}`, tokens), false);
 });
 
 test("forced-exit resolves the Electron main PID instead of the launcher wrapper PID", async () => {

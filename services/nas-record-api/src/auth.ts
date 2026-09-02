@@ -22,6 +22,7 @@ export type TokenManifestV1 = {
 export type AuthenticationHeaders = Record<string, string | string[] | undefined> & {
   eventId?: string;
   requiredRole?: NasTokenRole;
+  requiredRoles?: NasTokenRole[];
   sessionKind?: SessionKind;
 };
 
@@ -78,6 +79,9 @@ export function authenticateRequest(
   const deviceId = singleHeader(headers, "x-device-id");
   if (deviceId == null || deviceId !== matchedToken.deviceId) throw new AuthenticationError("DEVICE_SCOPE");
   if (headers.requiredRole != null && headers.requiredRole !== matchedToken.role) {
+    throw new AuthenticationError("ROLE_SCOPE");
+  }
+  if (headers.requiredRoles != null && !headers.requiredRoles.includes(matchedToken.role)) {
     throw new AuthenticationError("ROLE_SCOPE");
   }
   if (headers.sessionKind != null && !matchedToken.allowedSessions.includes(headers.sessionKind)) {

@@ -106,7 +106,7 @@ export function validateAndNormalizeRecord(
     received_at: receivedAt,
   };
   const attempt = row.canonicalAttempt;
-  if (attempt === undefined) return stored;
+  if (attempt === undefined) throw new Error("invalid record");
   if (!isCanonicalAiAttemptV1(attempt)) {
     throw new Error("CANONICAL_ATTEMPT_INVALID");
   }

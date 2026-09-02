@@ -1269,6 +1269,16 @@ textarea:focus {
   animation: countdown-pop 0.86s ease both;
 }
 
+html[data-event-profile="geumcheon-2026"] .challenge-screen > .countdown-overlay {
+  inset: auto;
+  top: calc(clamp(172px, 22vh, 246px) + clamp(116px, 13vh, 164px) + 28px);
+  left: 50%;
+  width: max-content;
+  height: max-content;
+  translate: -50% 0;
+  z-index: 4;
+}
+
 @keyframes countdown-pop {
   0% {
     transform: scale(0.72);
@@ -3305,6 +3315,13 @@ html[data-event-profile="geumcheon-2026"] .modal {
   border-color: rgba(0, 179, 236, 0.28);
   color: var(--deep-purple);
   box-shadow: none;
+}
+
+html[data-event-profile="geumcheon-2026"] .hero-panel,
+html[data-event-profile="geumcheon-2026"] .entry-panel,
+html[data-event-profile="geumcheon-2026"] .leaderboard-board,
+html[data-event-profile="geumcheon-2026"] .ranking-table {
+  background: rgba(255, 255, 255, 0.75);
 }
 
 html[data-event-profile="geumcheon-2026"] .geumcheon-main-title-image {

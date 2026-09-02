@@ -126,10 +126,13 @@ function assertLoopbackHttps(baseUrl) {
   }
 }
 
-function writeSyntheticProfile({ caseRoot, executableDirectory, app, baseUrl, token, runtimeConfig }) {
+function writeSyntheticProfile({ caseRoot, executableDirectory, app, baseUrl, token, operatorToken, runtimeConfig }) {
   assertLoopbackHttps(baseUrl);
   if (!/^(?:[0-9a-f]{64}|[A-Za-z0-9_-]{43})$/.test(token)) {
     throw new Error("SYNTHETIC_TOKEN_INVALID");
+  }
+  if (app.role === "leaderboard" && !/^(?:[0-9a-f]{64}|[A-Za-z0-9_-]{43})$/.test(operatorToken || "")) {
+    throw new Error("SYNTHETIC_OPERATOR_TOKEN_INVALID");
   }
   const localAppData = path.join(caseRoot, "LocalAppData");
   const appData = path.join(caseRoot, "RoamingAppData");
@@ -176,6 +179,12 @@ function writeSyntheticProfile({ caseRoot, executableDirectory, app, baseUrl, to
   writeJson(path.join(executableDirectory, "device-profile.json"), deviceProfile);
   const bootstrapPath = path.join(executableDirectory, "bootstrap-credentials.json");
   writeJson(bootstrapPath, bootstrap);
+  if (app.role === "leaderboard") {
+    writeJson(path.join(executableDirectory, "bootstrap-operator-credentials.json"), {
+      ...bootstrap,
+      token: operatorToken,
+    });
+  }
   writeJson(path.join(executableDirectory, "config", "config.json"), generatedConfig);
   writeJson(path.join(runtimeRoot, "config", "config.json"), generatedConfig);
   return { bootstrapPath, runtimeRoot, userDataPath };
@@ -369,11 +378,10 @@ async function startMockNas({ temporaryRoot, tokens, records }) {
     const deviceId = typeof request.headers["x-device-id"] === "string"
       ? request.headers["x-device-id"]
       : "";
-    const expectedToken = deviceId === "PC01" || deviceId === "LEADERBOARD01"
-      ? tokens[deviceId]
-      : undefined;
-    const authenticated = Boolean(expectedToken)
-      && request.headers.authorization === `Bearer ${expectedToken}`;
+    const writerExpected = deviceId === "PC01" ? tokens.PC01 : undefined;
+    const leaderboardExpected = tokens.LEADERBOARD01;
+    const operatorExpected = tokens.LEADERBOARD01_OPERATOR;
+    const presented = request.headers.authorization;
     const session = sessionFromUrl(requestUrl);
 
     if (request.method === "GET" && requestUrl.pathname === "/health" && requestUrl.search === "") {
@@ -382,12 +390,20 @@ async function startMockNas({ temporaryRoot, tokens, records }) {
       return;
     }
     if (request.method === "GET" && requestUrl.pathname === "/api/v1/ready") {
-      if (!expectedToken) {
-        observations.push({ method: "GET", route: "ready", statusCode: 403 });
-        sendJson(response, 403, { error: "forbidden" });
-        return;
-      }
-      if (!authenticated) {
+      const role = deviceId === "LEADERBOARD01"
+        && Boolean(leaderboardExpected)
+        && presented === `Bearer ${leaderboardExpected}`
+        ? "leaderboard"
+        : deviceId === "LEADERBOARD01"
+          && Boolean(operatorExpected)
+          && presented === `Bearer ${operatorExpected}`
+          ? "operator"
+          : deviceId === "PC01"
+            && Boolean(writerExpected)
+            && presented === `Bearer ${writerExpected}`
+            ? "writer"
+            : undefined;
+      if (!role) {
         observations.push({ method: "GET", route: "ready", statusCode: 401 });
         sendJson(response, 401, { error: "unauthorized" });
         return;
@@ -403,7 +419,7 @@ async function startMockNas({ temporaryRoot, tokens, records }) {
         status: "ready",
         event_id: EVENT_ID,
         device_id: deviceId,
-        role: deviceId === "PC01" ? "writer" : "operator",
+        role,
         session
       });
       return;
@@ -414,9 +430,9 @@ async function startMockNas({ temporaryRoot, tokens, records }) {
         sendJson(response, 403, { error: "forbidden" });
         return;
       }
-      if (!authenticated) {
-        observations.push({ method: "GET", route: "records", statusCode: 401 });
-        sendJson(response, 401, { error: "unauthorized" });
+      if (!leaderboardExpected || presented !== `Bearer ${leaderboardExpected}`) {
+        observations.push({ method: "GET", route: "records", statusCode: 403 });
+        sendJson(response, 403, { error: "forbidden" });
         return;
       }
       if (!session) {
@@ -432,6 +448,17 @@ async function startMockNas({ temporaryRoot, tokens, records }) {
         generated_at: new Date().toISOString(),
         rows: records
       });
+      return;
+    }
+    if (request.method === "POST" && requestUrl.pathname === "/api/v1/admin/actions") {
+      if (deviceId !== "LEADERBOARD01" || !operatorExpected || presented !== `Bearer ${operatorExpected}`) {
+        observations.push({ method: "POST", route: "admin-actions", statusCode: 403 });
+        sendJson(response, 403, { error: "forbidden" });
+        return;
+      }
+      request.resume();
+      observations.push({ method: "POST", route: "admin-actions", statusCode: 200 });
+      sendJson(response, 200, { ok: true });
       return;
     }
     observations.push({ method: request.method || "", route: "unexpected", statusCode: 404 });
@@ -730,7 +757,8 @@ function loadDefaultConfig(packageRoot) {
 function syntheticTokens() {
   return {
     PC01: crypto.randomBytes(32).toString("base64url"),
-    LEADERBOARD01: crypto.randomBytes(32).toString("base64url")
+    LEADERBOARD01: crypto.randomBytes(32).toString("base64url"),
+    LEADERBOARD01_OPERATOR: crypto.randomBytes(32).toString("base64url")
   };
 }
 
@@ -850,6 +878,7 @@ async function runOneApp({ layout, config, app, mock, tokens, caseRoot, lifecycl
     app,
     baseUrl: mock.baseUrl,
     token: tokens[app.deviceId],
+    operatorToken: app.role === "leaderboard" ? tokens.LEADERBOARD01_OPERATOR : undefined,
     runtimeConfig
   });
   const environment = buildIsolatedChildEnvironment({

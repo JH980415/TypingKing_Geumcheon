@@ -8,6 +8,11 @@ import path from "node:path";
 import { _electron as electron, type ElectronApplication, type Page } from "playwright-core";
 import { sanitizeE2eChildEnvironment } from "../electron/startupProfile";
 import { DEFAULT_CONFIG } from "../shared/constants/defaults";
+import {
+  isGeumcheonRecordId,
+  payloadSha256,
+  type NasRecordEnvelopeV1
+} from "../shared/nas/protocol";
 import type { RecordRow } from "../shared/types";
 import {
   toPortableCssFileReference,
@@ -24,25 +29,36 @@ import {
 type Role = "player" | "leaderboard";
 type GameVariant = Extract<ApprovedUiVariant, "ai" | "practice">;
 type LeaderboardVariant = Extract<ApprovedUiVariant, "ai-leaderboard" | "practice-leaderboard">;
+type SessionKind = "official" | "practice";
 type RunningApp = { app: ElectronApplication; page: Page };
 type LocalNasServer = {
   server: https.Server;
   apiBaseUrl: string;
   caPemPath: string;
-  tokens: Record<"PC01" | "LEADERBOARD01", string>;
+  tokens: Record<"PC01" | "LEADERBOARD01" | "LEADERBOARD01_OPERATOR", string>;
   observations: Array<{
     method: string;
     pathname: string;
     deviceId: string;
     authorized: boolean;
     queryMatched: boolean;
+    responseStatus?: number;
+    sessionKind?: SessionKind;
+    credentialRole?: "writer" | "leaderboard" | "operator";
+    bodySessionMatched?: boolean;
+    recordId?: string;
+    returnedRecordIds?: string[];
   }>;
+  recordsBySession: Record<SessionKind, Map<string, RecordRow>>;
+  readsBySession: Record<SessionKind, string[][]>;
 };
 type ScreenCheck = {
   screen: string;
   resolution: string;
   background: string;
   alpha: number;
+  panelAlphas: number[];
+  panelOpacities: number[];
   horizontalOverflow: boolean;
   verticalOverflow: boolean;
   buttonsReachable: boolean;
@@ -58,6 +74,8 @@ type LeaderboardBehaviorCheck = {
   maskedIdentityVisible: boolean;
   rawIdentityLeakCount: number;
   maskedIdentityMissingCount: number;
+  selectionSelected: boolean;
+  selectionCleared: boolean;
   scrollable: boolean;
   scrolled: boolean;
   backgroundAsset: string;
@@ -89,6 +107,8 @@ const eventId = "geumcheon-science-festival-2026";
 const officialSessionId = "approved-ui-official";
 const rows: ScreenCheck[] = [];
 const leaderboardChecks: LeaderboardBehaviorCheck[] = [];
+const countdownScreenshots: string[] = [];
+const leaderboardsOnly = process.env.TYPINGKING_E2E_LEADERBOARDS_ONLY === "1";
 const sizes = [
   { width: 1920, height: 1080 },
   { width: 1280, height: 720 }
@@ -226,7 +246,8 @@ function writeSyntheticProfiles(
   dir: string,
   role: Role,
   apiBaseUrl: string,
-  token: string
+  token: string,
+  operatorToken?: string
 ): void {
   const deviceId = role === "leaderboard" ? "LEADERBOARD01" : "PC01";
   fs.writeFileSync(path.join(dir, "device-profile.json"), `${JSON.stringify({
@@ -250,6 +271,16 @@ function writeSyntheticProfiles(
     apiBaseUrl,
     token
   }, null, 2)}\n`, "utf8");
+  if (role === "leaderboard") {
+    if (!operatorToken) throw new Error("Synthetic operator token is required for leaderboard UI");
+    fs.writeFileSync(path.join(dir, "bootstrap-operator-credentials.json"), `${JSON.stringify({
+      schemaVersion: 1,
+      eventId,
+      deviceId,
+      apiBaseUrl,
+      token: operatorToken
+    }, null, 2)}\n`, "utf8");
+  }
   const runtimeConfigDir = path.join(dir, "runtime", "config");
   ensureDir(runtimeConfigDir);
   fs.writeFileSync(
@@ -371,18 +402,69 @@ async function startLocalNasServer(temporaryRoot: string): Promise<LocalNasServe
   const certificate = createLocalHttpsCertificate(path.join(temporaryRoot, "certificates"));
   const tokens = {
     PC01: crypto.randomBytes(32).toString("base64url"),
-    LEADERBOARD01: crypto.randomBytes(32).toString("base64url")
+    LEADERBOARD01: crypto.randomBytes(32).toString("base64url"),
+    LEADERBOARD01_OPERATOR: crypto.randomBytes(32).toString("base64url")
   } as const;
   const observations: LocalNasServer["observations"] = [];
+  const recordsBySession: LocalNasServer["recordsBySession"] = {
+    official: new Map(),
+    practice: new Map()
+  };
+  const readsBySession: LocalNasServer["readsBySession"] = {
+    official: [],
+    practice: []
+  };
+  const persistObservations = () => {
+    fs.writeFileSync(
+      path.join(artifactRoot, "nas-observations.json"),
+      JSON.stringify(observations, null, 2) + "\n",
+      "utf8"
+    );
+  };
+  const isObject = (value: unknown): value is Record<string, unknown> => (
+    typeof value === "object" && value !== null && !Array.isArray(value)
+  );
+  const sessionKindFromEnvelope = (value: unknown): SessionKind | undefined => {
+    if (!isObject(value)
+      || value.schema_version !== 1
+      || value.event_id !== eventId
+      || !isObject(value.session)
+      || !isObject(value.row)) {
+      return undefined;
+    }
+    const session = value.session;
+    if (session.kind === "practice"
+      && session.session_id === "approved-ui-practice"
+      && Object.keys(session).sort().join(",") === "kind,session_id") {
+      return "practice";
+    }
+    if (session.kind === "official"
+      && session.session_id === officialSessionId
+      && session.day_no === 1
+      && session.round_no === 1
+      && Object.keys(session).sort().join(",") === "day_no,kind,round_no,session_id") {
+      return "official";
+    }
+    return undefined;
+  };
+
   const server = https.createServer({
     pfx: fs.readFileSync(certificate.pfxPath),
     passphrase: certificate.passphrase,
     minVersion: "TLSv1.2"
-  }, (request, response) => {
+  }, async (request, response) => {
     const requestUrl = new URL(request.url || "/", "https://localhost");
     const deviceId = request.headers["x-device-id"];
     const knownDeviceId = deviceId === "PC01" || deviceId === "LEADERBOARD01" ? deviceId : undefined;
-    const authorized = Boolean(knownDeviceId && request.headers.authorization === `Bearer ${tokens[knownDeviceId]}`);
+    const authorization = request.headers.authorization;
+    const credentialRole = knownDeviceId === "PC01" && authorization === "Bearer " + tokens.PC01
+      ? "writer"
+      : knownDeviceId === "LEADERBOARD01" && authorization === "Bearer " + tokens.LEADERBOARD01
+        ? "leaderboard"
+        : knownDeviceId === "LEADERBOARD01" && authorization === "Bearer " + tokens.LEADERBOARD01_OPERATOR
+          ? "operator"
+          : undefined;
+    const authorized = credentialRole !== undefined;
     const officialQueryMatched = requestUrl.searchParams.get("session_kind") === "official"
       && requestUrl.searchParams.get("session_id") === officialSessionId
       && requestUrl.searchParams.get("day_no") === "1"
@@ -391,55 +473,140 @@ async function startLocalNasServer(temporaryRoot: string): Promise<LocalNasServe
       && requestUrl.searchParams.get("session_id") === "approved-ui-practice"
       && requestUrl.searchParams.get("day_no") === null
       && requestUrl.searchParams.get("round_no") === null;
-    const queryMatched = officialQueryMatched || practiceQueryMatched;
-    observations.push({
+    const querySessionKind: SessionKind | undefined = practiceQueryMatched
+      ? "practice"
+      : officialQueryMatched
+        ? "official"
+        : undefined;
+    const observation: LocalNasServer["observations"][number] = {
       method: request.method || "",
       pathname: requestUrl.pathname,
       deviceId: String(deviceId || ""),
       authorized,
-      queryMatched
-    });
-    fs.writeFileSync(
-      path.join(artifactRoot, "nas-observations.json"),
-      `${JSON.stringify(observations, null, 2)}\n`,
-      "utf8"
-    );
+      queryMatched: querySessionKind !== undefined,
+      credentialRole
+    };
+    observations.push(observation);
+    persistObservations();
+
+    const sendJson = (status: number, body: unknown) => {
+      observation.responseStatus = status;
+      persistObservations();
+      response.writeHead(status, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store"
+      });
+      response.end(JSON.stringify(body));
+    };
+    const sendEmpty = (status: number) => {
+      observation.responseStatus = status;
+      persistObservations();
+      response.writeHead(status).end();
+    };
+
     if (!authorized) {
-      response.writeHead(401).end();
+      sendEmpty(401);
       return;
     }
-    if (!queryMatched) {
-      response.writeHead(403).end();
+
+    if (request.method === "POST" && requestUrl.pathname === "/api/v1/records") {
+      if (credentialRole !== "writer"
+        || typeof request.headers["content-type"] !== "string"
+        || !/^application\/json(?:;|$)/i.test(request.headers["content-type"])) {
+        sendEmpty(403);
+        return;
+      }
+
+      try {
+        const chunks: Buffer[] = [];
+        let byteLength = 0;
+        for await (const chunk of request) {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          byteLength += buffer.byteLength;
+          if (byteLength > 32 * 1024) throw new Error("REQUEST_BODY_TOO_LARGE");
+          chunks.push(buffer);
+        }
+        const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
+        const sessionKind = sessionKindFromEnvelope(parsed);
+        const rowValue = isObject(parsed) && isObject(parsed.row) ? parsed.row : undefined;
+        const recordId = rowValue?.record_id;
+        const idempotencyKey = request.headers["idempotency-key"];
+        if (!sessionKind
+          || !isGeumcheonRecordId(recordId)
+          || !recordId.startsWith("gsc26-pc01-")
+          || idempotencyKey !== recordId) {
+          sendEmpty(422);
+          return;
+        }
+
+        const envelope = parsed as NasRecordEnvelopeV1;
+        const records = recordsBySession[sessionKind];
+        const duplicate = records.has(recordId);
+        if (!duplicate) records.set(recordId, envelope.row);
+        const payloadHash = payloadSha256(envelope);
+        observation.bodySessionMatched = true;
+        observation.sessionKind = sessionKind;
+        observation.recordId = recordId;
+        sendJson(duplicate ? 200 : 201, {
+          schema_version: 1,
+          disposition: duplicate ? "duplicate" : "stored",
+          record_id: recordId,
+          payload_sha256: payloadHash,
+          stored_sha256: payloadHash,
+          received_at: new Date().toISOString()
+        });
+      } catch {
+        sendEmpty(400);
+      }
       return;
     }
-    const session = practiceQueryMatched
+
+    if (!querySessionKind) {
+      sendEmpty(403);
+      return;
+    }
+    observation.sessionKind = querySessionKind;
+    const session = querySessionKind === "practice"
       ? { kind: "practice", session_id: "approved-ui-practice" }
       : { kind: "official", session_id: officialSessionId, day_no: 1, round_no: 1 };
+
     if (request.method === "GET" && requestUrl.pathname === "/api/v1/ready") {
-      response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      response.end(JSON.stringify({
+      sendJson(200, {
         schema_version: 1,
         status: "ready",
         event_id: eventId,
         device_id: knownDeviceId,
-        role: knownDeviceId === "LEADERBOARD01" ? "operator" : "writer",
+        role: credentialRole,
         session
-      }));
+      });
       return;
     }
+
     if (request.method === "GET" && requestUrl.pathname === "/api/v1/records") {
-      response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      response.end(JSON.stringify({
+      if (credentialRole !== "leaderboard" && credentialRole !== "operator") {
+        sendEmpty(403);
+        return;
+      }
+      const responseRows = [
+        ...syntheticLeaderboardRows(),
+        ...recordsBySession[querySessionKind].values()
+      ];
+      const returnedRecordIds = responseRows.map((row) => row.record_id);
+      readsBySession[querySessionKind].push(returnedRecordIds);
+      observation.returnedRecordIds = returnedRecordIds;
+      sendJson(200, {
         schema_version: 1,
         event_id: eventId,
         session,
         generated_at: new Date().toISOString(),
-        rows: syntheticLeaderboardRows()
-      }));
+        rows: responseRows
+      });
       return;
     }
-    response.writeHead(404).end();
+
+    sendEmpty(404);
   });
+
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", () => {
@@ -454,13 +621,14 @@ async function startLocalNasServer(temporaryRoot: string): Promise<LocalNasServe
   }
   return {
     server,
-    apiBaseUrl: `https://127.0.0.1:${address.port}`,
+    apiBaseUrl: "https://127.0.0.1:" + address.port,
     caPemPath: certificate.caPemPath,
     tokens,
-    observations
+    observations,
+    recordsBySession,
+    readsBySession
   };
 }
-
 async function stopHttpsServer(server: https.Server | undefined): Promise<void> {
   if (!server) return;
   server.closeAllConnections?.();
@@ -527,16 +695,85 @@ async function captureHiddenWindow(
   fs.writeFileSync(screenshotPath, Buffer.from(pngBase64, "base64"));
 }
 
-async function pageMetrics(page: Page): Promise<{
+async function captureAndAssertChallengeCountdown(
+  running: RunningApp,
+  variant: GameVariant,
+  width: number,
+  height: number
+): Promise<void> {
+  const { page } = running;
+  let firstBossRect: { left: number; top: number; right: number; bottom: number } | undefined;
+
+  for (const value of ["3", "2", "1", "START"]) {
+    await page.waitForFunction(
+      (expected) => document.querySelector(".challenge-screen > .countdown-overlay")?.textContent?.trim() === expected,
+      value,
+      { timeout: 3_000 }
+    );
+    const geometry = await page.evaluate(() => {
+      const overlay = document.querySelector(".challenge-screen > .countdown-overlay") as HTMLElement | null;
+      const boss = document.querySelector(".challenge-boss-float") as HTMLElement | null;
+      if (!overlay || !boss) throw new Error("challenge countdown or Geumnarae element is missing");
+      const overlayRect = overlay.getBoundingClientRect();
+      const bossRect = boss.getBoundingClientRect();
+      return {
+        overlayRect: {
+          left: overlayRect.left,
+          top: overlayRect.top,
+          right: overlayRect.right,
+          bottom: overlayRect.bottom
+        },
+        bossRect: {
+          left: bossRect.left,
+          top: bossRect.top,
+          right: bossRect.right,
+          bottom: bossRect.bottom
+        },
+        centerOffsetPx: Math.abs((overlayRect.left + overlayRect.right) / 2 - innerWidth / 2)
+      };
+    });
+
+    assert.ok(
+      geometry.overlayRect.top >= geometry.bossRect.bottom + 8,
+      `${variant} ${value} countdown must sit below Geumnarae; overlayTop=${geometry.overlayRect.top}, bossBottom=${geometry.bossRect.bottom}`
+    );
+    assert.ok(
+      geometry.centerOffsetPx <= 2,
+      `${variant} ${value} countdown must remain horizontally centered; offset=${geometry.centerOffsetPx}`
+    );
+    if (firstBossRect) {
+      assert.deepEqual(
+        geometry.bossRect,
+        firstBossRect,
+        `${variant} Geumnarae position changed during countdown`
+      );
+    } else {
+      firstBossRect = geometry.bossRect;
+    }
+
+    const screenshotPath = path.join(
+      artifactRoot,
+      `${width}x${height}`,
+      `countdown-${variant}-${value}-${width}x${height}.png`
+    );
+    ensureDir(path.dirname(screenshotPath));
+    await captureHiddenWindow(running, screenshotPath);
+    countdownScreenshots.push(toPortableProjectPath(root, screenshotPath));
+  }
+}
+
+async function pageMetrics(page: Page, panelSelector: string): Promise<{
   background: string;
   alpha: number;
+  panelAlphas: number[];
+  panelOpacities: number[];
   horizontalOverflow: boolean;
   verticalOverflow: boolean;
   buttonsReachable: boolean;
 }> {
-  const metrics = await page.evaluate(() => {
+  const metrics = await page.evaluate((selector) => {
     const app = document.querySelector(".app") as HTMLElement | null;
-    const panel = document.querySelector(".hero-panel, .duel-panel, .leaderboard-board") as HTMLElement | null;
+    const panels = Array.from(document.querySelectorAll<HTMLElement>(selector));
     const doc = document.documentElement;
     const body = document.body;
     const buttons = Array.from(document.querySelectorAll("button")).filter((button) => {
@@ -546,7 +783,8 @@ async function pageMetrics(page: Page): Promise<{
     });
     return {
       background: app ? getComputedStyle(app).backgroundImage : "",
-      panelBackground: panel ? getComputedStyle(panel).backgroundColor : "",
+      panelBackgrounds: panels.map((panel) => getComputedStyle(panel).backgroundColor),
+      panelOpacities: panels.map((panel) => Number(getComputedStyle(panel).opacity)),
       scrollWidth: Math.max(doc.scrollWidth, body.scrollWidth),
       clientWidth: doc.clientWidth,
       scrollHeight: Math.max(doc.scrollHeight, body.scrollHeight),
@@ -566,10 +804,13 @@ async function pageMetrics(page: Page): Promise<{
         return rect.right >= 0 && rect.left <= innerWidth && rect.bottom >= 0 && rect.top <= innerHeight;
       })
     };
-  });
+  }, panelSelector);
+  const panelAlphas = metrics.panelBackgrounds.map(cssAlpha);
   return {
     background: metrics.background,
-    alpha: cssAlpha(metrics.panelBackground),
+    alpha: panelAlphas[0] ?? 1,
+    panelAlphas,
+    panelOpacities: metrics.panelOpacities,
     horizontalOverflow: metrics.scrollWidth > metrics.clientWidth + 4,
     verticalOverflow: metrics.scrollHeight > metrics.clientHeight + 8,
     buttonsReachable: metrics.buttonsReachable
@@ -582,11 +823,16 @@ async function captureAndAssert(
   width: number,
   height: number,
   expectedBackgroundFile: string,
-  imageSelectors: string[]
+  imageSelectors: string[],
+  panelSelector: string,
+  expectedPanelAlpha: number | null
 ): Promise<void> {
   const { page } = running;
-  await page.waitForTimeout(400);
-  const metrics = await pageMetrics(page);
+  await page.evaluate(async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  });
+  const metrics = await pageMetrics(page, panelSelector);
   const brokenImages = await visibleImageFailures(page, imageSelectors);
   const dir = path.join(artifactRoot, `${width}x${height}`);
   ensureDir(dir);
@@ -597,6 +843,8 @@ async function captureAndAssert(
     resolution: `${width}x${height}`,
     background: toPortableCssFileReference(root, metrics.background),
     alpha: metrics.alpha,
+    panelAlphas: metrics.panelAlphas,
+    panelOpacities: metrics.panelOpacities,
     horizontalOverflow: metrics.horizontalOverflow,
     verticalOverflow: metrics.verticalOverflow,
     buttonsReachable: metrics.buttonsReachable,
@@ -604,24 +852,44 @@ async function captureAndAssert(
     screenshot: toPortableProjectPath(root, screenshot)
   });
   assert.match(metrics.background, new RegExp(expectedBackgroundFile.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.ok(metrics.alpha < 1, `${screen} panel must be translucent; computed alpha=${metrics.alpha}`);
+  assert.ok(metrics.panelAlphas.length > 0, `${screen} target panel is missing: ${panelSelector}`);
+  if (expectedPanelAlpha === null) {
+    assert.ok(
+      metrics.panelAlphas.every((alpha) => alpha < 1),
+      `${screen} panels must be translucent; computed alpha=${metrics.panelAlphas.join(",")}`
+    );
+  } else {
+    assert.ok(
+      metrics.panelAlphas.every((alpha) => Math.abs(alpha - expectedPanelAlpha) <= 0.0001),
+      `${screen} panels must use alpha ${expectedPanelAlpha}; computed alpha=${metrics.panelAlphas.join(",")}`
+    );
+    assert.ok(
+      metrics.panelOpacities.every((opacity) => opacity === 1),
+      `${screen} panels must not use parent opacity; computed opacity=${metrics.panelOpacities.join(",")}`
+    );
+  }
   assert.equal(metrics.horizontalOverflow, false, `${screen} has horizontal viewport overflow`);
   assert.equal(metrics.verticalOverflow, false, `${screen} has vertical viewport overflow`);
   assert.equal(metrics.buttonsReachable, true, `${screen} has unreachable visible buttons`);
   assert.deepEqual(brokenImages, [], `${screen} has unloaded or missing images`);
 }
 
-async function fillEntryForm(page: Page): Promise<void> {
-  await page.locator(".entry-panel input").first().fill("E2E");
+async function fillEntryForm(page: Page, variant: GameVariant, width: number): Promise<void> {
+  const official = variant === "ai";
+  const wide = width === 1920;
+  await page.locator(".entry-panel input").first().fill(
+    (official ? "합성공식" : "합성연습") + (wide ? "A" : "B")
+  );
   await page.locator(".phone-row select").selectOption("010");
-  await page.locator(".phone-row input").nth(0).fill("0000");
-  await page.locator(".phone-row input").nth(1).fill("0000");
+  await page.locator(".phone-row input").nth(0).fill(
+    official ? (wide ? "8101" : "8102") : (wide ? "8201" : "8202")
+  );
+  await page.locator(".phone-row input").nth(1).fill(wide ? "1920" : "1280");
   await page.locator(".birth-row select").nth(0).selectOption("2000");
-  await page.locator(".birth-row select").nth(1).selectOption("1");
-  await page.locator(".birth-row select").nth(2).selectOption("1");
+  await page.locator(".birth-row select").nth(1).selectOption(official ? "1" : "2");
+  await page.locator(".birth-row select").nth(2).selectOption(wide ? "19" : "12");
   await page.locator(".check-line input").check();
 }
-
 async function launchApp(
   variant: ApprovedUiVariant,
   scenarioRoot: string,
@@ -632,7 +900,13 @@ async function launchApp(
 ): Promise<RunningApp> {
   const role = variant.endsWith("leaderboard") ? "leaderboard" : "player";
   const deviceId = role === "leaderboard" ? "LEADERBOARD01" : "PC01";
-  writeSyntheticProfiles(scenarioRoot, role, nasServer.apiBaseUrl, nasServer.tokens[deviceId]);
+  writeSyntheticProfiles(
+    scenarioRoot,
+    role,
+    nasServer.apiBaseUrl,
+    nasServer.tokens[deviceId],
+    role === "leaderboard" ? nasServer.tokens.LEADERBOARD01_OPERATOR : undefined
+  );
   const app = await electron.launch({
     executablePath: electronExe,
     args: ["--disable-gpu", mainJs, `--variant=${variant}`],
@@ -687,7 +961,10 @@ async function runGame(
     app = await launchApp(variant, scenarioRoot, width, height, nasServer, options);
     const { page } = app;
     await page.waitForLoadState("domcontentloaded");
-    await page.waitForTimeout(500);
+    await page.locator(".entry-panel, .app-fallback").first().waitFor({
+      state: "attached",
+      timeout: 20_000
+    });
     const initialState = await page.evaluate(() => ({
       url: location.href,
       title: document.title,
@@ -715,11 +992,22 @@ async function runGame(
       width,
       height,
       "bg_leaderboard_03_typing_hall_of_fame.png",
-      [".geumcheon-main-title-image", ".geumcheon-main-robot"]
+      [".geumcheon-main-title-image", ".geumcheon-main-robot"],
+      ".hero-panel, .entry-panel",
+      0.75
     );
-    await fillEntryForm(page);
+    const modeCardTitleSrc = await page
+      .locator(".entry-panel .mode-card.active .mode-card-art")
+      .getAttribute("src");
+    assert.match(
+      modeCardTitleSrc || "",
+      /title_05_geumcheon_geumnarae_r203\.png$/,
+      "Geumcheon game-mode card must use the R2.0.3 Geumnarae title asset"
+    );
+    await fillEntryForm(page, variant, width);
     await page.locator(".entry-panel .button-row .primary-button").first().click();
     await page.locator(".challenge-screen").waitFor({ state: "visible", timeout: 20_000 });
+    await captureAndAssertChallengeCountdown(app, variant, width, height);
     await page.locator(".countdown-overlay").waitFor({ state: "hidden", timeout: 10_000 }).catch(() => undefined);
     await captureAndAssert(
       app,
@@ -727,7 +1015,9 @@ async function runGame(
       width,
       height,
       "bg_main_03_geumcheon_data_city.png",
-      [".geumcheon-header-title, .brand-header img", ".ai-boss-typing", ".vs-badge", ".stage-badge-img"]
+      [".geumcheon-header-title, .brand-header img", ".ai-boss-typing", ".vs-badge", ".stage-badge-img"],
+      ".duel-panel",
+      null
     );
     const stageBadgeSources = await page.locator(".stage-badge-img").evaluateAll((images) =>
       images.map((image) => (image as HTMLImageElement).currentSrc || (image as HTMLImageElement).src)
@@ -736,7 +1026,7 @@ async function runGame(
     stageBadgeSources.forEach((source, index) => {
       assert.match(
         source,
-        new RegExp(`/events/geumcheon-2026/assets/ai_challenge/stage_badge_${index + 1}\\.png$`),
+        new RegExp(`/events/geumcheon-2026/assets/ai_challenge/stage_badge_${index + 1}_r203\\.png$`),
         `stage ${index + 1} badge must use the Geumcheon event-local asset`
       );
     });
@@ -784,28 +1074,74 @@ async function runLeaderboard(
       width,
       height,
       "stage_01_03_science_classroom.png",
-      [".geumcheon-header-title", centralTitleSelector]
+      [".geumcheon-header-title", centralTitleSelector],
+      ".leaderboard-board, .leaderboard-board .ranking-table",
+      0.75
     );
 
     const rowCount = await page.locator(rowSelector).count();
-    assert.ok(rowCount >= 10, `leaderboard must render at least 10 synthetic rows; rendered=${rowCount}`);
-    const identityText = (await page.locator(rowSelector).allTextContents()).join("\n");
-    const syntheticRows = syntheticLeaderboardRows();
-    const rawIdentityLeaks = syntheticRows.flatMap((row) => [
-      row.participant_name,
-      row.phone_full,
-      `${row.phone_part1}-${row.phone_part2}-${row.phone_part3}`
-    ]).filter((value) => value.length > 0 && identityText.includes(value));
-    if (identityText.includes("0000")) rawIdentityLeaks.push("phone_part2:0000");
-    const missingMaskedIdentities = syntheticRows.flatMap((row) => [
-      maskSyntheticParticipantName(row.participant_name),
-      row.phone_masked
-    ]).filter((value) => value.length > 0 && !identityText.includes(value));
+    assert.ok(rowCount >= 10, "leaderboard must render at least 10 synthetic rows; rendered=" + rowCount);
+    const rowTexts = await page.locator(rowSelector).allTextContents();
+    const sessionKind: SessionKind = screenVariant === "ai" ? "official" : "practice";
+    const expectedIdentityRows = [
+      ...syntheticLeaderboardRows(),
+      ...nasServer.recordsBySession[sessionKind].values()
+    ];
+    const rawIdentityLeaks: string[] = [];
+    const missingMaskedIdentities: string[] = [];
+    for (const row of expectedIdentityRows) {
+      const maskedName = maskSyntheticParticipantName(row.participant_name);
+      const rowText = rowTexts.find((text) =>
+        text.includes(row.phone_masked) && text.includes(maskedName)
+      );
+      if (!rowText) {
+        missingMaskedIdentities.push(row.record_id + ":row");
+        continue;
+      }
+      const formattedRawPhone = row.phone_part1 + "-" + row.phone_part2 + "-" + row.phone_part3;
+      const compactBirthdate = row.birth_year + row.birth_month.padStart(2, "0") + row.birth_day.padStart(2, "0");
+      for (const [field, value] of [
+        ["participant_name", row.participant_name],
+        ["phone_full", row.phone_full],
+        ["phone_formatted", formattedRawPhone],
+        ["birthdate", row.birthdate],
+        ["birthdate_compact", compactBirthdate]
+      ] as const) {
+        if (value.length > 0 && rowText.includes(value)) {
+          rawIdentityLeaks.push(row.record_id + ":" + field);
+        }
+      }
+      for (const [field, value] of [
+        ["participant_name_masked", maskedName],
+        ["phone_masked", row.phone_masked]
+      ] as const) {
+        if (value.length > 0 && !rowText.includes(value)) {
+          missingMaskedIdentities.push(row.record_id + ":" + field);
+        }
+      }
+    }
     const rawIdentityHidden = rawIdentityLeaks.length === 0;
     const maskedIdentityVisible = missingMaskedIdentities.length === 0;
     assert.deepEqual(rawIdentityLeaks, [], "leaderboard exposed a raw synthetic identity");
     assert.deepEqual(missingMaskedIdentities, [], "leaderboard did not render every expected masked identity");
 
+    const toggleRow = page.locator(rowSelector).first();
+    await toggleRow.click();
+    await page.waitForFunction(
+      (selector) => document.querySelector(selector)?.classList.contains("selected") === true,
+      rowSelector,
+      { timeout: 10_000 }
+    );
+    const selectionSelected = await toggleRow.evaluate((element) => element.classList.contains("selected"));
+    await toggleRow.click();
+    await page.waitForFunction(
+      (selector) => document.querySelector(selector)?.classList.contains("selected") === false,
+      rowSelector,
+      { timeout: 10_000 }
+    );
+    const selectionCleared = await toggleRow.evaluate((element) => !element.classList.contains("selected"));
+    assert.equal(selectionSelected, true, "first leaderboard row click must select the row");
+    assert.equal(selectionCleared, true, "second leaderboard row click must clear the selection");
     const structure = await page.evaluate(() => {
       const app = document.querySelector<HTMLElement>(".leaderboard-app");
       const board = document.querySelector<HTMLElement>(".ranking-table.ai-ranking");
@@ -851,7 +1187,7 @@ async function runLeaderboard(
       };
     });
     assert.match(structure.background, /stage_01_03_science_classroom\.png/);
-    assert.match(structure.titleSrc, /title_04_science_hologram\.png$/);
+    assert.match(structure.titleSrc, /title_05_geumcheon_geumnarae_r203\.png$/);
     assert.equal(structure.titleTag, "IMG");
     assert.equal(structure.titleDisplay, "block");
     assert.equal(structure.titleObjectFit, "contain");
@@ -924,6 +1260,8 @@ async function runLeaderboard(
       maskedIdentityVisible,
       rawIdentityLeakCount: rawIdentityLeaks.length,
       maskedIdentityMissingCount: missingMaskedIdentities.length,
+      selectionSelected,
+      selectionCleared,
       scrollable,
       scrolled,
       backgroundAsset: toPortableCssFileReference(root, structure.background),
@@ -1012,6 +1350,51 @@ function assertLeaderboardResolutionParity(): void {
   }
 }
 
+function assertApprovedUiNasWrites(nasServer: LocalNasServer): void {
+  const recordPosts = nasServer.observations.filter(
+    (observation) => observation.method === "POST" && observation.pathname === "/api/v1/records"
+  );
+  assert.equal(recordPosts.length, sizes.length * 2, "each official/practice game run must POST one synthetic record");
+  assert.ok(
+    recordPosts.every((observation) => observation.authorized
+      && observation.credentialRole === "writer"
+      && observation.bodySessionMatched === true
+      && observation.responseStatus === 201
+      && observation.recordId),
+    "every synthetic record POST must be accepted with 201 after writer authentication and body-session validation"
+  );
+
+  const officialIds = [...nasServer.recordsBySession.official.keys()];
+  const practiceIds = [...nasServer.recordsBySession.practice.keys()];
+  assert.equal(officialIds.length, sizes.length, "official namespace must store one record per official game run");
+  assert.equal(practiceIds.length, sizes.length, "practice namespace must store one record per practice game run");
+  assert.deepEqual(
+    officialIds.filter((recordId) => practiceIds.includes(recordId)),
+    [],
+    "official and practice stored record IDs must not overlap"
+  );
+
+  for (const [sessionKind, ownIds, foreignIds] of [
+    ["official", officialIds, practiceIds],
+    ["practice", practiceIds, officialIds]
+  ] as const) {
+    const snapshots = nasServer.readsBySession[sessionKind];
+    assert.ok(snapshots.length >= sizes.length, sessionKind + " leaderboard must GET records at each resolution");
+    assert.deepEqual(
+      ownIds.filter((recordId) => !snapshots.some((snapshot) => snapshot.includes(recordId))),
+      [],
+      sessionKind + " GET snapshots must include every accepted " + sessionKind + " POST"
+    );
+    assert.deepEqual(
+      foreignIds.filter((recordId) => snapshots.some((snapshot) => snapshot.includes(recordId))),
+      [],
+      sessionKind + " GET snapshots must not include "
+        + (sessionKind === "official" ? "practice" : "official")
+        + " records"
+    );
+  }
+}
+
 async function main(): Promise<void> {
   const options = parseApprovedUiRunOptions(process.argv.slice(2));
   if (options.mode === "automated") {
@@ -1029,12 +1412,17 @@ async function main(): Promise<void> {
       await runInteractiveReview(options, nasServer, temporaryRoot);
     } else {
       for (const size of sizes) {
-        await runGame("ai", size.width, size.height, nasServer, temporaryRoot, options);
+        if (!leaderboardsOnly) {
+          await runGame("ai", size.width, size.height, nasServer, temporaryRoot, options);
+        }
         await runLeaderboard("ai-leaderboard", size.width, size.height, nasServer, temporaryRoot, options);
-        await runGame("practice", size.width, size.height, nasServer, temporaryRoot, options);
+        if (!leaderboardsOnly) {
+          await runGame("practice", size.width, size.height, nasServer, temporaryRoot, options);
+        }
         await runLeaderboard("practice-leaderboard", size.width, size.height, nasServer, temporaryRoot, options);
       }
       assertLeaderboardResolutionParity();
+      if (!leaderboardsOnly) assertApprovedUiNasWrites(nasServer);
     }
   } finally {
     await stopHttpsServer(nasServer?.server).catch(() => undefined);
@@ -1050,7 +1438,8 @@ async function main(): Promise<void> {
       populatedLeaderboards: leaderboardChecks.length,
       screenshots: [
         ...rows.map((row) => row.screenshot),
-        ...leaderboardChecks.flatMap((check) => [check.searchScreenshot, check.scrollScreenshot])
+        ...leaderboardChecks.flatMap((check) => [check.searchScreenshot, check.scrollScreenshot]),
+        ...countdownScreenshots
       ]
     }, null, 2));
   }

@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import * as bootstrapCredentialModule from "../../electron/nas/bootstrapCredential";
 import {
   importBootstrapCredential,
   type BootstrapCredentialFileSystem,
@@ -35,6 +36,38 @@ function runBootstrapImport(
     ...options,
   });
 }
+
+test("maps player and leaderboard bootstrap files to separate encrypted scopes without legacy fallback", () => {
+  const resolveScopes = (
+    bootstrapCredentialModule as typeof bootstrapCredentialModule & {
+      resolveBootstrapCredentialScopes?: (role: "player" | "leaderboard") => Array<{
+        scope: "writer" | "leaderboard" | "operator";
+        bootstrapFileName: string;
+        encryptedFileName: string;
+      }>;
+    }
+  ).resolveBootstrapCredentialScopes;
+
+  assert.equal(typeof resolveScopes, "function");
+  assert.deepEqual(resolveScopes?.("player"), [{
+    scope: "writer",
+    bootstrapFileName: "bootstrap-credentials.json",
+    encryptedFileName: "device-token.bin",
+  }]);
+  assert.deepEqual(resolveScopes?.("leaderboard"), [
+    {
+      scope: "leaderboard",
+      bootstrapFileName: "bootstrap-credentials.json",
+      encryptedFileName: "leaderboard-token.bin",
+    },
+    {
+      scope: "operator",
+      bootstrapFileName: "bootstrap-operator-credentials.json",
+      encryptedFileName: "operator-token.bin",
+    },
+  ]);
+  assert.equal(resolveScopes?.("leaderboard").some((scope) => scope.encryptedFileName === "device-token.bin"), false);
+});
 test("imports an exact bootstrap credential, verifies it, and consumes the plaintext file", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "typingking-bootstrap-"));
   context.after(() => rm(root, { recursive: true, force: true }));

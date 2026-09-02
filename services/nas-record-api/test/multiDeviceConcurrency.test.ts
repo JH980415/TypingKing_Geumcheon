@@ -14,8 +14,8 @@ import { envelope, recordRow, validationConfig } from "./fixtures.js";
 const NOW = "2026-08-26T03:10:00.000Z";
 const RECORDS_ROUTE =
   "/api/v1/records?session_kind=official&session_id=official-day1-round1&day_no=1&round_no=1";
-const OPERATOR_DEVICE_ID = "LEADERBOARD01";
-const OPERATOR_TOKEN = "ab".repeat(32);
+const LEADERBOARD_DEVICE_ID = "LEADERBOARD01";
+const LEADERBOARD_TOKEN = "ab".repeat(32);
 
 type DeviceRequest = {
   deviceId: string;
@@ -72,10 +72,10 @@ function tokenManifest(devices: readonly DeviceRequest[]): TokenManifestV1 {
     tokens: [
       ...writerTokens,
       {
-        tokenId: "leaderboard-operator",
-        tokenHash: createHash("sha256").update(OPERATOR_TOKEN, "utf8").digest("hex"),
-        deviceId: OPERATOR_DEVICE_ID,
-        role: "operator",
+        tokenId: "leaderboard-read",
+        tokenHash: createHash("sha256").update(LEADERBOARD_TOKEN, "utf8").digest("hex"),
+        deviceId: LEADERBOARD_DEVICE_ID,
+        role: "leaderboard",
         allowedSessions: ["official", "practice"],
         expiresAt: "2026-09-30T00:00:00.000Z",
         revokedAt: null,
@@ -113,8 +113,8 @@ function readAll(app: FastifyInstance) {
     method: "GET",
     url: RECORDS_ROUTE,
     headers: {
-      authorization: `Bearer ${OPERATOR_TOKEN}`,
-      "x-device-id": OPERATOR_DEVICE_ID,
+      authorization: `Bearer ${LEADERBOARD_TOKEN}`,
+      "x-device-id": LEADERBOARD_DEVICE_ID,
     },
   });
 }

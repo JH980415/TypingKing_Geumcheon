@@ -197,15 +197,37 @@ test("isolates simultaneous official and practice active checkpoints under one d
 test("leaderboard reads only NAS full RecordRow snapshot and falls back to last-known-good without exposing token", async (context) => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "typingking-nas-runtime-"));
   context.after(() => rm(runtimeRoot, { recursive: true, force: true }));
-  let requests = 0;
-  const fetch: FetchLike = async () => {
-    requests += 1;
-    if (requests > 1) throw new Error("offline");
+  const leaderboardToken = "a".repeat(64);
+  const operatorToken = "b".repeat(64);
+  const requests: Array<{ url: string; authorization: string | null }> = [];
+  const fetch: FetchLike = async (url, init) => {
+    requests.push({
+      url: String(url),
+      authorization: new Headers(init?.headers).get("authorization"),
+    });
+    if (requests.length > 2) throw new Error("offline");
+    if (String(url).includes("/api/v1/ready?")) {
+      return new Response(JSON.stringify({
+        schema_version: 1,
+        status: "ready",
+        event_id: "geumcheon-science-festival-2026",
+        device_id: "LEADERBOARD01",
+        role: "leaderboard",
+        session: { kind: "official", session_id: "official-1", day_no: 1, round_no: 2 },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
     return new Response(JSON.stringify({ schema_version: 1, event_id: "geumcheon-science-festival-2026", session: { kind: "official", session_id: "official-1", day_no: 1, round_no: 2 }, generated_at: "2026-09-18T01:03:00.000Z", rows: [row()] }), { status: 200, headers: { "content-type": "application/json" } });
   };
   const local = localCallbacks(async () => { throw new Error("leaderboard must not persist"); });
   const runtime = createGeumcheonNasRuntime({ event: event(), device: device("leaderboard"), sessionKind: "official", runtimeRoot, safeStorage: safeStorage(), fetch, local: local.callbacks, createRecordId: () => recordId, createActionId: () => "gsc26-action-123e4567-e89b-42d3-a456-426614174000", now: () => "2026-09-18T01:02:00.000Z", sleep: async () => undefined });
-  await runtime.importToken(crypto.randomBytes(32).toString("hex"));
+  const scopedRuntime = runtime as typeof runtime & {
+    importLeaderboardToken?(token: string): Promise<void>;
+    importOperatorToken?(token: string): Promise<void>;
+  };
+  assert.equal(typeof scopedRuntime.importLeaderboardToken, "function");
+  assert.equal(typeof scopedRuntime.importOperatorToken, "function");
+  await scopedRuntime.importLeaderboardToken?.(leaderboardToken);
+  await scopedRuntime.importOperatorToken?.(operatorToken);
 
   const live = await runtime.loadRecords();
   const cached = await runtime.loadRecords();
@@ -214,14 +236,34 @@ test("leaderboard reads only NAS full RecordRow snapshot and falls back to last-
   assert.deepEqual(cached, live);
   assert.equal(local.readCalls, 0);
   assert.equal("getToken" in runtime, false);
+  assert.equal(requests[0].url.includes("/api/v1/ready?"), true);
+  assert.equal(requests[1].url.includes("/api/v1/records?"), true);
+  assert.equal(requests.every((request) => request.authorization === `Bearer ${leaderboardToken}`), true);
+  await access(path.join(runtimeRoot, "nas", "leaderboard-token.bin"));
+  await access(path.join(runtimeRoot, "nas", "operator-token.bin"));
+  await assert.rejects(() => access(path.join(runtimeRoot, "nas", "device-token.bin")), (error: NodeJS.ErrnoException) => error.code === "ENOENT");
   await assert.rejects(() => runtime.checkpoint(input()), /NAS_ROLE_FORBIDDEN/);
 });
 
 test("operator sends replacement edit, hide and current-session reset only to NAS", async (context) => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "typingking-nas-runtime-"));
   context.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+  const leaderboardToken = "c".repeat(64);
+  const operatorToken = "d".repeat(64);
   const actions: any[] = [];
+  const authorizations: Array<string | null> = [];
   const fetch: FetchLike = async (_url, init) => {
+    authorizations.push(new Headers(init?.headers).get("authorization"));
+    if (String(_url).includes("/api/v1/ready?")) {
+      return new Response(JSON.stringify({
+        schema_version: 1,
+        status: "ready",
+        event_id: "geumcheon-science-festival-2026",
+        device_id: "LEADERBOARD01",
+        role: "operator",
+        session: { kind: "official", session_id: "official-1", day_no: 1, round_no: 2 },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }
     actions.push(JSON.parse(String(init?.body)));
     return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
   };
@@ -233,7 +275,17 @@ test("operator sends replacement edit, hide and current-session reset only to NA
     "gsc26-action-123e4567-e89b-42d3-a456-426614174003",
   ];
   const runtime = createGeumcheonNasRuntime({ event: event(), device: device("leaderboard"), sessionKind: "official", runtimeRoot, safeStorage: safeStorage(), fetch, local: local.callbacks, createRecordId: () => recordId, createActionId: () => actionIds[actionNumber++], now: () => "2026-09-18T01:02:00.000Z", sleep: async () => undefined });
-  await runtime.importToken(crypto.randomBytes(32).toString("hex"));
+  const scopedRuntime = runtime as typeof runtime & {
+    importLeaderboardToken?(token: string): Promise<void>;
+    importOperatorToken?(token: string): Promise<void>;
+    checkOperatorReady?(): Promise<unknown>;
+  };
+  assert.equal(typeof scopedRuntime.importLeaderboardToken, "function");
+  assert.equal(typeof scopedRuntime.importOperatorToken, "function");
+  assert.equal(typeof scopedRuntime.checkOperatorReady, "function");
+  await scopedRuntime.importLeaderboardToken?.(leaderboardToken);
+  await scopedRuntime.importOperatorToken?.(operatorToken);
+  await scopedRuntime.checkOperatorReady?.();
 
   await runtime.edit(recordId, row(), "운영자");
   await runtime.hide(recordId, true, "운영자");
@@ -244,5 +296,40 @@ test("operator sends replacement edit, hide and current-session reset only to NA
   assert.equal(actions[0].changes.participant_name, "합성참가자");
   assert.equal(actions[1].hidden, true);
   assert.deepEqual(actions[2].session, { kind: "official", session_id: "official-1", day_no: 1, round_no: 2 });
+  assert.deepEqual(authorizations, [
+    `Bearer ${operatorToken}`,
+    `Bearer ${operatorToken}`,
+    `Bearer ${operatorToken}`,
+    `Bearer ${operatorToken}`,
+  ]);
   assert.equal(local.adminCalls, 0);
+});
+
+test("missing operator credential fails closed before an admin NAS request", async (context) => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "typingking-nas-runtime-"));
+  context.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+  let requests = 0;
+  const runtime = createGeumcheonNasRuntime({
+    event: event(),
+    device: device("leaderboard"),
+    sessionKind: "official",
+    runtimeRoot,
+    safeStorage: safeStorage(),
+    fetch: async () => { requests += 1; throw new Error("must not request"); },
+    local: localCallbacks(async () => { throw new Error("unused"); }).callbacks,
+    createActionId: () => "gsc26-action-123e4567-e89b-42d3-a456-426614174004",
+    now: () => "2026-09-18T01:02:00.000Z",
+    sleep: async () => undefined,
+  });
+  const scopedRuntime = runtime as typeof runtime & {
+    importLeaderboardToken?(token: string): Promise<void>;
+  };
+  assert.equal(typeof scopedRuntime.importLeaderboardToken, "function");
+  await scopedRuntime.importLeaderboardToken?.("e".repeat(64));
+
+  await assert.rejects(
+    () => runtime.hide(recordId, true, "운영자"),
+    (error: unknown) => error instanceof Error && error.message === "NAS_CREDENTIAL_MISSING",
+  );
+  assert.equal(requests, 0);
 });

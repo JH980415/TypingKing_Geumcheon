@@ -1,4 +1,4 @@
-﻿import fs from "node:fs";
+import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import os from "node:os";
@@ -1124,7 +1124,7 @@ export function exportCurrentSessionBackup(
   const fileName = `${modeLabel}_${ctx.config.dayNo}일차_${ctx.config.roundNo}회차_리더보드_${uniqueOperationStamp(ctx)}.csv`;
   const filePath = path.join(exportDir, fileName);
   const exportRows = withExportRanks(rows, mode);
-  writeCsvAtomic(filePath, exportRows, EXPORT_RECORD_HEADERS);
+  writeCsvAtomic(filePath, exportRows, EXPORT_RECORD_HEADERS, { neutralizeFormulaCells: true });
   const markerFileName = writeCsvBackupMarker(ctx, mode, fileName, exportRows);
   const recordIds = exportRows.map((row) => row.record_id).filter(Boolean).sort();
   writeOperationalLog(ctx, {
@@ -1164,7 +1164,7 @@ export function exportCurrentSessionBackupClean(
   const fileName = sessionBackupFileName(ctx, mode);
   const filePath = path.join(exportDir, fileName);
   const exportRows = withExportRanks(rows, mode);
-  writeCsvAtomic(filePath, exportRows, EXPORT_RECORD_HEADERS);
+  writeCsvAtomic(filePath, exportRows, EXPORT_RECORD_HEADERS, { neutralizeFormulaCells: true });
   const markerFileName = writeCsvBackupMarker(ctx, mode, fileName, exportRows);
   const recordIds = exportRows.map((row) => row.record_id).filter(Boolean).sort();
   writeOperationalLog(ctx, {
@@ -1641,11 +1641,33 @@ function readCsv<T extends object>(
   }) as unknown as T[];
 }
 
-function csvText<T extends object>(rows: T[], headers: readonly string[]): string {
+type CsvWriteOptions = {
+  neutralizeFormulaCells?: boolean;
+};
+
+function neutralizeFormulaCell(value: unknown): unknown {
+  return typeof value === "string" && /^[=+\-@\t\r\n]/.test(value)
+    ? `'${value}`
+    : value;
+}
+
+function csvText<T extends object>(
+  rows: T[],
+  headers: readonly string[],
+  options: CsvWriteOptions = {}
+): string {
   const labels = labelMapFor(headers);
+  const outputRows = options.neutralizeFormulaCells
+    ? rows.map((row) => Object.fromEntries(
+        headers.map((header) => [
+          header,
+          neutralizeFormulaCell((row as Record<string, unknown>)[header])
+        ])
+      ))
+    : rows;
   return (
     BOM +
-    stringify(rows, {
+    stringify(outputRows, {
       header: true,
       columns: headers.map((header) => ({
         key: header,
@@ -1668,11 +1690,12 @@ function labelMapFor(headers: readonly string[]): Record<string, string> {
 function writeCsvAtomic<T extends object>(
   filePath: string,
   rows: T[],
-  headers: readonly string[]
+  headers: readonly string[],
+  options: CsvWriteOptions = {}
 ): void {
   ensureDir(path.dirname(filePath));
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tempPath, csvText(rows, headers), "utf8");
+  fs.writeFileSync(tempPath, csvText(rows, headers, options), "utf8");
   fs.renameSync(tempPath, filePath);
 }
 
@@ -3120,7 +3143,7 @@ export function exportRecords(
     : `typingking_export_${uniqueOperationStamp(ctx)}.csv`;
   const filePath = path.join(exportDir, fileName);
   const exportRows = withExportRanks(rows, normalizeRecordMode(exportMode));
-  writeCsvAtomic(filePath, exportRows, EXPORT_RECORD_HEADERS);
+  writeCsvAtomic(filePath, exportRows, EXPORT_RECORD_HEADERS, { neutralizeFormulaCells: true });
   writeOperationalLog(ctx, {
     action: "csv_export",
     targetPath: filePath,

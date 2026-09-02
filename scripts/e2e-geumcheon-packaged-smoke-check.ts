@@ -19,6 +19,65 @@ import {
 type GeumcheonVariant = "ai" | "ai-leaderboard" | "practice" | "practice-leaderboard";
 type PcRole = "player" | "leaderboard";
 type SessionKind = "official" | "practice";
+type PackagedSmokeReadyRole = "writer" | "leaderboard" | "operator";
+export type PackagedSmokeTokens = Record<"PC01" | "LEADERBOARD01" | "LEADERBOARD01_OPERATOR", string>;
+export type PackagedSmokeCredentialPlan = {
+  scope: PackagedSmokeReadyRole;
+  token: string;
+  bootstrapFileName: string;
+  encryptedFileName: string;
+};
+
+export function buildPackagedSmokeCredentialPlan(
+  role: PcRole,
+  tokens: PackagedSmokeTokens
+): PackagedSmokeCredentialPlan[] {
+  if (role === "player") {
+    return [{
+      scope: "writer",
+      token: tokens.PC01,
+      bootstrapFileName: "bootstrap-credentials.json",
+      encryptedFileName: "device-token.bin"
+    }];
+  }
+  return [
+    {
+      scope: "leaderboard",
+      token: tokens.LEADERBOARD01,
+      bootstrapFileName: "bootstrap-credentials.json",
+      encryptedFileName: "leaderboard-token.bin"
+    },
+    {
+      scope: "operator",
+      token: tokens.LEADERBOARD01_OPERATOR,
+      bootstrapFileName: "bootstrap-operator-credentials.json",
+      encryptedFileName: "operator-token.bin"
+    }
+  ];
+}
+
+export function resolvePackagedSmokeReadyRole(
+  deviceId: string | undefined,
+  authorization: string | undefined,
+  tokens: PackagedSmokeTokens
+): PackagedSmokeReadyRole | undefined {
+  if (deviceId === "PC01" && authorization === "Bearer " + tokens.PC01) return "writer";
+  if (deviceId === "LEADERBOARD01" && authorization === "Bearer " + tokens.LEADERBOARD01) {
+    return "leaderboard";
+  }
+  if (deviceId === "LEADERBOARD01" && authorization === "Bearer " + tokens.LEADERBOARD01_OPERATOR) {
+    return "operator";
+  }
+  return undefined;
+}
+
+export function isPackagedSmokeRecordsReadAuthorized(
+  deviceId: string | undefined,
+  authorization: string | undefined,
+  tokens: PackagedSmokeTokens
+): boolean {
+  return deviceId === "LEADERBOARD01" && authorization === "Bearer " + tokens.LEADERBOARD01;
+}
 
 export function buildPackagedSmokeChildEnvironment(
   overrides: NodeJS.ProcessEnv,
@@ -69,6 +128,7 @@ type RequestObservation = {
   method: string;
   deviceId?: string;
   sessionKind?: SessionKind;
+  credentialRole?: PackagedSmokeReadyRole;
   authenticated: boolean;
   queryMatched: boolean;
 };
@@ -112,11 +172,11 @@ const requiredPublicResources = [
   "events/geumcheon-2026/assets/robot_05_festival_victory.png",
   "events/geumcheon-2026/assets/robot_defeat_01_geumnarae_typer.png",
   "events/geumcheon-2026/assets/stage_01_03_science_classroom.png",
-  "events/geumcheon-2026/assets/title_04_science_hologram.png",
+  "events/geumcheon-2026/assets/title_05_geumcheon_geumnarae_r203.png",
   "events/geumcheon-2026/assets/vs_03_science_portal.png",
-  "events/geumcheon-2026/assets/ai_challenge/stage_badge_1.png",
-  "events/geumcheon-2026/assets/ai_challenge/stage_badge_2.png",
-  "events/geumcheon-2026/assets/ai_challenge/stage_badge_3.png",
+  "events/geumcheon-2026/assets/ai_challenge/stage_badge_1_r203.png",
+  "events/geumcheon-2026/assets/ai_challenge/stage_badge_2_r203.png",
+  "events/geumcheon-2026/assets/ai_challenge/stage_badge_3_r203.png",
   "assets/ai_challenge/ai_boss_typing.png",
   "assets/ai_challenge/ai_boss_victory.png",
   "assets/ai_challenge/ai_boss_defeat.png",
@@ -143,7 +203,7 @@ const cases: CaseSpec[] = [
   },
   {
     variant: "ai-leaderboard",
-    fileName: "G-Science AI 타자왕_리더보드.exe",
+    fileName: "G-Science AI 타자왕 리더보드.exe",
     title: "G-Science AI 타자왕 리더보드",
     mode: "leaderboard",
     role: "leaderboard",
@@ -154,7 +214,7 @@ const cases: CaseSpec[] = [
   },
   {
     variant: "practice",
-    fileName: "G-Science AI 타자왕_연습모드.exe",
+    fileName: "G-Science AI 타자왕 연습모드.exe",
     title: "G-Science AI 타자왕 연습모드",
     mode: "game",
     role: "player",
@@ -165,7 +225,7 @@ const cases: CaseSpec[] = [
   },
   {
     variant: "practice-leaderboard",
-    fileName: "G-Science AI 타자왕_연습모드_리더보드.exe",
+    fileName: "G-Science AI 타자왕 연습모드 리더보드.exe",
     title: "G-Science AI 타자왕 연습모드 리더보드",
     mode: "leaderboard",
     role: "leaderboard",
@@ -412,7 +472,7 @@ function sessionFromQuery(url: URL): Session | undefined {
 
 async function startLocalHttpsServer(
   temporaryRoot: string,
-  tokens: Record<"PC01" | "LEADERBOARD01", string>
+  tokens: PackagedSmokeTokens
 ): Promise<{
   server: https.Server;
   baseUrl: string;
@@ -430,48 +490,54 @@ async function startLocalHttpsServer(
     (request, response) => {
       const requestUrl = new URL(request.url || "/", "https://localhost");
       if (request.method === "GET" && requestUrl.pathname === "/api/v1/ready") {
-        const rawDeviceId = request.headers["x-device-id"];
-        const deviceId = rawDeviceId === "PC01" || rawDeviceId === "LEADERBOARD01"
-          ? rawDeviceId
-          : undefined;
-        const session = sessionFromQuery(requestUrl);
-        const authenticated = Boolean(deviceId)
-          && request.headers.authorization === `Bearer ${tokens[deviceId!]}`;
-        observations.push({
-          route: "ready",
-          method: "GET",
-          deviceId,
-          sessionKind: session?.kind,
-          authenticated,
-          queryMatched: Boolean(session)
-        });
-        if (!deviceId) {
-          response.writeHead(403).end();
-          return;
-        }
-        if (!authenticated) {
-          response.writeHead(401).end();
-          return;
-        }
-        if (!session) {
-          response.writeHead(400).end();
-          return;
-        }
-        response.writeHead(200, {
-          "content-type": "application/json; charset=utf-8",
-          "cache-control": "no-store"
-        });
-        response.end(JSON.stringify({
-          schema_version: 1,
-          status: "ready",
-          event_id: eventId,
-          device_id: deviceId,
-          role: deviceId === "PC01" ? "writer" : "operator",
-          session
-        }));
+      const rawDeviceId = request.headers["x-device-id"];
+      const deviceId = rawDeviceId === "PC01" || rawDeviceId === "LEADERBOARD01"
+        ? rawDeviceId
+        : undefined;
+      const session = sessionFromQuery(requestUrl);
+      const credentialRole = resolvePackagedSmokeReadyRole(
+        deviceId,
+        request.headers.authorization,
+        tokens
+      );
+      const authenticated = credentialRole !== undefined;
+      observations.push({
+        route: "ready",
+        method: "GET",
+        deviceId,
+        sessionKind: session?.kind,
+        credentialRole,
+        authenticated,
+        queryMatched: Boolean(session)
+      });
+      if (!deviceId) {
+        response.writeHead(403).end();
         return;
       }
-      if (request.method === "GET" && requestUrl.pathname === "/health") {
+      if (!authenticated) {
+        response.writeHead(401).end();
+        return;
+      }
+      if (!session) {
+        response.writeHead(400).end();
+        return;
+      }
+      response.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store"
+      });
+      response.end(JSON.stringify({
+        schema_version: 1,
+        status: "ready",
+        event_id: eventId,
+        device_id: deviceId,
+        role: credentialRole,
+        session
+      }));
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/health") {
         observations.push({
           route: "health",
           method: "GET",
@@ -484,40 +550,53 @@ async function startLocalHttpsServer(
       }
 
       if (request.method === "GET" && requestUrl.pathname === "/api/v1/records") {
-        const rawDeviceId = request.headers["x-device-id"];
-        const deviceId = rawDeviceId === "PC01" || rawDeviceId === "LEADERBOARD01" ? rawDeviceId : undefined;
-        const session = sessionFromQuery(requestUrl);
-        const authenticated = Boolean(deviceId) && request.headers.authorization === `Bearer ${tokens[deviceId!]}`;
-        observations.push({
-          route: "records",
-          method: "GET",
-          deviceId,
-          sessionKind: session?.kind,
-          authenticated,
-          queryMatched: Boolean(session)
-        });
-        if (!deviceId) {
-          response.writeHead(403).end();
-          return;
-        }
-        if (!authenticated) {
-          response.writeHead(401).end();
-          return;
-        }
-        if (!session) {
-          response.writeHead(400).end();
-          return;
-        }
-        response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-        response.end(JSON.stringify({
-          schema_version: 1,
-          event_id: eventId,
-          session,
-          generated_at: new Date().toISOString(),
-          rows: []
-        }));
+      const rawDeviceId = request.headers["x-device-id"];
+      const deviceId = rawDeviceId === "PC01" || rawDeviceId === "LEADERBOARD01" ? rawDeviceId : undefined;
+      const session = sessionFromQuery(requestUrl);
+      const credentialRole = resolvePackagedSmokeReadyRole(
+        deviceId,
+        request.headers.authorization,
+        tokens
+      );
+      const authenticated = isPackagedSmokeRecordsReadAuthorized(
+        deviceId,
+        request.headers.authorization,
+        tokens
+      );
+      observations.push({
+        route: "records",
+        method: "GET",
+        deviceId,
+        sessionKind: session?.kind,
+        credentialRole,
+        authenticated,
+        queryMatched: Boolean(session)
+      });
+      if (deviceId !== "LEADERBOARD01") {
+        response.writeHead(403).end();
         return;
       }
+      if (!authenticated) {
+        response.writeHead(403).end();
+        return;
+      }
+      if (!session) {
+        response.writeHead(400).end();
+        return;
+      }
+      response.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store"
+      });
+      response.end(JSON.stringify({
+        schema_version: 1,
+        event_id: eventId,
+        session,
+        generated_at: new Date().toISOString(),
+        rows: []
+      }));
+      return;
+    }
 
       observations.push({
         route: "unexpected",
@@ -577,8 +656,14 @@ function writeSyntheticProfile(
   caseRoot: string,
   testCase: CaseSpec,
   baseUrl: string,
-  token: string
-): { bootstrapPath: string; runtimeRoot: string } {
+  tokens: PackagedSmokeTokens
+): {
+  credentials: Array<PackagedSmokeCredentialPlan & {
+    bootstrapPath: string;
+    encryptedPath: string;
+  }>;
+  runtimeRoot: string;
+} {
   const executableDirectory = path.join(caseRoot, "executable");
   const localAppData = path.join(caseRoot, "LocalAppData");
   const appData = path.join(caseRoot, "RoamingAppData");
@@ -589,7 +674,7 @@ function writeSyntheticProfile(
   fs.mkdirSync(appData, { recursive: true });
   fs.writeFileSync(
     path.join(executableDirectory, "device-profile.json"),
-    `${JSON.stringify({
+    JSON.stringify({
       schemaVersion: 1,
       eventProfileId,
       eventId,
@@ -602,21 +687,84 @@ function writeSyntheticProfile(
       },
       requestTimeoutMs: 5_000,
       retry: { initialDelayMs: 1_000, maxDelayMs: 2_000 }
-    }, null, 2)}\n`,
+    }, null, 2) + "\n",
     "utf8"
   );
-  const bootstrapPath = path.join(executableDirectory, "bootstrap-credentials.json");
-  fs.writeFileSync(
-    bootstrapPath,
-    `${JSON.stringify({ schemaVersion: 1, eventId, deviceId: testCase.deviceId, apiBaseUrl: baseUrl, token }, null, 2)}\n`,
-    "utf8"
-  );
+  const credentials = buildPackagedSmokeCredentialPlan(testCase.role, tokens).map((credential) => {
+    const bootstrapPath = path.join(executableDirectory, credential.bootstrapFileName);
+    const encryptedPath = path.join(runtimeRoot, "nas", credential.encryptedFileName);
+    fs.writeFileSync(
+      bootstrapPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        eventId,
+        deviceId: testCase.deviceId,
+        apiBaseUrl: baseUrl,
+        token: credential.token
+      }, null, 2) + "\n",
+      "utf8"
+    );
+    return { ...credential, bootstrapPath, encryptedPath };
+  });
   writeRuntimeConfig(executableDirectory, syntheticAdminPassword);
   writeRuntimeConfig(runtimeRoot, syntheticAdminPassword);
-  return {
-    bootstrapPath,
-    runtimeRoot
-  };
+  return { credentials, runtimeRoot };
+}
+
+async function appendCredentialPersistenceChecks(
+  checks: Check[],
+  profile: ReturnType<typeof writeSyntheticProfile>,
+  waitForPersistence: boolean
+): Promise<void> {
+  for (const credential of profile.credentials) {
+    if (waitForPersistence) {
+      await waitUntil(
+        credential.scope + " plaintext bootstrap credential removal",
+        () => !fs.existsSync(credential.bootstrapPath),
+        10_000
+      );
+      await waitUntil(
+        credential.scope + " encrypted runtime credential",
+        () => fs.existsSync(credential.encryptedPath),
+        10_000
+      );
+    }
+    const encryptedToken = fs.existsSync(credential.encryptedPath)
+      ? fs.readFileSync(credential.encryptedPath)
+      : undefined;
+    addCheck(
+      checks,
+      credential.scope + " plaintext bootstrap credential removed",
+      fs.existsSync(credential.bootstrapPath),
+      false,
+      !fs.existsSync(credential.bootstrapPath)
+    );
+    addCheck(
+      checks,
+      credential.scope + " encrypted runtime credential exists",
+      Boolean(encryptedToken?.length),
+      true,
+      Boolean(encryptedToken?.length)
+    );
+    addCheck(
+      checks,
+      credential.scope + " runtime credential hides plaintext token",
+      encryptedToken?.includes(Buffer.from(credential.token, "utf8")) ?? null,
+      false,
+      Boolean(encryptedToken)
+        && encryptedToken!.includes(Buffer.from(credential.token, "utf8")) === false
+    );
+  }
+  if (profile.credentials.some((credential) => credential.scope === "leaderboard")) {
+    const legacyWriterTokenPath = path.join(profile.runtimeRoot, "nas", "device-token.bin");
+    addCheck(
+      checks,
+      "leaderboard runtime omits legacy writer credential file",
+      fs.existsSync(legacyWriterTokenPath),
+      false,
+      !fs.existsSync(legacyWriterTokenPath)
+    );
+  }
 }
 
 function sanitizedLaunchEnv(
@@ -723,13 +871,18 @@ async function waitForCdpVersion(port: number, child: ChildProcess, timeoutMs = 
 
 async function waitForPackagedRenderer(browser: Browser): Promise<Page> {
   let renderer: Page | undefined;
-  await waitUntil("packaged file renderer target", () => {
-    renderer = browser.contexts()
-      .flatMap((context) => context.pages())
-      .find((candidate) => candidate.url().startsWith("file:"));
-    return Boolean(renderer);
-  }, 45_000);
-  assert.ok(renderer, "CDP connected without a packaged renderer page");
+  let observedUrls: string[] = [];
+  try {
+    await waitUntil("packaged file renderer target", () => {
+      const pages = browser.contexts().flatMap((context) => context.pages());
+      observedUrls = pages.map((candidate) => candidate.url() || "about:blank");
+      renderer = pages.find((candidate) => candidate.url().startsWith("file:"));
+      return Boolean(renderer);
+    }, 45_000);
+  } catch (error) {
+    throw new Error(`${(error as Error).message}; observed page URLs: ${JSON.stringify(observedUrls)}`);
+  }
+  assert.ok(renderer, "CDP connected without packaged renderer page");
   return renderer;
 }
 
@@ -898,7 +1051,7 @@ async function runCase(options: {
   temporaryRoot: string;
   serverBaseUrl: string;
   caPemPath: string;
-  token: string;
+  tokens: PackagedSmokeTokens;
   observations: RequestObservation[];
 }): Promise<CaseResult> {
   const { testCase } = options;
@@ -906,7 +1059,7 @@ async function runCase(options: {
   const executableDirectory = path.join(caseRoot, "executable");
   const stagedExePath = path.join(executableDirectory, testCase.fileName);
   const checks: Check[] = [];
-  const profile = writeSyntheticProfile(caseRoot, testCase, options.serverBaseUrl, options.token);
+  const profile = writeSyntheticProfile(caseRoot, testCase, options.serverBaseUrl, options.tokens);
   fs.copyFileSync(options.finalExePath, stagedExePath);
   stagePublicResources(executableDirectory);
   assertStagedPublicResources(executableDirectory);
@@ -927,6 +1080,7 @@ async function runCase(options: {
   let nativeTitleEvidence: CaseResult["nativeTitleEvidence"];
   let nativeTitleLimitation: string | undefined;
   const observationStart = options.observations.length;
+  const expectedReadyRole: PackagedSmokeReadyRole = testCase.role === "player" ? "writer" : "leaderboard";
   try {
     const debugPort = await takeFreeLoopbackPort();
     child = spawn(stagedExePath, [`--remote-debugging-port=${debugPort}`], {
@@ -1050,6 +1204,35 @@ async function runCase(options: {
       return img.complete && img.naturalWidth > 0 && img.naturalHeight > 0;
     });
     addCheck(checks, "Geumcheon title image loaded", imageLoaded, true, imageLoaded === true);
+    if (testCase.role === "player") {
+      const modeCardArt = page.locator(".entry-panel .mode-card.active .mode-card-art").first();
+      await modeCardArt.waitFor({ state: "visible", timeout: 20_000 });
+      const modeCardArtSrc = await modeCardArt.evaluate((element) => {
+        const imageElement = element as HTMLImageElement;
+        return imageElement.currentSrc;
+      });
+      addCheck(
+        checks,
+        "packaged player mode-card title asset",
+        modeCardArtSrc,
+        "*title_05_geumcheon_geumnarae_r203.png",
+        modeCardArtSrc.endsWith("title_05_geumcheon_geumnarae_r203.png")
+      );
+      const legacyTitleMatches = await page.evaluate((patterns) => {
+        const visibleText = [
+          document.body.innerText,
+          (document.querySelector(".entry-panel .mode-card.active") as HTMLElement | null)?.innerText ?? ""
+        ];
+        return patterns.filter((pattern) => visibleText.some((text) => text.includes(pattern)));
+      }, ["AI타자왕을이겨라", "AI 타자왕을 이겨라"]);
+      addCheck(
+        checks,
+        "legacy player title text absent",
+        legacyTitleMatches,
+        [],
+        legacyTitleMatches.length === 0
+      );
+    }
 
     const readiness = await page.evaluate(async () => (window as any).typingKing.checkGameStartReadiness("ai_challenge"));
     addCheck(checks, "local HTTPS readiness", readiness, { ok: true, data: { ready: true } }, readiness?.ok === true && readiness?.data?.ready === true);
@@ -1086,27 +1269,72 @@ async function runCase(options: {
       observation.queryMatched
     );
     addCheck(checks, "authenticated HTTPS ready request observed", matchingReady, true, matchingReady);
+    const matchingExpectedReadyRole = caseObservations.some((observation) =>
+      observation.route === "ready"
+      && observation.deviceId === testCase.deviceId
+      && observation.sessionKind === testCase.sessionKind
+      && observation.credentialRole === expectedReadyRole
+      && observation.authenticated
+      && observation.queryMatched
+    );
+    addCheck(
+      checks,
+      "role-specific HTTPS ready request observed",
+      matchingExpectedReadyRole,
+      true,
+      matchingExpectedReadyRole
+    );
+    if (testCase.role === "leaderboard") {
+      const matchingOperatorReady = caseObservations.some((observation) =>
+        observation.route === "ready"
+        && observation.deviceId === testCase.deviceId
+        && observation.sessionKind === testCase.sessionKind
+        && observation.credentialRole === "operator"
+        && observation.authenticated
+        && observation.queryMatched
+      );
+      const matchingLeaderboardRecords = caseObservations.some((observation) =>
+        observation.route === "records"
+        && observation.deviceId === testCase.deviceId
+        && observation.sessionKind === testCase.sessionKind
+        && observation.credentialRole === "leaderboard"
+        && observation.authenticated
+        && observation.queryMatched
+      );
+      const operatorRecords = caseObservations.some((observation) =>
+        observation.route === "records" && observation.credentialRole === "operator"
+      );
+      addCheck(checks, "operator HTTPS ready request observed", matchingOperatorReady, true, matchingOperatorReady);
+      addCheck(
+        checks,
+        "leaderboard records read uses read-only token",
+        matchingLeaderboardRecords,
+        true,
+        matchingLeaderboardRecords
+      );
+      addCheck(checks, "operator token not used for records read", operatorRecords, false, operatorRecords === false);
+    }
     if (testCase.role === "leaderboard") {
       addCheck(checks, "role/session-specific HTTPS request observed", matchingRecords, true, matchingRecords);
     } else {
       addCheck(checks, "player made no HTTPS records request", matchingRecords, false, matchingRecords === false);
     }
 
-    addCheck(checks, "plaintext bootstrap credential removed", fs.existsSync(profile.bootstrapPath), false, !fs.existsSync(profile.bootstrapPath));
-    const encryptedTokenPath = path.join(profile.runtimeRoot, "nas", "device-token.bin");
-    const encryptedToken = fs.existsSync(encryptedTokenPath) ? fs.readFileSync(encryptedTokenPath) : undefined;
-    addCheck(checks, "encrypted runtime credential exists", Boolean(encryptedToken?.length), true, Boolean(encryptedToken?.length));
-    addCheck(
-      checks,
-      "runtime credential hides plaintext token",
-      encryptedToken?.includes(Buffer.from(options.token, "utf8")) ?? null,
-      false,
-      Boolean(encryptedToken) && encryptedToken!.includes(Buffer.from(options.token, "utf8")) === false
-    );
+    await appendCredentialPersistenceChecks(checks, profile, false);
 
     screenshotLimitation = "Hidden packaged renderer capture is covered by the separate approved-UI screen QA evidence.";
   } catch (caught) {
-    const cdpError = sanitizeError(caught, options.temporaryRoot, [options.token]);
+    const startupLogPath = path.join(profile.runtimeRoot, "logs", "startup_error.log");
+    const startupLog = fs.existsSync(startupLogPath)
+      ? fs.readFileSync(startupLogPath, "utf8").trim()
+      : "";
+    const cdpError = sanitizeError(
+      startupLog
+        ? `${caught instanceof Error ? caught.stack || caught.message : String(caught)}\nstartup=${startupLog}`
+        : caught,
+      options.temporaryRoot,
+      Object.values(options.tokens)
+    );
     const canUseNativeFallback = Boolean(child?.pid)
       && (cdpError.includes("connectOverCDP") || cdpError.includes("CDP endpoint"));
     if (canUseNativeFallback) {
@@ -1129,21 +1357,9 @@ async function runCase(options: {
           child!.exitCode === null && child!.signalCode === null
         );
 
-        await waitUntil("plaintext bootstrap credential removal", () => !fs.existsSync(profile.bootstrapPath), 10_000);
-        addCheck(checks, "plaintext bootstrap credential removed", fs.existsSync(profile.bootstrapPath), false, true);
-        const encryptedTokenPath = path.join(profile.runtimeRoot, "nas", "device-token.bin");
-        await waitUntil("encrypted runtime credential", () => fs.existsSync(encryptedTokenPath), 10_000);
-        const encryptedToken = fs.readFileSync(encryptedTokenPath);
-        addCheck(checks, "encrypted runtime credential exists", encryptedToken.length > 0, true, encryptedToken.length > 0);
-        addCheck(
-          checks,
-          "encrypted credential hides token plaintext",
-          encryptedToken.includes(Buffer.from(options.token, "utf8")),
-          false,
-          !encryptedToken.includes(Buffer.from(options.token, "utf8"))
-        );
+        await appendCredentialPersistenceChecks(checks, profile, true);
 
-        await waitUntil("authenticated HTTPS ready request", () =>
+      await waitUntil("authenticated HTTPS ready request", () =>
           options.observations.slice(observationStart).some((observation) =>
             observation.route === "ready"
             && observation.deviceId === testCase.deviceId
@@ -1152,6 +1368,28 @@ async function runCase(options: {
             && observation.queryMatched
           ), 10_000);
         addCheck(checks, "authenticated HTTPS ready request observed", true, true, true);
+      await waitUntil("role-specific HTTPS ready request", () =>
+        options.observations.slice(observationStart).some((observation) =>
+          observation.route === "ready"
+          && observation.deviceId === testCase.deviceId
+          && observation.sessionKind === testCase.sessionKind
+          && observation.credentialRole === expectedReadyRole
+          && observation.authenticated
+          && observation.queryMatched
+        ), 10_000);
+      addCheck(checks, "role-specific HTTPS ready request observed", true, true, true);
+      if (testCase.role === "leaderboard") {
+        await waitUntil("operator HTTPS ready request", () =>
+          options.observations.slice(observationStart).some((observation) =>
+            observation.route === "ready"
+            && observation.deviceId === testCase.deviceId
+            && observation.sessionKind === testCase.sessionKind
+            && observation.credentialRole === "operator"
+            && observation.authenticated
+            && observation.queryMatched
+          ), 10_000);
+        addCheck(checks, "operator HTTPS ready request observed", true, true, true);
+      }
 
         if (testCase.role === "leaderboard") {
           await waitUntil("role/session-specific HTTPS records request", () =>
@@ -1168,7 +1406,7 @@ async function runCase(options: {
         error = sanitizeError(
           formatPackagedSmokeFallbackError(cdpError, fallbackError),
           options.temporaryRoot,
-          [options.token]
+          Object.values(options.tokens)
         );
       }
     } else {
@@ -1189,7 +1427,7 @@ async function runCase(options: {
         cleanup.exited
       );
     } catch (caught) {
-      const cleanupError = sanitizeError(caught, options.temporaryRoot, [options.token]);
+      const cleanupError = sanitizeError(caught, options.temporaryRoot, Object.values(options.tokens));
       if (!error) error = cleanupError;
       addCheck(checks, "portable root PID tree cleaned", cleanupError, { exited: true }, false);
     }
@@ -1299,7 +1537,8 @@ async function main(): Promise<void> {
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-geumcheon-packaged-smoke-"));
   const tokens = {
     PC01: crypto.randomBytes(32).toString("base64url"),
-    LEADERBOARD01: crypto.randomBytes(32).toString("base64url")
+    LEADERBOARD01: crypto.randomBytes(32).toString("base64url"),
+    LEADERBOARD01_OPERATOR: crypto.randomBytes(32).toString("base64url")
   } as const;
   let server: Awaited<ReturnType<typeof startLocalHttpsServer>> | undefined;
   const results: CaseResult[] = [];
@@ -1314,7 +1553,7 @@ async function main(): Promise<void> {
         temporaryRoot,
         serverBaseUrl: server.baseUrl,
         caPemPath: server.caPemPath,
-        token: tokens[testCase.deviceId],
+        tokens,
         observations: server.observations
       }));
     }

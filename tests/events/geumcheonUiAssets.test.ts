@@ -31,8 +31,22 @@ test("renders the approved Geumcheon main background, title, and main robot", ()
   );
 
   assert.match(html, /bg_leaderboard_03_typing_hall_of_fame\.png/);
-  assert.match(html, /title_04_science_hologram\.png/);
+  assert.match(html, /title_05_geumcheon_geumnarae_r203\.png/);
   assert.match(html, /robot_03_speed_champion\.png/);
+  assert.ok((html.match(/title_05_geumcheon_geumnarae_r203\.png/g) ?? []).length >= 2);
+  assert.doesNotMatch(html, /ai_title_(compact|oneline_trimmed)\.png|ai_challenge_title\.png/);
+});
+
+test("uses the R2.0.3 Geumcheon title and refreshed stage badges", () => {
+  assert.equal(
+    geumcheonProfile.assets.eventTitle,
+    "assets/title_05_geumcheon_geumnarae_r203.png"
+  );
+  assert.deepEqual(geumcheonProfile.assets.stageBadges, [
+    "assets/ai_challenge/stage_badge_1_r203.png",
+    "assets/ai_challenge/stage_badge_2_r203.png",
+    "assets/ai_challenge/stage_badge_3_r203.png"
+  ]);
 });
 
 test("renders the approved Geumcheon leaderboard background", () => {

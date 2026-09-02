@@ -10,6 +10,7 @@ type ElectronAppListener = (...args: unknown[]) => void;
 type ElectronHarness = {
   electron: Record<string, unknown>;
   events: string[];
+  ipcHandlers: Map<string, (event: unknown, ...args: unknown[]) => unknown>;
   listeners: Map<string, ElectronAppListener>;
   windowActions: string[];
   createdWindowOptions(): Record<string, unknown> | undefined;
@@ -27,6 +28,7 @@ function createElectronHarness(
   packagedMetadata?: Record<string, unknown>
 ): ElectronHarness {
   const events: string[] = [];
+  const ipcHandlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
   const listeners = new Map<string, ElectronAppListener>();
   const windowActions: string[] = [];
   let browserWindowOptions: Record<string, unknown> | undefined;
@@ -45,6 +47,7 @@ function createElectronHarness(
 
   return {
     events,
+    ipcHandlers,
     listeners,
     windowActions,
     createdWindowOptions: () => browserWindowOptions,
@@ -110,7 +113,11 @@ function createElectronHarness(
         show(): void {}
       },
       dialog: {},
-      ipcMain: {},
+      ipcMain: {
+        handle(channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) {
+          ipcHandlers.set(channel, handler);
+        }
+      },
       safeStorage: {},
       shell: {}
     }
@@ -335,5 +342,73 @@ test("development and SkillUp windows keep their existing DevTools and menu beha
       | undefined;
     assert.notEqual(webPreferences?.devTools, false, current.label);
     assert.deepEqual(harness.windowActions, ["menu-bar:false"], current.label);
+  }
+});
+
+test("sync renderer failures return a safe IPC result instead of undefined", () => {
+  const harness = createElectronHarness(false);
+  const mainModule = executeMain(harness);
+  const safe = mainModule.safe as
+    | ((task: () => unknown, fallback?: string) => unknown)
+    | undefined;
+
+  assert.equal(typeof safe, "function");
+  assert.deepEqual(
+    safe?.(() => {
+      throw new Error("NAS_WRITE_FAILED C:\\Users\\operator\\secret.json");
+    }, "NAS 요청을 처리하지 못했습니다."),
+    { ok: false, error: "NAS 요청을 처리하지 못했습니다." }
+  );
+});
+
+test("legacy local backup IPC fails closed for Geumcheon and remains available for SkillUp", async () => {
+  const cases = [
+    { profileId: "geumcheon-2026", allowed: false },
+    { profileId: "skillup-2026", allowed: true }
+  ] as const;
+
+  for (const current of cases) {
+    const harness = createElectronHarness(false);
+    const mainModule = executeMain(harness);
+    const registerLegacyBackupIpcHandlers = mainModule.registerLegacyBackupIpcHandlers as
+      | ((profileId: string, operations: {
+          exportSessionBackup: (event: unknown) => unknown;
+          listBackups: (event: unknown) => unknown;
+          restoreBackup: (event: unknown, backupName: string) => Promise<unknown>;
+        }) => void)
+      | undefined;
+    const calls: string[] = [];
+
+    assert.equal(typeof registerLegacyBackupIpcHandlers, "function", current.profileId);
+    registerLegacyBackupIpcHandlers?.(current.profileId, {
+      exportSessionBackup: () => {
+        calls.push("export");
+        return "exported";
+      },
+      listBackups: () => {
+        calls.push("list");
+        return ["backup-1"];
+      },
+      restoreBackup: async (_event, backupName) => {
+        calls.push(`restore:${backupName}`);
+        return "restored";
+      }
+    });
+
+    const exportResult = await harness.ipcHandlers.get("records:exportSessionBackup")?.({});
+    const listResult = await harness.ipcHandlers.get("backups:list")?.({});
+    const restoreResult = await harness.ipcHandlers.get("backups:restore")?.({}, "backup-1");
+
+    if (current.allowed) {
+      assert.deepEqual(exportResult, { ok: true, data: "exported" });
+      assert.deepEqual(listResult, { ok: true, data: ["backup-1"] });
+      assert.deepEqual(restoreResult, { ok: true, data: "restored" });
+      assert.deepEqual(calls, ["export", "list", "restore:backup-1"]);
+    } else {
+      assert.equal((exportResult as { ok?: boolean })?.ok, false);
+      assert.equal((listResult as { ok?: boolean })?.ok, false);
+      assert.equal((restoreResult as { ok?: boolean })?.ok, false);
+      assert.deepEqual(calls, []);
+    }
   }
 });

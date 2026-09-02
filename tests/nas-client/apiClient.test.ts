@@ -138,3 +138,79 @@ test("authenticated ready probe verifies event device role and exact session", a
     session: envelope.session,
   });
 });
+
+test("uses fail-closed redirect and cache policy for every NAS request", async () => {
+  let requestInit: RequestInit | undefined;
+  const fetch: FetchLike = async (_input, init) => {
+    requestInit = init;
+    return new Response(JSON.stringify({
+      schema_version: 1,
+      disposition: "stored",
+      record_id: recordId,
+      payload_sha256: payloadSha256(envelope),
+      stored_sha256: payloadSha256(envelope),
+      received_at: "2026-09-18T01:00:00.000Z",
+    }), { status: 201, headers: { "content-type": "application/json" } });
+  };
+  const client = new NasApiClient({
+    baseUrl: "https://records.example.test",
+    deviceId: "PC01",
+    getToken: async () => token,
+    fetch,
+    requestTimeoutMs: 1_000,
+  });
+
+  await client.postRecord(envelope);
+
+  assert.equal(requestInit?.redirect, "error");
+  assert.equal(requestInit?.cache, "no-store");
+});
+
+test("rejects streamed JSON above the finite limit despite missing or misleading content-length", async () => {
+  for (const declaredLength of [undefined, "1"] as const) {
+    const oversized = JSON.stringify({ value: "x".repeat(2 * 1024 * 1024) });
+    const headers = new Headers({ "content-type": "application/json" });
+    if (declaredLength !== undefined) headers.set("content-length", declaredLength);
+    const fetch: FetchLike = async () => new Response(oversized, { status: 200, headers });
+    const client = new NasApiClient({
+      baseUrl: "https://records.example.test",
+      deviceId: "LEADERBOARD01",
+      getToken: async () => token,
+      fetch,
+      requestTimeoutMs: 1_000,
+    });
+
+    await assert.rejects(
+      () => client.getRecords(envelope.session),
+      (error: unknown) => error instanceof Error
+        && error.message === "NAS_RESPONSE_TOO_LARGE"
+        && !error.message.includes(oversized.slice(0, 32)),
+      `declared content-length ${declaredLength ?? "missing"}`,
+    );
+  }
+});
+
+test("accepts authenticated leaderboard ready identity", async () => {
+  const fetch: FetchLike = async () => new Response(JSON.stringify({
+    schema_version: 1,
+    status: "ready",
+    event_id: "geumcheon-science-festival-2026",
+    device_id: "LEADERBOARD01",
+    role: "leaderboard",
+    session: envelope.session,
+  }), { status: 200, headers: { "content-type": "application/json" } });
+  const client = new NasApiClient({
+    baseUrl: "https://records.example.test",
+    deviceId: "LEADERBOARD01",
+    getToken: async () => token,
+    fetch,
+    requestTimeoutMs: 1_000,
+  });
+
+  const identity = await client.getReady(envelope.session, {
+    eventId: "geumcheon-science-festival-2026",
+    role: "leaderboard",
+  });
+
+  assert.equal(identity.role, "leaderboard");
+});

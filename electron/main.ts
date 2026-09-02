@@ -1,5 +1,5 @@
 ﻿import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
-import type { OpenDialogOptions } from "electron";
+import type { IpcMainInvokeEvent, OpenDialogOptions } from "electron";
 import { safeStorage } from "electron";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -42,6 +42,9 @@ import type { AppMode, AppVariant, DrawStageTextsInput, GameStartReadiness, Lead
 import { createBootstrapData, redactRendererConfig } from "../shared/events/bootstrapData";
 import type { EventProfile, EventVariantPolicy } from "../shared/events/types";
 import {
+  assertLegacyLocalBackupIpcAllowed,
+  assertSafeTlsEnvironment,
+  formatStartupErrorForDisplay,
   portableRuntimeMigrationAllowed,
   recordModeFromPolicy,
   resolveApplicationResourcePaths,
@@ -54,9 +57,10 @@ import {
 } from "./startupProfile";
 import type { ApplicationResourcePaths, PackagedMetadata } from "./startupProfile";
 import { AdminAccessSessions } from "./adminAccessSession";
-import { importBootstrapCredential } from "./nas/bootstrapCredential";
+import { importBootstrapCredential, resolveBootstrapCredentialScopes } from "./nas/bootstrapCredential";
 import { NasCredentialStore } from "./nas/credentialStore";
 import { checkGeumcheonNasReadiness, requireGeumcheonCredential } from "./nas/readiness";
+import { rendererSafeFailure } from "./nas/piiBoundary";
 import { createGeumcheonNasRuntime, type GeumcheonNasRuntime } from "./nas/runtime";
 import {
   RendererCheckpointFence,
@@ -119,13 +123,12 @@ function installConfiguredExtraCa(): void {
 
 if (mayStartApplication) {
   process.on("uncaughtException", (error) => {
-    appendStartupLog(`uncaughtException: ${error instanceof Error ? error.stack || error.message : String(error)}`);
+    appendStartupLog(`uncaughtException: ${errorMessage(error)}`);
   });
 
   process.on("unhandledRejection", (reason) => {
-    appendStartupLog(`unhandledRejection: ${reason instanceof Error ? reason.stack || reason.message : String(reason)}`);
+    appendStartupLog(`unhandledRejection: ${errorMessage(reason)}`);
   });
-  installConfiguredExtraCa();
 }
 
 function executableName(): string {
@@ -281,24 +284,28 @@ async function initializeGeumcheonNasConnection(
       }
     }
   });
-  const credentialStore = new NasCredentialStore({
-    filePath: path.join(runtimeRoot, "nas", "device-token.bin"),
-    safeStorage,
-    eventId: eventProfile.nasEventId,
-    deviceId: deviceProfile.deviceId,
-    apiBaseUrl: deviceProfile.apiBaseUrl
-  });
   const executableDirectory = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath);
-  await requireGeumcheonCredential(() =>
-    importBootstrapCredential({
-      filePath: path.join(executableDirectory, "bootstrap-credentials.json"),
-      expectedEventId: eventProfile.nasEventId,
-      expectedDeviceId: deviceProfile.deviceId,
-      expectedApiBaseUrl: deviceProfile.apiBaseUrl,
-      store: credentialStore,
-      verifyCredential: () => runtime.checkReady()
-    })
-  );
+  for (const scope of resolveBootstrapCredentialScopes(deviceProfile.role)) {
+    const credentialStore = new NasCredentialStore({
+      filePath: path.join(runtimeRoot, "nas", scope.encryptedFileName),
+      safeStorage,
+      eventId: eventProfile.nasEventId,
+      deviceId: deviceProfile.deviceId,
+      apiBaseUrl: deviceProfile.apiBaseUrl
+    });
+    await requireGeumcheonCredential(() =>
+      importBootstrapCredential({
+        filePath: path.join(executableDirectory, scope.bootstrapFileName),
+        expectedEventId: eventProfile.nasEventId,
+        expectedDeviceId: deviceProfile.deviceId,
+        expectedApiBaseUrl: deviceProfile.apiBaseUrl,
+        store: credentialStore,
+        verifyCredential: scope.scope === "operator"
+          ? () => runtime.checkOperatorReady()
+          : () => runtime.checkReady()
+      })
+    );
+  }
 
   let flushInFlight: ReturnType<GeumcheonNasRuntime["flush"]> | null = null;
   const connection: GeumcheonNasConnection = {
@@ -411,15 +418,45 @@ export function createWindow(
   const devServer = process.env.VITE_DEV_SERVER_URL;
   if (!app.isPackaged && devServer) {
     void mainWindow.loadURL(`${devServer}?mode=${mode}&variant=${variant}`).catch((error) => {
-      appendStartupLog(`loadURL failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
+      appendStartupLog(`loadURL failed: ${errorMessage(error)}`);
     });
   } else {
     void mainWindow.loadFile(path.join(__dirname, "../../dist-renderer/index.html"), {
       query: { mode, variant }
     }).catch((error) => {
-      appendStartupLog(`loadFile failed: ${error instanceof Error ? error.stack || error.message : String(error)}`);
+      appendStartupLog(`loadFile failed: ${errorMessage(error)}`);
     });
   }
+}
+
+type LegacyLocalBackupIpcOperations = {
+  exportSessionBackup(event: IpcMainInvokeEvent): unknown;
+  listBackups(event: IpcMainInvokeEvent): unknown;
+  restoreBackup(event: IpcMainInvokeEvent, backupName: string): Promise<unknown>;
+};
+
+export function registerLegacyBackupIpcHandlers(
+  profileId: EventProfile["profileId"],
+  operations: LegacyLocalBackupIpcOperations
+): void {
+  ipcMain.handle("records:exportSessionBackup", (event) =>
+    safe(() => {
+      assertLegacyLocalBackupIpcAllowed(profileId);
+      return operations.exportSessionBackup(event);
+    }, "현재 회차 CSV 백업 중 오류가 발생했습니다. 저장 위치를 확인해 주세요.")
+  );
+  ipcMain.handle("backups:list", (event) =>
+    safe(() => {
+      assertLegacyLocalBackupIpcAllowed(profileId);
+      return operations.listBackups(event);
+    })
+  );
+  ipcMain.handle("backups:restore", (event, backupName: string) =>
+    safeAsync(async () => {
+      assertLegacyLocalBackupIpcAllowed(profileId);
+      return operations.restoreBackup(event, backupName);
+    }, "백업 파일 복원에 실패했습니다.")
+  );
 }
 
 async function registerIpc(
@@ -639,7 +676,7 @@ async function registerIpc(
           try {
             files.push(exportRecords(ctx, rows, scope, mode));
           } catch (error) {
-            errors.push(error instanceof Error ? error.message : String(error));
+            errors.push(errorMessage(error));
           }
         }
         if (files.length === 0) throw new Error(errors[0] || "내보낼 기록이 없습니다.");
@@ -648,8 +685,8 @@ async function registerIpc(
       return exportRecords(ctx, rows, scope, scopedRecordMode);
     }, "CSV 내보내기 중 오류가 발생했습니다. 저장 위치를 확인해 주세요.")
   );
-  ipcMain.handle("records:exportSessionBackup", (event) =>
-    safe(() => {
+  registerLegacyBackupIpcHandlers(eventProfile.profileId, {
+    exportSessionBackup: (event) => {
       adminAccessSessions.require(event.sender);
       if (hasMultipleRecordModes) {
         const normal = exportCurrentSessionBackupClean(ctx, "normal");
@@ -657,8 +694,16 @@ async function registerIpc(
         return { ...normal, message: `[일잘러]\n${normal.message}\n\n[AI]\n${ai.message}` };
       }
       return exportCurrentSessionBackupClean(ctx, scopedRecordMode);
-    }, "현재 회차 CSV 백업 중 오류가 발생했습니다. 저장 위치를 확인해 주세요.")
-  );
+    },
+    listBackups: (event) => {
+      adminAccessSessions.require(event.sender);
+      return listBackups(ctx);
+    },
+    restoreBackup: async (event, backupName) => {
+      const { adminName } = adminAccessSessions.require(event.sender);
+      return restoreBackup(ctx, backupName, adminName);
+    }
+  });
   ipcMain.handle("records:syncStatus", () => safe(() => {
     if (!hasMultipleRecordModes) return getCleanLeaderboardSyncStatus(ctx, scopedRecordMode);
     const normal = getCleanLeaderboardSyncStatus(ctx, "normal");
@@ -701,17 +746,6 @@ async function registerIpc(
       };
     }, "기록 서버에 다시 올리지 못했습니다. 인터넷 연결과 NAS 서버 상태를 확인해 주세요.")
   );
-  ipcMain.handle("backups:list", (event) => safe(() => {
-    adminAccessSessions.require(event.sender);
-    return listBackups(ctx);
-  }));
-  ipcMain.handle("backups:restore", (event, backupName: string) =>
-    safeAsync(() => {
-      const { adminName } = adminAccessSessions.require(event.sender);
-      return restoreBackup(ctx, backupName, adminName);
-    }, "백업 파일 복원에 실패했습니다.")
-  );
-
   ipcMain.handle("sync:getSettings", () =>
     safe(() => redactRendererConfig(getOneDriveSettings(ctx, pcRole)))
   );
@@ -794,15 +828,15 @@ async function registerIpc(
 }
 
 function errorMessage(error: unknown, fallback?: string): string {
-  if (error instanceof Error && error.message) return error.message;
-  return fallback || "알 수 없는 오류가 발생했습니다.";
+  void error;
+  return fallback || "요청을 처리하지 못했습니다. 다시 시도해 주세요.";
 }
 
-function safe<T>(task: () => T, fallback?: string) {
+export function safe<T>(task: () => T, fallback?: string) {
   try {
     return { ok: true, data: task() };
   } catch (error) {
-    return { ok: false, error: errorMessage(error, fallback), code: error instanceof Error ? error.name : undefined };
+    return rendererSafeFailure(error, fallback);
   }
 }
 
@@ -810,7 +844,7 @@ async function safeAsync<T>(task: () => Promise<T>, fallback?: string) {
   try {
     return { ok: true, data: await task() };
   } catch (error) {
-    return { ok: false, error: errorMessage(error, fallback), code: error instanceof Error ? error.name : undefined };
+    return rendererSafeFailure(error, fallback);
   }
 }
 
@@ -835,6 +869,15 @@ if (mayStartApplication) void app.whenReady().then(async () => {
       packagedEventProfile: metadata.eventProfileId,
       runtimeRootOverride: process.env.TYPINGKING_RUNTIME_ROOT
     });
+    assertSafeTlsEnvironment(
+      process.env,
+      app.isPackaged,
+      startup.deviceProfile && {
+        eventProfileId: startup.deviceProfile.eventProfileId,
+        apiBaseUrl: startup.deviceProfile.apiBaseUrl
+      }
+    );
+    installConfiguredExtraCa();
     startupRuntimeRoot = startup.runtimeRoot;
     if (startup.userDataPath) app.setPath("userData", startup.userDataPath);
     launchPolicy = resolveLaunchPolicy(startup, variant);
@@ -848,7 +891,7 @@ if (mayStartApplication) void app.whenReady().then(async () => {
   } catch (error) {
     appendStartupLog(`Startup profile initialization failed: ${errorMessage(error)}`);
     if (shouldShowStartupErrorDialog(process.env, app.isPackaged)) {
-      dialog.showErrorBox("시작할 수 없습니다", error instanceof Error ? error.message : String(error));
+      dialog.showErrorBox("시작할 수 없습니다", formatStartupErrorForDisplay(error));
     }
     app.exit(1);
     return;
@@ -865,10 +908,7 @@ if (mayStartApplication) void app.whenReady().then(async () => {
       applicationResources
     );
   } catch (error) {
-    const cause = error instanceof Error && error.cause instanceof Error
-      ? ` cause=${error.cause.message}`
-      : "";
-    appendStartupLog(`Geumcheon NAS initialization failed: ${errorMessage(error)}${cause}`);
+    appendStartupLog(`Geumcheon NAS initialization failed: ${errorMessage(error)}`);
     if (shouldShowStartupErrorDialog(process.env, app.isPackaged)) {
       dialog.showErrorBox("시작할 수 없습니다", errorMessage(error));
     }

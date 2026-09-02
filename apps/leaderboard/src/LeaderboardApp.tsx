@@ -11,7 +11,7 @@ import {
 import { isCanonicalAiAttemptPubliclyRankable } from "../../../shared/utils/geumcheonAiAttempt";
 import { calculateFinalCpm, countConvertedTypingUnits, countTypeableChars } from "../../../shared/utils/typing";
 import { resolveEventAssetUrl } from "../../../shared/events/types";
-import { OneDriveSettingsPanel } from "../../shell/src/OneDriveSettingsPanel";
+import { OneDriveSettingsPanel, storageErrorForDisplay } from "../../shell/src/OneDriveSettingsPanel";
 
 type Props = {
   bootstrap: BootstrapData;
@@ -65,6 +65,35 @@ type RankedAiLeaderboardEntry = AiLeaderboardEntry & {
 let leaderboardRefreshInFlight = false;
 const SLOW_STATUS_REFRESH_MS = 8000;
 
+type LeaderboardOperation =
+  | "refresh"
+  | "authorize"
+  | "edit"
+  | "hide"
+  | "clear"
+  | "export"
+  | "backup"
+  | "restore";
+
+const LEADERBOARD_OPERATION_ERRORS: Record<LeaderboardOperation, string> = {
+  refresh: "NAS 기록을 읽을 수 없습니다. NAS 연결과 조회 전용 권한을 확인해 주세요.",
+  authorize: "관리자 비밀번호가 올바르지 않습니다.",
+  edit: "기록 수정 중 오류가 발생했습니다. 관리자 권한과 NAS 운영 저장소 상태를 확인해 주세요.",
+  hide: "기록 숨기기 중 오류가 발생했습니다. 관리자 권한과 NAS 운영 저장소 상태를 확인해 주세요.",
+  clear: "리더보드 표시 초기화 중 오류가 발생했습니다. 관리자 권한과 NAS 운영 저장소 상태를 확인해 주세요.",
+  export: "CSV 내보내기 중 오류가 발생했습니다. 선택한 저장 위치를 확인해 주세요.",
+  backup: "현재 회차 CSV 백업 중 오류가 발생했습니다. NAS 운영 저장소 상태를 확인해 주세요.",
+  restore: "백업 파일 복원에 실패했습니다. 관리자 권한과 NAS 운영 저장소 상태를 확인해 주세요."
+};
+
+export function formatLeaderboardOperationError(error: string | undefined, operation: LeaderboardOperation): string {
+  return storageErrorForDisplay(error, LEADERBOARD_OPERATION_ERRORS[operation]);
+}
+
+export function supportsLegacyLeaderboardStorageTools(profileId: string): boolean {
+  return profileId !== "geumcheon-2026";
+}
+
 export function LeaderboardApp({ bootstrap }: Props) {
   const { assetBaseUrl } = bootstrap;
   const [config, setConfig] = useState<AppConfig>(bootstrap.config);
@@ -72,6 +101,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
   const isPracticeBoard = bootstrap.variantPolicy.sessionKind === "practice";
   const isGeumcheonOfficialBoard = bootstrap.eventProfile.profileId === "geumcheon-2026" && !isPracticeBoard;
   const isGeumcheonPracticeBoard = bootstrap.eventProfile.profileId === "geumcheon-2026" && isPracticeBoard;
+  const supportsLegacyStorageTools = supportsLegacyLeaderboardStorageTools(bootstrap.eventProfile.profileId);
   const showNormalLeaderboard = bootstrap.variantPolicy.gameModes.includes("normal");
   const showAiLeaderboard = bootstrap.variantPolicy.gameModes.includes("ai_challenge");
   const isDualPracticeBoard = isPracticeBoard && showNormalLeaderboard && showAiLeaderboard;
@@ -199,20 +229,26 @@ export function LeaderboardApp({ bootstrap }: Props) {
       const shouldRefreshSlowStatus =
         !silent || adminOpenRef.current || now - lastSlowStatusRefreshAtRef.current >= SLOW_STATUS_REFRESH_MS;
       const [settingsResult, result, statusResult, backupResult] = await Promise.all([
-        window.typingKing.getOneDriveSettings(),
+        supportsLegacyStorageTools
+          ? window.typingKing.getOneDriveSettings()
+          : Promise.resolve(null),
         window.typingKing.listRecords(),
-        shouldRefreshSlowStatus ? window.typingKing.getLeaderboardSyncStatus() : Promise.resolve(null),
-        shouldRefreshSlowStatus ? window.typingKing.getCsvBackupStatus() : Promise.resolve(null)
+        shouldRefreshSlowStatus && supportsLegacyStorageTools
+          ? window.typingKing.getLeaderboardSyncStatus()
+          : Promise.resolve(null),
+        shouldRefreshSlowStatus && supportsLegacyStorageTools
+          ? window.typingKing.getCsvBackupStatus()
+          : Promise.resolve(null)
       ]);
       if (shouldRefreshSlowStatus) lastSlowStatusRefreshAtRef.current = now;
-      if (settingsResult.ok && settingsResult.data) {
+      if (settingsResult?.ok && settingsResult.data) {
         setConfig((current) => (sameLeaderboardConfig(current, settingsResult.data!) ? current : settingsResult.data!));
       }
       if (result.ok && result.data) {
         setRecords((current) => (sameRecordSnapshot(current, result.data!) ? current : result.data!));
         setRefreshError("");
       } else if (!silent || result.code === "LOCKED") {
-        setRefreshError(result.error || "기록 파일을 읽을 수 없습니다. 파일이 열려 있거나 손상되었을 수 있습니다.");
+        setRefreshError(formatLeaderboardOperationError(result.error, "refresh"));
       }
       if (statusResult && statusResult.ok && statusResult.data) setSyncStatus(statusResult.data);
       if (backupResult && backupResult.ok && backupResult.data) setBackupStatus(backupResult.data);
@@ -226,9 +262,9 @@ export function LeaderboardApp({ bootstrap }: Props) {
     if (result.ok) {
       setAuthorized(true);
       setMessage("관리자 모드에 진입했습니다.");
-      await loadBackups();
+      if (supportsLegacyStorageTools) await loadBackups();
     } else {
-      setMessage(result.error || "관리자 비밀번호가 올바르지 않습니다.");
+      setMessage(formatLeaderboardOperationError(result.error, "authorize"));
     }
   }
 
@@ -242,21 +278,9 @@ export function LeaderboardApp({ bootstrap }: Props) {
   }
 
   function beginEdit(record: RecordRow) {
-    setSelectedId(record.record_id);
-    setEdit({
-      participant_name: record.participant_name,
-      phone_part1: record.phone_part1,
-      phone_part2: record.phone_part2,
-      phone_part3: record.phone_part3,
-      birth_year: record.birth_year,
-      birth_month: record.birth_month,
-      birth_day: record.birth_day,
-      stage1_time_ms: record.stage1_time_ms,
-      stage2_time_ms: record.stage2_time_ms,
-      stage3_time_ms: record.stage3_time_ms,
-      memo: record.memo,
-      is_test: record.is_test
-    });
+    const next = resolveLeaderboardEditSelection(selectedId, record);
+    setSelectedId(next.selectedId);
+    setEdit(next.edit);
   }
 
   async function saveEdit() {
@@ -276,7 +300,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
     setMessage(
       result.ok
         ? "기록을 수정했습니다. 원본 기록은 보존되고, 수정된 기록이 리더보드에 새로 표시됩니다."
-        : result.error || "기록 수정 중 오류가 발생했습니다. 백업 파일을 확인해 주세요."
+        : formatLeaderboardOperationError(result.error, "edit")
     );
     if (result.ok) {
       setEdit(null);
@@ -294,13 +318,13 @@ export function LeaderboardApp({ bootstrap }: Props) {
     setMessage(
       result.ok
         ? "원본 기록은 삭제되지 않고 리더보드에서만 숨겨집니다."
-        : result.error || "기록 숨기기 중 오류가 발생했습니다. OneDrive 상태를 확인해 주세요."
+        : formatLeaderboardOperationError(result.error, "hide")
     );
     if (result.ok) {
       setSelectedId("");
       setEdit(null);
       await refresh(false);
-      await loadBackups();
+      if (supportsLegacyStorageTools) await loadBackups();
     }
   }
 
@@ -310,13 +334,13 @@ export function LeaderboardApp({ bootstrap }: Props) {
     setMessage(
       result.ok
         ? "현재 회차의 원본 기록은 삭제되지 않고 리더보드 표시에서만 숨겨집니다."
-        : result.error || "리더보드 표시 초기화 중 오류가 발생했습니다. OneDrive 상태를 확인해 주세요."
+        : formatLeaderboardOperationError(result.error, "clear")
     );
     if (result.ok) {
       setSelectedId("");
       setEdit(null);
       await refresh(false);
-      await loadBackups();
+      if (supportsLegacyStorageTools) await loadBackups();
     }
   }
 
@@ -338,10 +362,10 @@ export function LeaderboardApp({ bootstrap }: Props) {
     const result = await window.typingKing.exportRecords(rows, scope);
     setMessage(
       result.ok
-        ? `CSV 파일을 내보냈습니다.\n${result.data}`
-        : result.error || "CSV 내보내기 중 오류가 발생했습니다.\n저장 위치를 확인해 주세요."
+        ? "CSV 파일을 내보냈습니다. 선택한 저장 위치에서 확인해 주세요."
+        : formatLeaderboardOperationError(result.error, "export")
     );
-    if (result.ok) {
+    if (result.ok && supportsLegacyStorageTools) {
       const statusResult = await window.typingKing.getLeaderboardSyncStatus();
       if (statusResult.ok && statusResult.data) setSyncStatus(statusResult.data);
     }
@@ -352,7 +376,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
     setMessage(
       result.ok && result.data
         ? result.data.message
-        : result.error || "현재 회차 CSV 백업 중 오류가 발생했습니다.\n저장 위치를 확인해 주세요."
+        : formatLeaderboardOperationError(result.error, "backup")
     );
     await refresh(false);
   }
@@ -365,7 +389,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
   async function restore(name: string) {
     if (!confirm("선택한 백업에서 복원하시겠습니까? 현재 기록은 먼저 백업됩니다.")) return;
     const result = await window.typingKing.restoreBackup(name, adminName || "admin");
-    setMessage(result.ok ? "백업에서 복원했습니다." : result.error || "백업 파일 복원에 실패했습니다.");
+    setMessage(result.ok ? "백업에서 복원했습니다." : formatLeaderboardOperationError(result.error, "restore"));
     if (result.ok) await refresh(false);
   }
 
@@ -542,14 +566,21 @@ export function LeaderboardApp({ bootstrap }: Props) {
                 <OneDriveSettingsPanel
                   isPractice={isPracticeBoard}
                   role="leaderboard"
+                  eventProfileId={bootstrap.eventProfile.profileId}
+                  deviceProfile={bootstrap.deviceProfile}
+                  sessionKind={bootstrap.variantPolicy.sessionKind}
                   onSettingsChange={(nextConfig) => {
                     setConfig(nextConfig);
                     void refresh(false);
                   }}
                 />
 
-                {syncStatus && <SyncStatusCard status={syncStatus} isPracticeSession={config.isPracticeSession || isPracticeBoard} />}
-                {backupStatus && <BackupStatusCard status={backupStatus} showAi={showAiLeaderboard} />}
+                {supportsLegacyStorageTools && syncStatus && (
+                  <SyncStatusCard status={syncStatus} isPracticeSession={config.isPracticeSession || isPracticeBoard} />
+                )}
+                {supportsLegacyStorageTools && backupStatus && (
+                  <BackupStatusCard status={backupStatus} showAi={showAiLeaderboard} />
+                )}
 
                 <div className="admin-toolbar">
                   <button className={viewMode === "best" ? "stage-pill active" : "stage-pill"} onClick={() => setViewMode("best")}>
@@ -659,19 +690,25 @@ export function LeaderboardApp({ bootstrap }: Props) {
                       숨기기와 표시 초기화는 원본 JSON을 삭제하지 않고 관리자 조치 파일로만 반영됩니다.
                     </p>
                     <div className="button-grid">
-                      <button className="important-action" onClick={() => void exportSessionBackup()}>
-                        현재 회차 CSV 백업
-                      </button>
+                      {supportsLegacyStorageTools && (
+                        <button className="important-action" onClick={() => void exportSessionBackup()}>
+                          현재 회차 CSV 백업
+                        </button>
+                      )}
                       <button onClick={() => void exportCsv("all")}>전체 기록 CSV</button>
                       <button className="danger-mini" onClick={clearAll}>현재 회차 표시 초기화</button>
                     </div>
-                    <h3>백업 파일</h3>
-                    <div className="backup-list">
-                      {backups.map((name) => (
-                        <button key={name} onClick={() => void restore(name)}>{name}</button>
-                      ))}
-                      {backups.length === 0 && <p className="notice-text">백업 파일이 없습니다.</p>}
-                    </div>
+                    {supportsLegacyStorageTools && (
+                      <>
+                        <h3>백업 파일</h3>
+                        <div className="backup-list">
+                          {backups.map((name) => (
+                            <button key={name} onClick={() => void restore(name)}>{name}</button>
+                          ))}
+                          {backups.length === 0 && <p className="notice-text">백업 파일이 없습니다.</p>}
+                        </div>
+                      </>
+                    )}
                   </section>
                 </div>
               </>
@@ -698,6 +735,33 @@ function normalizeFinalCpmForLeaderboard(record: RecordRow): RecordRow {
   return {
     ...record,
     final_cpm: String(calculateFinalCpm(typingUnits, totalTimeMs))
+  };
+}
+
+export function resolveLeaderboardEditSelection(
+  selectedId: string,
+  record: RecordRow
+): { selectedId: string; edit: EditState | null } {
+  if (selectedId === record.record_id) {
+    return { selectedId: "", edit: null };
+  }
+
+  return {
+    selectedId: record.record_id,
+    edit: {
+      participant_name: record.participant_name,
+      phone_part1: record.phone_part1,
+      phone_part2: record.phone_part2,
+      phone_part3: record.phone_part3,
+      birth_year: record.birth_year,
+      birth_month: record.birth_month,
+      birth_day: record.birth_day,
+      stage1_time_ms: record.stage1_time_ms,
+      stage2_time_ms: record.stage2_time_ms,
+      stage3_time_ms: record.stage3_time_ms,
+      memo: record.memo,
+      is_test: record.is_test
+    }
   };
 }
 
@@ -1196,7 +1260,9 @@ function SyncStatusCard({ status, isPracticeSession }: { status: LeaderboardSync
           <strong className={`sync-state ${stateClass}`}>{status.status}</strong>
         </div>
       </div>
-      {status.error && <p className="sync-status-error">{status.error}</p>}
+      {status.error && (
+        <p className="sync-status-error">{formatLeaderboardOperationError(status.error, "refresh")}</p>
+      )}
     </section>
   );
 }

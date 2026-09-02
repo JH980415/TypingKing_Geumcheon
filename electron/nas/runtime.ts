@@ -53,7 +53,10 @@ export type GeumcheonNasRuntimeOptions = {
 
 export type GeumcheonNasRuntime = {
   importToken(token: string): Promise<void>;
+  importLeaderboardToken(token: string): Promise<void>;
+  importOperatorToken(token: string): Promise<void>;
   checkReady(): ReturnType<NasApiClient["getReady"]>;
+  checkOperatorReady(): ReturnType<NasApiClient["getReady"]>;
   checkpoint(input: SaveRecordInput): ReturnType<ReturnType<typeof createGeumcheonRecordRuntime>["checkpoint"]>;
   save(input: SaveRecordInput): Promise<RecordRow>;
   recover(): Promise<RecordRow | null>;
@@ -69,32 +72,62 @@ export function createGeumcheonNasRuntime(options: GeumcheonNasRuntimeOptions): 
   validateOptions(options);
   const runtimeRoot = path.resolve(options.runtimeRoot);
   const session = sessionFor(options.device, options.sessionKind);
-  const credentials = new NasCredentialStore({
+  const writerCredentials = new NasCredentialStore({
     filePath: path.join(runtimeRoot, "nas", "device-token.bin"),
     safeStorage: options.safeStorage,
     eventId: options.event.nasEventId,
     deviceId: options.device.deviceId,
     apiBaseUrl: options.device.apiBaseUrl
   });
+  const leaderboardCredentials = new NasCredentialStore({
+    filePath: path.join(runtimeRoot, "nas", "leaderboard-token.bin"),
+    safeStorage: options.safeStorage,
+    eventId: options.event.nasEventId,
+    deviceId: options.device.deviceId,
+    apiBaseUrl: options.device.apiBaseUrl
+  });
+  const operatorCredentials = new NasCredentialStore({
+    filePath: path.join(runtimeRoot, "nas", "operator-token.bin"),
+    safeStorage: options.safeStorage,
+    eventId: options.event.nasEventId,
+    deviceId: options.device.deviceId,
+    apiBaseUrl: options.device.apiBaseUrl
+  });
   const outbox = new EncryptedNasOutbox({ rootDir: path.join(runtimeRoot, "nas", "outbox"), safeStorage: options.safeStorage });
-  const api = new NasApiClient({
+  const writerApi = new NasApiClient({
     baseUrl: options.device.apiBaseUrl,
     deviceId: options.device.deviceId,
-    getToken: () => credentials.getToken(),
+    getToken: () => writerCredentials.getToken(),
+    fetch: options.fetch,
+    requestTimeoutMs: options.device.requestTimeoutMs,
+    timers: options.timers,
+  });
+  const leaderboardApi = new NasApiClient({
+    baseUrl: options.device.apiBaseUrl,
+    deviceId: options.device.deviceId,
+    getToken: () => leaderboardCredentials.getToken(),
+    fetch: options.fetch,
+    requestTimeoutMs: options.device.requestTimeoutMs,
+    timers: options.timers,
+  });
+  const operatorApi = new NasApiClient({
+    baseUrl: options.device.apiBaseUrl,
+    deviceId: options.device.deviceId,
+    getToken: () => operatorCredentials.getToken(),
     fetch: options.fetch,
     requestTimeoutMs: options.device.requestTimeoutMs,
     timers: options.timers,
   });
   const retry = new NasRetryWorker({
     outbox,
-    transport: api,
+    transport: writerApi,
     initialDelayMs: options.device.retry.initialDelayMs,
     maxDelayMs: options.device.retry.maxDelayMs,
     maxAttempts: 4,
     sleep: options.sleep ?? ((ms) => new Promise((resolve) => globalThis.setTimeout(resolve, ms))),
   });
-  const leaderboard = new NasLeaderboardClient(api);
-  const admin = new NasAdminSession(api);
+  const leaderboard = new NasLeaderboardClient(leaderboardApi);
+  const admin = new NasAdminSession(operatorApi);
   const activeStore = createActiveAttemptStore({
     checkpointPath: path.join(runtimeRoot, "nas", `active-attempt-${options.sessionKind}.bin`),
     encryption: options.safeStorage,
@@ -147,11 +180,16 @@ export function createGeumcheonNasRuntime(options: GeumcheonNasRuntimeOptions): 
   }
 
   return {
-    importToken: (token) => credentials.importToken(token),
-    checkReady: () => api.getReady(session, {
-      eventId: NAS_EVENT_ID,
-      role: options.device.role === "player" ? "writer" : "operator",
-    }),
+    importToken: async (token) => { requireRole("player"); await writerCredentials.importToken(token); },
+    importLeaderboardToken: async (token) => { requireRole("leaderboard"); await leaderboardCredentials.importToken(token); },
+    importOperatorToken: async (token) => { requireRole("leaderboard"); await operatorCredentials.importToken(token); },
+    checkReady: () => options.device.role === "player"
+      ? writerApi.getReady(session, { eventId: NAS_EVENT_ID, role: "writer" })
+      : leaderboardApi.getReady(session, { eventId: NAS_EVENT_ID, role: "leaderboard" }),
+    checkOperatorReady: () => {
+      requireRole("leaderboard");
+      return operatorApi.getReady(session, { eventId: NAS_EVENT_ID, role: "operator" });
+    },
     checkpoint: async (input) => { requireRole("player"); return records.checkpoint(input); },
     save: async (input) => { requireRole("player"); return records.save(input); },
     recover: async () => { requireRole("player"); return records.recover(); },
@@ -163,6 +201,7 @@ export function createGeumcheonNasRuntime(options: GeumcheonNasRuntimeOptions): 
     loadRecords: async () => {
       requireRole("leaderboard");
       try {
+        await leaderboardApi.getReady(session, { eventId: NAS_EVENT_ID, role: "leaderboard" });
         lastKnownGood = await leaderboard.load(session);
         return lastKnownGood;
       } catch (error) {

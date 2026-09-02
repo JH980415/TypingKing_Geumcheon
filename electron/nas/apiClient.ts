@@ -15,7 +15,7 @@ export type NasReadyIdentityV1 = {
   status: "ready";
   event_id: string;
   device_id: string;
-  role: "writer" | "operator";
+  role: "writer" | "leaderboard" | "operator";
   session: NasSessionV1;
 };
 
@@ -77,7 +77,7 @@ export class NasApiClient {
 
   async getReady(
     session: NasSessionV1,
-    expected: { eventId: string; role: "writer" | "operator" },
+    expected: { eventId: string; role: "writer" | "leaderboard" | "operator" },
   ): Promise<NasReadyIdentityV1> {
     const query = sessionQuery(session);
     const value = await this.request(`/api/v1/ready?${query.toString()}`, { method: "GET" });
@@ -107,6 +107,8 @@ export class NasApiClient {
     try {
       response = await this.options.fetch(`${this.baseUrl}${route}`, {
         ...init,
+        redirect: "error",
+        cache: "no-store",
         headers: {
           authorization: `Bearer ${token}`,
           "x-device-id": this.options.deviceId,
@@ -123,11 +125,7 @@ export class NasApiClient {
     if (!response.ok) throw new NasApiError(response.status, `HTTP_${response.status}`, parseRetryAfter(response.headers.get("retry-after")));
     const contentType = response.headers.get("content-type") ?? "";
     if (!/^application\/json(?:;|$)/i.test(contentType)) throw new Error("NAS_RESPONSE_CONTENT_TYPE_INVALID");
-    try {
-      return await response.json() as unknown;
-    } catch {
-      throw new Error("NAS_RESPONSE_JSON_INVALID");
-    }
+    return readLimitedJson(response);
   }
 }
 
@@ -153,12 +151,54 @@ function sessionQuery(session: NasSessionV1): URLSearchParams {
 
 function assertReadyIdentity(
   value: unknown,
-  expected: { eventId: string; deviceId: string; role: "writer" | "operator"; session: NasSessionV1 },
+    expected: { eventId: string; deviceId: string; role: "writer" | "leaderboard" | "operator"; session: NasSessionV1 },
 ): asserts value is NasReadyIdentityV1 {
   if (!isObject(value) || Object.keys(value).sort().join(",") !== "device_id,event_id,role,schema_version,session,status"
     || value.schema_version !== 1 || value.status !== "ready" || value.event_id !== expected.eventId
     || value.device_id !== expected.deviceId || value.role !== expected.role || !sessionEquals(value.session, expected.session)) {
     throw new Error("NAS_READY_IDENTITY_INVALID");
+  }
+}
+
+const MAX_NAS_JSON_RESPONSE_BYTES = 2 * 1024 * 1024;
+
+async function readLimitedJson(response: Response): Promise<unknown> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength != null && /^\d+$/.test(declaredLength)
+    && Number(declaredLength) > MAX_NAS_JSON_RESPONSE_BYTES) {
+    throw new Error("NAS_RESPONSE_TOO_LARGE");
+  }
+
+  if (response.body == null) throw new Error("NAS_RESPONSE_JSON_INVALID");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_NAS_JSON_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new Error("NAS_RESPONSE_TOO_LARGE");
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === "NAS_RESPONSE_TOO_LARGE") throw error;
+    throw new Error("NAS_RESPONSE_JSON_INVALID");
+  }
+
+  const bytes = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+  } catch {
+    throw new Error("NAS_RESPONSE_JSON_INVALID");
   }
 }
 

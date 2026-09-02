@@ -192,6 +192,59 @@ function entry(row: RecordRow) {
   };
 }
 
+type LeaderboardEditSelection = {
+  selectedId: string;
+  edit: {
+    participant_name: string;
+    memo: string;
+  } | null;
+};
+
+function leaderboardEditSelectionResolver(): (
+  selectedId: string,
+  row: RecordRow
+) => LeaderboardEditSelection {
+  const resolver = (leaderboardModule as typeof leaderboardModule & {
+    resolveLeaderboardEditSelection?: (
+      selectedId: string,
+      row: RecordRow
+    ) => LeaderboardEditSelection;
+  }).resolveLeaderboardEditSelection;
+
+  assert.equal(typeof resolver, "function");
+  return resolver;
+}
+
+test("clicking an unselected leaderboard row selects it for editing", () => {
+  const resolveSelection = leaderboardEditSelectionResolver();
+  const row = record({ record_id: "selected-record", participant_name: "선택 참가자", memo: "선택 메모" });
+
+  const next = resolveSelection("", row);
+
+  assert.equal(next.selectedId, "selected-record");
+  assert.equal(next.edit?.participant_name, "선택 참가자");
+  assert.equal(next.edit?.memo, "선택 메모");
+});
+
+test("clicking the selected leaderboard row again clears selection and edit state", () => {
+  const resolveSelection = leaderboardEditSelectionResolver();
+
+  const next = resolveSelection("selected-record", record({ record_id: "selected-record" }));
+
+  assert.deepEqual(next, { selectedId: "", edit: null });
+});
+
+test("clicking a different leaderboard row moves selection and edit state", () => {
+  const resolveSelection = leaderboardEditSelectionResolver();
+  const nextRow = record({ record_id: "next-record", participant_name: "다음 참가자", memo: "다음 메모" });
+
+  const next = resolveSelection("selected-record", nextRow);
+
+  assert.equal(next.selectedId, "next-record");
+  assert.equal(next.edit?.participant_name, "다음 참가자");
+  assert.equal(next.edit?.memo, "다음 메모");
+});
+
 test("Geumcheon practice AI leaderboard keeps repeated participant attempts", () => {
   const visible = selectGeumcheonAiLeaderboardEntriesForMode(
     [

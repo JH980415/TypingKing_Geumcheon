@@ -8,6 +8,12 @@ import test from "node:test";
 const projectRoot = path.resolve(__dirname, "..", "..");
 const tsxCli = path.join(projectRoot, "node_modules", "tsx", "dist", "cli.mjs");
 const builder = path.join(projectRoot, "scripts", "r2-uat", "standalone-uat.ts");
+const directLaunchers = [
+  { fileName: "G-Science AI 타자왕.exe", app: "ai" },
+  { fileName: "G-Science AI 타자왕 리더보드.exe", app: "ai-leaderboard" },
+  { fileName: "G-Science AI 타자왕 연습모드.exe", app: "practice" },
+  { fileName: "G-Science AI 타자왕 연습모드 리더보드.exe", app: "practice-leaderboard" }
+] as const;
 
 function buildPackage(root: string, releaseSource?: string, selfTest = false): void {
   const args = [tsxCli, builder, "--prepare-launchers", root];
@@ -39,6 +45,56 @@ function makeRunnableRelease(root: string): void {
     ].join("\n") : "synthetic UAT resource", "utf8");
   }
 }
+
+test("break: package-root Windows launchers select the matching UAT app and wait for its runner", { skip: process.platform !== "win32" }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r2-uat-direct-launcher-"));
+  const marker = path.join(root, "launcher-result.json");
+  try {
+    fs.writeFileSync(path.join(root, "EXE_직접실행금지_UAT안내.txt"), "stale direct-launch ban", "utf8");
+    buildPackage(root);
+    fs.writeFileSync(path.join(root, "runtime", "uat-runner.js"), [
+      'const fs = require("node:fs");',
+      'const path = require("node:path");',
+      'setTimeout(() => fs.writeFileSync(path.join(__dirname, "..", "launcher-result.json"),',
+      '  JSON.stringify({ args: process.argv.slice(2), cwd: process.cwd() })), 150);'
+    ].join("\n"), "utf8");
+
+    for (const launcher of directLaunchers) {
+      const executable = path.join(root, launcher.fileName);
+      assert.equal(fs.existsSync(executable), true, `${launcher.fileName} was not generated`);
+      assert.ok(fs.statSync(executable).size < 128 * 1024, `${launcher.fileName} is not a small launcher`);
+      fs.rmSync(marker, { force: true });
+      const result = spawnSync(executable, [], {
+        cwd: os.tmpdir(), encoding: "utf8", windowsHide: true, timeout: 10_000
+      });
+      assert.equal(result.status, 0, result.error?.message ?? `${launcher.fileName} failed`);
+      const captured = JSON.parse(fs.readFileSync(marker, "utf8")) as { args: string[]; cwd: string };
+      assert.deepEqual(captured.args, [`--app=${launcher.app}`]);
+      assert.equal(path.resolve(captured.cwd).toLowerCase(), path.resolve(root).toLowerCase());
+    }
+    assert.equal(fs.existsSync(path.join(root, "EXE_직접실행금지_UAT안내.txt")), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("break: packaging fails explicitly when the Windows .NET Framework C# compiler is unavailable", { skip: process.platform !== "win32" }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r2-uat-no-csc-output-"));
+  const emptyWindowsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r2-uat-no-csc-windows-"));
+  try {
+    const result = spawnSync(process.execPath, [tsxCli, builder, "--prepare-launchers", root], {
+      cwd: projectRoot,
+      encoding: "utf8",
+      windowsHide: true,
+      env: { ...process.env, WINDIR: emptyWindowsRoot }
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /Windows \.NET Framework C# 컴파일러\(csc\.exe\)를 찾을 수 없습니다/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(emptyWindowsRoot, { recursive: true, force: true });
+  }
+});
 
 test("break: a package without release EXEs fails in Korean instead of synthesizing a successful run", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r2-uat-missing-release-"));

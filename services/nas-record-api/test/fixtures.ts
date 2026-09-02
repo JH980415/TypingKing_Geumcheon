@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { RECORD_HEADERS } from "../../../shared/constants/defaults.js";
 import type { NasRecordEnvelopeV1, NasSessionV1 } from "../../../shared/nas/protocol.js";
 import type { RecordRow, StageText } from "../../../shared/types/index.js";
+import { buildCanonicalAiAttempt } from "../../../shared/utils/geumcheonAiAttempt.js";
 import type { TokenManifestV1 } from "../src/auth.js";
 import type { RecordValidationConfigV1 } from "../src/recordSchema.js";
 
@@ -33,7 +34,7 @@ export const CATALOG: readonly StageText[] = [
 
 export function recordRow(overrides: Partial<RecordRow> = {}): RecordRow {
   const row = Object.fromEntries(RECORD_HEADERS.map((key) => [key, ""])) as unknown as RecordRow;
-  return Object.assign(row, {
+  const completed = Object.assign(row, {
     record_id: RECORD_ID,
     created_at: "2026-08-26T03:00:00.000Z",
     completed_at: "2026-08-26T03:00:06.000Z",
@@ -110,8 +111,31 @@ export function recordRow(overrides: Partial<RecordRow> = {}): RecordRow {
     is_admin_edited: "false",
     ...overrides,
   });
+  if (completed.canonicalAttempt === undefined) {
+    completed.canonicalAttempt = canonicalAttemptForRecord(completed.record_id);
+  }
+  return completed;
 }
 
+function canonicalAttemptForRecord(recordId: string) {
+  const identity = /^gsc26-(pc(?:0[1-9]|10))-(.+)$/.exec(recordId);
+  return buildCanonicalAiAttempt({
+    schemaVersion: 1,
+    attemptId: identity == null ? "gsc26-attempt-11111111-1111-4111-8111-111111111111" : `gsc26-attempt-${identity[2]}`,
+    recordId,
+    deviceId: identity == null ? "PC01" : identity[1]!.toUpperCase(),
+    recordedAt: "2026-08-26T03:00:06.000Z",
+    result: "PARTICIPANT_WIN",
+    interruptionReason: null,
+    participantFinishTimeMs: 6000,
+    geumnaraeFinishTimeMs: 7200,
+    stages: [
+      { stageNumber: 1, entered: true, assignedInputUnits: 1, participantCorrectInputUnits: 1, participantValidInputUnits: 1, participantActiveTypingTimeMs: 2000, geumnaraeCorrectInputUnits: 1, geumnaraeValidInputUnits: 1, geumnaraeActiveTypingTimeMs: 2400, activeDuelTimeMs: 2000 },
+      { stageNumber: 2, entered: true, assignedInputUnits: 1, participantCorrectInputUnits: 1, participantValidInputUnits: 1, participantActiveTypingTimeMs: 2000, geumnaraeCorrectInputUnits: 1, geumnaraeValidInputUnits: 1, geumnaraeActiveTypingTimeMs: 2400, activeDuelTimeMs: 2000 },
+      { stageNumber: 3, entered: true, assignedInputUnits: 1, participantCorrectInputUnits: 1, participantValidInputUnits: 1, participantActiveTypingTimeMs: 2000, geumnaraeCorrectInputUnits: 1, geumnaraeValidInputUnits: 1, geumnaraeActiveTypingTimeMs: 2400, activeDuelTimeMs: 2000 },
+    ],
+  });
+}
 export function envelope(row = recordRow(), session: NasSessionV1 = OFFICIAL_SESSION): NasRecordEnvelopeV1 {
   return {
     schema_version: 1,

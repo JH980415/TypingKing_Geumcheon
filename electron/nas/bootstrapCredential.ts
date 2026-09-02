@@ -23,6 +23,36 @@ export type BootstrapCredentialOptions = {
   fileSystem?: BootstrapCredentialFileSystem;
 };
 
+export type BootstrapCredentialScope = {
+  scope: "writer" | "leaderboard" | "operator";
+  bootstrapFileName: string;
+  encryptedFileName: string;
+};
+
+export function resolveBootstrapCredentialScopes(
+  role: "player" | "leaderboard",
+): BootstrapCredentialScope[] {
+  if (role === "player") {
+    return [{
+      scope: "writer",
+      bootstrapFileName: "bootstrap-credentials.json",
+      encryptedFileName: "device-token.bin",
+    }];
+  }
+  return [
+    {
+      scope: "leaderboard",
+      bootstrapFileName: "bootstrap-credentials.json",
+      encryptedFileName: "leaderboard-token.bin",
+    },
+    {
+      scope: "operator",
+      bootstrapFileName: "bootstrap-operator-credentials.json",
+      encryptedFileName: "operator-token.bin",
+    },
+  ];
+}
+
 type BootstrapCredential = {
   schemaVersion: 1;
   eventId: typeof GEUMCHEON_NAS_EVENT_ID;

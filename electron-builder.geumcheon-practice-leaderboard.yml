@@ -39,11 +39,11 @@ extraResources:
       - assets/robot_05_festival_victory.png
       - assets/robot_defeat_01_geumnarae_typer.png
       - assets/stage_01_03_science_classroom.png
-      - assets/title_04_science_hologram.png
+      - assets/title_05_geumcheon_geumnarae_r203.png
       - assets/vs_03_science_portal.png
-      - assets/ai_challenge/stage_badge_1.png
-      - assets/ai_challenge/stage_badge_2.png
-      - assets/ai_challenge/stage_badge_3.png
+      - assets/ai_challenge/stage_badge_1_r203.png
+      - assets/ai_challenge/stage_badge_2_r203.png
+      - assets/ai_challenge/stage_badge_3_r203.png
 asar: true
 win:
   icon: assets/icons/leaderboard_app_icon.ico
@@ -53,4 +53,4 @@ win:
       arch:
         - x64
 portable:
-  artifactName: G-Science AI 타자왕_연습모드_리더보드.exe
+  artifactName: G-Science AI 타자왕 연습모드 리더보드.exe

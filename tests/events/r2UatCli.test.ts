@@ -8,6 +8,12 @@ import test from "node:test";
 const projectRoot = path.resolve(__dirname, "..", "..");
 const tsxCli = path.join(projectRoot, "node_modules", "tsx", "dist", "cli.mjs");
 const runner = path.join(projectRoot, "scripts", "r2-uat", "standalone-uat.ts");
+const directLaunchers = [
+  "G-Science AI 타자왕 리더보드.exe",
+  "G-Science AI 타자왕 연습모드 리더보드.exe",
+  "G-Science AI 타자왕 연습모드.exe",
+  "G-Science AI 타자왕.exe"
+] as const;
 
 function runUat(...args: string[]) {
   return spawnSync(process.execPath, [tsxCli, runner, ...args], {
@@ -45,10 +51,25 @@ test("break: launcher preparation creates the exact Korean one-click file set", 
       "07_연습모드_플레이어+리더보드_동시테스트.cmd",
       "08_샘플데이터_리더보드_화면검수.cmd",
       "09_UAT기록_초기화.cmd",
-      "EXE_직접실행금지_UAT안내.txt",
+      ...directLaunchers,
       "Run_R2_UAT.cmd",
       "runtime"
     ]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("break: an unsafe stale direct-launch notice is rejected before new launchers are written", { skip: process.platform !== "win32" }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r2-uat-unsafe-stale-notice-"));
+  try {
+    fs.mkdirSync(path.join(root, "EXE_직접실행금지_UAT안내.txt"));
+    const result = runUat("--prepare-launchers", root);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /기존 직접실행금지 안내를 안전하게 정리할 수 없습니다/);
+    for (const launcher of directLaunchers) {
+      assert.equal(fs.existsSync(path.join(root, launcher)), false, `${launcher} was written before stale notice validation`);
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

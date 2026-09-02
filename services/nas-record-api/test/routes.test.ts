@@ -12,6 +12,7 @@ import type { RecordValidationConfigV1 } from "../src/recordSchema.js";
 import { envelope, recordRow } from "./fixtures.js";
 
 const token = "1".repeat(64);
+const leaderboardToken = "2".repeat(64);
 const operatorToken = "3".repeat(64);
 const recordId = "gsc26-pc01-11111111-1111-4111-8111-111111111111";
 const attemptId = "gsc26-attempt-11111111-1111-4111-8111-111111111111";
@@ -45,6 +46,15 @@ function headers(overrides: Record<string, string> = {}): Record<string, string>
 function operatorConfig(root: string): ReturnType<typeof config> {
   const configured = config(root);
   (configured.tokenManifest as TokenManifestV1).tokens.push({
+    tokenId: "leaderboard-read",
+    tokenHash: createHash("sha256").update(leaderboardToken).digest("hex"),
+    deviceId: "LEADERBOARD01",
+    role: "leaderboard",
+    allowedSessions: ["official", "practice"],
+    expiresAt: "2026-08-27T00:00:00.000Z",
+    revokedAt: null,
+  });
+  (configured.tokenManifest as TokenManifestV1).tokens.push({
     tokenId: "leaderboard-operator",
     tokenHash: createHash("sha256").update(operatorToken).digest("hex"),
     deviceId: "LEADERBOARD01",
@@ -54,6 +64,14 @@ function operatorConfig(root: string): ReturnType<typeof config> {
     revokedAt: null,
   });
   return configured;
+}
+
+function leaderboardHeaders(): Record<string, string> {
+  return {
+    authorization: `Bearer ${leaderboardToken}`,
+    "x-device-id": "LEADERBOARD01",
+    "content-type": "application/json",
+  };
 }
 
 function operatorHeaders(): Record<string, string> {
@@ -214,7 +232,7 @@ test("maps raw storage errno failures to a safe unavailable response", async (co
   assert.equal(response.body.includes("disk full"), false);
 });
 
-test("operator token reads full rows and applies admin edits through authenticated routes", async (context) => {
+test("leaderboard token reads full rows while operator applies admin edits through authenticated routes", async (context) => {
   const root = mkdtempSync(join(tmpdir(), "nas-routes-"));
   context.after(() => rmSync(root, { recursive: true, force: true }));
   const app = buildNasApp({
@@ -232,10 +250,18 @@ test("operator token reads full rows and applies admin edits through authenticat
   assert.equal(saved.statusCode, 201, saved.body);
 
   const route = "/api/v1/records?session_kind=official&session_id=official-day1-round1&day_no=1&round_no=1";
-  const snapshot = await app.inject({
+  const operatorDenied = await app.inject({
     method: "GET",
     url: route,
     headers: operatorHeaders(),
+  });
+  assert.equal(operatorDenied.statusCode, 403, operatorDenied.body);
+  assert.equal(operatorDenied.json().code, "ROLE_SCOPE");
+
+  const snapshot = await app.inject({
+    method: "GET",
+    url: route,
+    headers: leaderboardHeaders(),
   });
   assert.equal(snapshot.statusCode, 200, snapshot.body);
   assert.equal(snapshot.json().rows[0].phone_full, "01000000001");
@@ -268,7 +294,7 @@ test("operator token reads full rows and applies admin edits through authenticat
   const after = await app.inject({
     method: "GET",
     url: route,
-    headers: operatorHeaders(),
+    headers: leaderboardHeaders(),
   });
   assert.equal(after.json().rows[0].participant_name, "수정 이름");
 
@@ -278,6 +304,60 @@ test("operator token reads full rows and applies admin edits through authenticat
     headers: headers(),
   });
   assert.equal(writerDenied.statusCode, 403);
+});
+
+test("enforces the leaderboard token's read-only endpoint matrix", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "nas-leaderboard-read-only-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const app = buildNasApp({
+    config: operatorConfig(root),
+    now: () => "2026-08-26T03:10:00.000Z",
+  });
+  context.after(() => app.close());
+
+  const saved = await app.inject({
+    method: "POST",
+    url: "/api/v1/records",
+    headers: headers(),
+    payload: body(),
+  });
+  assert.equal(saved.statusCode, 201, saved.body);
+
+  const sessionQuery = "session_kind=official&session_id=official-day1-round1&day_no=1&round_no=1";
+  const ready = await app.inject({
+    method: "GET",
+    url: `/api/v1/ready?${sessionQuery}`,
+    headers: leaderboardHeaders(),
+  });
+  assert.equal(ready.statusCode, 200, ready.body);
+  assert.equal(ready.json().role, "leaderboard");
+
+  const writeDenied = await app.inject({
+    method: "POST",
+    url: "/api/v1/records",
+    headers: leaderboardHeaders(),
+    payload: body(),
+  });
+  assert.equal(writeDenied.statusCode, 403, writeDenied.body);
+  assert.equal(writeDenied.json().code, "ROLE_SCOPE");
+
+  const adminDenied = await app.inject({
+    method: "POST",
+    url: "/api/v1/admin/actions",
+    headers: leaderboardHeaders(),
+    payload: {},
+  });
+  assert.equal(adminDenied.statusCode, 403, adminDenied.body);
+  assert.equal(adminDenied.json().code, "ROLE_SCOPE");
+
+  const snapshot = await app.inject({
+    method: "GET",
+    url: `/api/v1/records?${sessionQuery}`,
+    headers: leaderboardHeaders(),
+  });
+  assert.equal(snapshot.statusCode, 200, snapshot.body);
+  assert.equal(snapshot.json().rows.length, 1);
+  assert.equal(snapshot.json().rows[0].record_id, recordId);
 });
 
 test("authenticated ready route returns only the bound principal and configured session", async (context) => {
@@ -343,10 +423,39 @@ test("authenticated contradictory records are quarantined with a generic 422 and
   const snapshot = await app.inject({
     method: "GET",
     url: "/api/v1/records?session_kind=official&session_id=official-day1-round1&day_no=1&round_no=1",
-    headers: operatorHeaders(),
+    headers: leaderboardHeaders(),
   });
   assert.equal(snapshot.statusCode, 200, snapshot.body);
   assert.deepEqual(snapshot.json().rows, []);
+});
+
+test("authenticated records missing canonicalAttempt receive a generic 422 and never publish", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "nas-missing-canonical-attempt-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const app = buildNasApp({
+    config: operatorConfig(root),
+    now: () => "2026-08-26T03:10:00.000Z",
+  });
+  context.after(() => app.close());
+
+  const payload = body();
+  delete (payload.row as Record<string, unknown>).canonicalAttempt;
+  const response = await app.inject({
+    method: "POST",
+    url: "/api/v1/records",
+    headers: headers(),
+    payload,
+  });
+
+  assert.equal(response.statusCode, 422, response.body);
+  assert.deepEqual(response.json(), {
+    schema_version: 1,
+    code: "REQUEST_INVALID",
+    message: "REQUEST_INVALID",
+  });
+  assert.equal(response.body.includes("CANONICAL_ATTEMPT_INVALID"), false);
+  assert.equal(response.body.includes(root), false);
+  assert.equal(existsSync(incomingPath(root)), false);
 });
 
 test("identical contradictory retry remains one durable quarantine after API restart", async (context) => {
@@ -596,7 +705,7 @@ test("admin edits that contradict canonical stage semantics are excluded from ef
   const snapshot = await app.inject({
     method: "GET",
     url: "/api/v1/records?session_kind=official&session_id=official-day1-round1&day_no=1&round_no=1",
-    headers: operatorHeaders(),
+    headers: leaderboardHeaders(),
   });
   assert.equal(snapshot.statusCode, 200, snapshot.body);
   assert.deepEqual(snapshot.json().rows, []);

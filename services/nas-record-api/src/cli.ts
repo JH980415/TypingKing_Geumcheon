@@ -6,13 +6,25 @@ import { loadNasConfig } from "./config.js";
 
 async function main(): Promise<void> {
   try {
+    const listenOptions = resolveListenOptions(process.env);
     const loaded = loadNasConfig(process.env);
     const app = buildNasApp({ config: { ...loaded, stageTextCatalog: loadCatalog(loaded.stageTextCatalogPath) } });
-    await app.listen({ host: process.env.NAS_BIND_HOST ?? "127.0.0.1", port: Number(process.env.NAS_PORT ?? "8787") });
+    await app.listen(listenOptions);
   } catch {
     process.stderr.write("NAS record service configuration unavailable\n");
     process.exitCode = 1;
   }
+}
+
+export function resolveListenOptions(environment: NodeJS.ProcessEnv): { host: "127.0.0.1" | "::1"; port: number } {
+  const host = environment.NAS_BIND_HOST ?? "127.0.0.1";
+  const rawPort = environment.NAS_PORT;
+  if ((host !== "127.0.0.1" && host !== "::1") || (rawPort != null && !/^\d+$/.test(rawPort))) {
+    throw new Error("NAS_LISTEN_INVALID");
+  }
+  const port = rawPort == null ? 8787 : Number(rawPort);
+  if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("NAS_LISTEN_INVALID");
+  return { host, port };
 }
 
 function loadCatalog(path: string): StageText[] {
@@ -42,4 +54,6 @@ function parseCsv(line: string): string[] {
   return fields;
 }
 
-void main();
+if (process.argv[1] != null && /(?:^|[\\/])(?:cli\.ts|server\.cjs)$/.test(process.argv[1])) {
+  void main();
+}

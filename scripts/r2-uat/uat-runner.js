@@ -8,7 +8,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const APPS = new Set(["ai", "ai-leaderboard", "practice", "practice-leaderboard"]);
-const REQUIRED = ["00_먼저읽어주세요.txt", "01_AI타자왕_테스트실행.cmd", "02_AI타자왕_리더보드_테스트실행.cmd", "03_AI타자왕_연습모드_테스트실행.cmd", "04_연습모드_리더보드_테스트실행.cmd", "05_전체_순차테스트.cmd", "06_공식모드_플레이어+리더보드_동시테스트.cmd", "07_연습모드_플레이어+리더보드_동시테스트.cmd", "08_샘플데이터_리더보드_화면검수.cmd", "09_UAT기록_초기화.cmd", "Run_R2_UAT.cmd", "EXE_직접실행금지_UAT안내.txt"];
+const REQUIRED = ["00_먼저읽어주세요.txt", "01_AI타자왕_테스트실행.cmd", "02_AI타자왕_리더보드_테스트실행.cmd", "03_AI타자왕_연습모드_테스트실행.cmd", "04_연습모드_리더보드_테스트실행.cmd", "05_전체_순차테스트.cmd", "06_공식모드_플레이어+리더보드_동시테스트.cmd", "07_연습모드_플레이어+리더보드_동시테스트.cmd", "08_샘플데이터_리더보드_화면검수.cmd", "09_UAT기록_초기화.cmd", "Run_R2_UAT.cmd", "G-Science AI 타자왕.exe", "G-Science AI 타자왕 리더보드.exe", "G-Science AI 타자왕 연습모드.exe", "G-Science AI 타자왕 연습모드 리더보드.exe"];
 const EVENT_ID = "geumcheon-science-festival-2026";
 const OFFICIAL_SESSION_ID = "r2-uat-official";
 const PRACTICE_SESSION_ID = "r2-uat-practice";
@@ -147,10 +147,11 @@ function safeEnvironment(additions) {
   return { ...env, ...additions };
 }
 
-function writeSyntheticProfile({ caseRoot, executableDirectory, app, baseUrl, token }) {
+function writeSyntheticProfile({ caseRoot, executableDirectory, app, baseUrl, token, operatorToken }) {
   const endpoint = new URL(baseUrl);
   if (endpoint.protocol !== "https:" || endpoint.hostname !== "127.0.0.1" || endpoint.pathname !== "/") throw new Error("UAT_API_MUST_BE_HTTPS_LOOPBACK");
   if (!/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error("SYNTHETIC_TOKEN_INVALID");
+  if (app.role === "leaderboard" && !/^[A-Za-z0-9_-]{43}$/.test(operatorToken || "")) throw new Error("SYNTHETIC_OPERATOR_TOKEN_INVALID");
   const localAppData = path.join(caseRoot, "LocalAppData");
   const appData = path.join(caseRoot, "RoamingAppData");
   const temp = path.join(caseRoot, "Temp");
@@ -159,6 +160,9 @@ function writeSyntheticProfile({ caseRoot, executableDirectory, app, baseUrl, to
   for (const directory of [executableDirectory, localAppData, appData, temp, userDataPath]) fs.mkdirSync(directory, { recursive: true });
   atomicJson(path.join(executableDirectory, "device-profile.json"), { schemaVersion: 1, eventProfileId: "geumcheon-2026", eventId: EVENT_ID, deviceId: app.deviceId, role: app.role, apiBaseUrl: baseUrl, sessions: { official: { sessionId: OFFICIAL_SESSION_ID, dayNo: 1, roundNo: 1 }, practice: { sessionId: PRACTICE_SESSION_ID } }, requestTimeoutMs: 5000, retry: { initialDelayMs: 1000, maxDelayMs: 2000 } });
   atomicJson(path.join(executableDirectory, "bootstrap-credentials.json"), { schemaVersion: 1, eventId: EVENT_ID, deviceId: app.deviceId, apiBaseUrl: baseUrl, token });
+  if (app.role === "leaderboard") {
+    atomicJson(path.join(executableDirectory, "bootstrap-operator-credentials.json"), { schemaVersion: 1, eventId: EVENT_ID, deviceId: app.deviceId, apiBaseUrl: baseUrl, token: operatorToken });
+  }
   return { runtimeRoot, userDataPath };
 }
 
@@ -298,17 +302,26 @@ function startPersistentMock({ temporaryRoot, packageRoot: root, tokens, namespa
     try {
       const requestUrl = new URL(request.url || "/", "https://127.0.0.1");
       const device = String(request.headers["x-device-id"] || "");
-      const expected = tokens[device];
-      const authenticated = Boolean(expected) && request.headers.authorization === `Bearer ${expected}`;
+      const writerExpected = tokens[device];
+      const leaderboardExpected = tokens.LEADERBOARD01;
+      const operatorExpected = tokens.LEADERBOARD01_OPERATOR;
+      const presented = request.headers.authorization;
       const session = sessionFromUrl(requestUrl);
-      if (!expected) return sendJson(response, 403, { error: "forbidden" });
-      if (!authenticated) return sendJson(response, 401, { error: "unauthorized" });
       if (request.method === "GET" && requestUrl.pathname === "/api/v1/ready") {
         if (!session) return sendJson(response, 400, { error: "session_invalid" });
-        return sendJson(response, 200, { schema_version: 1, status: "ready", event_id: EVENT_ID, device_id: device, role: device === "LEADERBOARD01" ? "operator" : "writer", session });
+        const role = device === "LEADERBOARD01" && Boolean(leaderboardExpected) && presented === `Bearer ${leaderboardExpected}`
+          ? "leaderboard"
+          : device === "LEADERBOARD01" && Boolean(operatorExpected) && presented === `Bearer ${operatorExpected}`
+            ? "operator"
+            : /^PC(?:0[1-9]|10)$/.test(device) && Boolean(writerExpected) && presented === `Bearer ${writerExpected}`
+              ? "writer"
+              : undefined;
+        if (!role) return sendJson(response, 401, { error: "unauthorized" });
+        return sendJson(response, 200, { schema_version: 1, status: "ready", event_id: EVENT_ID, device_id: device, role, session });
       }
       if (request.method === "GET" && requestUrl.pathname === "/api/v1/records") {
         if (device !== "LEADERBOARD01") return sendJson(response, 403, { error: "forbidden" });
+        if (!leaderboardExpected || presented !== `Bearer ${leaderboardExpected}`) return sendJson(response, 403, { error: "forbidden" });
         if (!session) return sendJson(response, 400, { error: "session_invalid" });
         const rows = namespace === "self-test" ? records : rowsForNamespace(root, namespace, session);
         return sendJson(response, 200, { schema_version: 1, event_id: EVENT_ID, session, generated_at: new Date().toISOString(), rows });
@@ -316,6 +329,7 @@ function startPersistentMock({ temporaryRoot, packageRoot: root, tokens, namespa
       if (request.method === "POST" && requestUrl.pathname === "/api/v1/records") {
         if (namespace !== "normal") return sendJson(response, 403, { error: "sample_read_only" });
         if (!/^PC(?:0[1-9]|10)$/.test(device)) return sendJson(response, 403, { error: "forbidden" });
+        if (!writerExpected || presented !== `Bearer ${writerExpected}`) return sendJson(response, 401, { error: "unauthorized" });
         const body = await readRequestBody(request);
         const envelope = JSON.parse(body || "{}");
         const sessionForPost = sessionFromEnvelope(envelope.session);
@@ -327,6 +341,13 @@ function startPersistentMock({ temporaryRoot, packageRoot: root, tokens, namespa
         if (idempotencyKey !== envelope?.row?.record_id) return sendJson(response, 422, { schema_version: 1, code: "IDEMPOTENCY_KEY_MISMATCH", message: "기록 ID와 멱등성 키가 일치하지 않습니다." });
         const result = storeEnvelope(root, sessionForPost, envelope);
         return sendJson(response, result.status, result.body);
+      }
+      if (request.method === "POST" && requestUrl.pathname === "/api/v1/admin/actions") {
+        if (device !== "LEADERBOARD01" || !operatorExpected || presented !== `Bearer ${operatorExpected}`) {
+          return sendJson(response, 403, { error: "forbidden" });
+        }
+        await readRequestBody(request);
+        return sendJson(response, 200, { ok: true });
       }
       return sendJson(response, 404, { error: "not_found" });
     } catch {
@@ -431,6 +452,7 @@ function parseArgs(argv) {
 
 function syntheticTokens() {
   const tokens = { LEADERBOARD01: crypto.randomBytes(32).toString("base64url") };
+  tokens.LEADERBOARD01_OPERATOR = crypto.randomBytes(32).toString("base64url");
   for (let index = 1; index <= 10; index += 1) {
     tokens[`PC${String(index).padStart(2, "0")}`] = crypto.randomBytes(32).toString("base64url");
   }

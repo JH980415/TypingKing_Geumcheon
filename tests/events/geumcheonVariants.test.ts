@@ -18,6 +18,14 @@ const geumcheonProfile = loadEventProfile(
   path.resolve("events/geumcheon-2026/event.config.json")
 );
 
+const geumcheonVariantOrder = ["ai", "ai-leaderboard", "practice", "practice-leaderboard"] as const;
+const r2UatDefaultConfig = JSON.parse(
+  fs.readFileSync(path.resolve("scripts/r2-uat/uat-default-config.json"), "utf8")
+) as {
+  apps: Array<{ key: string; displayName: string; fileName: string }>;
+  requiredResources: string[];
+};
+
 const deviceProfile = {
   schemaVersion: 1,
   eventProfileId: "geumcheon-2026",
@@ -32,6 +40,52 @@ const deviceProfile = {
   requestTimeoutMs: 5000,
   retry: { initialDelayMs: 2000, maxDelayMs: 60000 }
 } as const;
+
+test("R2 UAT app names match the enabled Geumcheon variant artifacts", () => {
+  const expectedApps = geumcheonVariantOrder.map((variant) => {
+    const policy = variantPolicyFor(geumcheonProfile, variant);
+    return {
+      key: variant,
+      displayName: policy.displayName,
+      fileName: policy.artifactName
+    };
+  });
+
+  assert.deepEqual(
+    r2UatDefaultConfig.apps.map(({ key, displayName, fileName }) => ({ key, displayName, fileName })),
+    expectedApps
+  );
+});
+
+test("R2 UAT resources use the current Geumcheon title asset", () => {
+  const expectedTitle = `events/geumcheon-2026/${geumcheonProfile.assets.eventTitle}`;
+
+  assert.equal(r2UatDefaultConfig.requiredResources.includes(expectedTitle), true);
+  assert.equal(
+    r2UatDefaultConfig.requiredResources.includes(
+      "events/geumcheon-2026/assets/title_04_science_hologram.png"
+    ),
+    false
+  );
+});
+
+test("R2 UAT resources use the current Geumcheon stage badges", () => {
+  const expectedBadges = geumcheonProfile.assets.stageBadges.map(
+    (resource) => `events/geumcheon-2026/${resource}`
+  );
+  const retiredBadges = [1, 2, 3].map(
+    (stage) => `events/geumcheon-2026/assets/ai_challenge/stage_badge_${stage}.png`
+  );
+
+  assert.deepEqual(
+    expectedBadges.filter((resource) => !r2UatDefaultConfig.requiredResources.includes(resource)),
+    []
+  );
+  assert.deepEqual(
+    retiredBadges.filter((resource) => r2UatDefaultConfig.requiredResources.includes(resource)),
+    []
+  );
+});
 
 test("adds the validated Geumcheon profile policy and device to renderer bootstrap", () => {
   const bootstrap = createBootstrapData({
@@ -175,9 +229,9 @@ test("SkillUp runtime refresh remains raw settings", () => {
 
 const geumcheonArtifacts = [
   ["ai", "G-Science AI 타자왕.exe"],
-  ["ai-leaderboard", "G-Science AI 타자왕_리더보드.exe"],
-  ["practice", "G-Science AI 타자왕_연습모드.exe"],
-  ["practice-leaderboard", "G-Science AI 타자왕_연습모드_리더보드.exe"]
+  ["ai-leaderboard", "G-Science AI 타자왕 리더보드.exe"],
+  ["practice", "G-Science AI 타자왕 연습모드.exe"],
+  ["practice-leaderboard", "G-Science AI 타자왕 연습모드 리더보드.exe"]
 ] as const;
 const approvedEventResources = [
   "event.config.json",
@@ -191,11 +245,11 @@ const approvedEventResources = [
   "assets/robot_05_festival_victory.png",
   "assets/robot_defeat_01_geumnarae_typer.png",
   "assets/stage_01_03_science_classroom.png",
-  "assets/title_04_science_hologram.png",
+  "assets/title_05_geumcheon_geumnarae_r203.png",
   "assets/vs_03_science_portal.png",
-  "assets/ai_challenge/stage_badge_1.png",
-  "assets/ai_challenge/stage_badge_2.png",
-  "assets/ai_challenge/stage_badge_3.png"
+  "assets/ai_challenge/stage_badge_1_r203.png",
+  "assets/ai_challenge/stage_badge_2_r203.png",
+  "assets/ai_challenge/stage_badge_3_r203.png"
 ];
 const approvedAiAssets = [
   "ai_boss_typing.png",

@@ -90,7 +90,7 @@ export function buildNasApp(dependencies: BuildNasAppDependencies): FastifyInsta
 
   app.get("/api/v1/records", async (request, reply) => {
     const principal = authenticateRequest(
-      { ...request.headers, requiredRole: "operator" },
+      { ...request.headers, requiredRole: "leaderboard" },
       dependencies.config.tokenManifest,
       now(),
     );

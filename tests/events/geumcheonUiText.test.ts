@@ -83,7 +83,7 @@ test("Geumcheon challenge screen names the AI competitor as Geumnarae", () => {
   assert.doesNotMatch(html, /AI보다 먼저/);
 });
 
-test("Geumcheon official leaderboard uses approved R2.0.2 labels and count wording", () => {
+test("Geumcheon official leaderboard uses approved R2.0.3 labels and count wording", () => {
   const html = renderLeaderboardMarkup();
 
   for (const label of [
@@ -99,7 +99,7 @@ test("Geumcheon official leaderboard uses approved R2.0.2 labels and count wordi
   ]) {
     assert.match(html, new RegExp(label));
   }
-  assert.match(html, /title_04_science_hologram\.png/);
+  assert.match(html, /title_05_geumcheon_geumnarae_r203\.png/);
   assert.doesNotMatch(html, /종료 스테이지/);
   assert.doesNotMatch(html, /참여자 점수/);
   assert.doesNotMatch(html, /AI 점수/);

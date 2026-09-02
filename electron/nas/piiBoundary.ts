@@ -14,6 +14,16 @@ const SAFE_ERROR_CODES = new Set([
 
 export type PiiSafeError = { message: string; code?: string; status?: number };
 
+export function rendererSafeFailure(
+  _error: unknown,
+  fallback?: string,
+): { ok: false; error: string } {
+  return {
+    ok: false,
+    error: fallback || "요청을 처리하지 못했습니다. 다시 시도해 주세요.",
+  };
+}
+
 export function piiSafeError(error: unknown): PiiSafeError {
   if (isObject(error)) {
     const candidate = typeof error.code === "string" ? error.code : undefined;

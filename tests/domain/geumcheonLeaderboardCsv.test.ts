@@ -15,7 +15,6 @@ import type {
   RecordRow
 } from "../../shared/types";
 import { buildCanonicalAiAttempt } from "../../shared/utils/geumcheonAiAttempt";
-import { buildCanonicalAiAttempt } from "../../shared/utils/geumcheonAiAttempt";
 
 function canonicalAttempt(
   recordId: string,
@@ -243,6 +242,43 @@ test("CSV export uses canonical order and competition tie ranks", (context) => {
       { rank: "4", recordId: "a-fourth" }
     ]
   );
+});
+
+test("CSV export neutralizes formula-leading participant names without mutating source records", (context) => {
+  const runtimeRoot = fs.mkdtempSync(
+    path.join(os.tmpdir(), "typingking-formula-safe-csv-")
+  );
+  context.after(() => fs.rmSync(runtimeRoot, { recursive: true, force: true }));
+  const runtime = ensureRuntime(runtimeRoot, path.resolve("."));
+  runtime.config.syncMode = "local";
+  const dangerousNames = [
+    "=HYPERLINK(\"https://127.0.0.1\",\"x\")",
+    "+1+1",
+    "-1+1",
+    "@SUM(1,1)",
+    "\t=1+1",
+    "\r=1+1",
+    "\n=1+1"
+  ];
+  const rows = dangerousNames.map((participantName, index) => ({
+    ...record(`formula-${index}`),
+    participant_name: participantName
+  }));
+
+  const fileName = exportRecords(runtime, rows, "all", "ai_challenge");
+  const csvRows = parse(
+    fs.readFileSync(path.join(runtime.paths.exportsDir, fileName), "utf8")
+      .replace(/^\uFEFF/, "")
+  ) as string[][];
+  const nameIndex = RECORD_HEADERS.indexOf("participant_name") + 1;
+  const exportedNamesById = new Map(
+    csvRows.slice(1).map((row) => [row[1], row[nameIndex]])
+  );
+
+  for (const row of rows) {
+    assert.equal(exportedNamesById.get(row.record_id), `'${row.participant_name}`);
+  }
+  assert.deepEqual(rows.map((row) => row.participant_name), dangerousNames);
 });
 
 test("CSV export preserves legacy AI ordering without a canonical extension", (context) => {

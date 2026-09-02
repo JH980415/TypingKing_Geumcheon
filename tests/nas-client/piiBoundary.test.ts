@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as piiBoundaryModule from "../../electron/nas/piiBoundary";
 import { piiSafeError, piiSafeLogFields } from "../../electron/nas/piiBoundary";
 
 test("reduces arbitrary errors to an allowlisted code without raw PII or tokens", () => {
@@ -34,4 +35,30 @@ test("does not trust an arbitrary error code that contains personal data", () =>
   const safe = piiSafeError({ code: "PHONE_01012345678", status: 422 });
 
   assert.deepEqual(safe, { message: "NAS_OPERATION_FAILED", status: 422 });
+});
+
+test("returns a renderer-safe IPC failure without raw message code stack path filename token or body", () => {
+  const rendererSafeFailure = (
+    piiBoundaryModule as typeof piiBoundaryModule & {
+      rendererSafeFailure?: (
+        error: unknown,
+        fallback?: string,
+      ) => { ok: false; error: string };
+    }
+  ).rendererSafeFailure;
+  const privateError = new Error(
+    "BOOTSTRAP_CREDENTIAL_INVALID C:\\Users\\tester\\bootstrap-credentials.json "
+      + "Bearer synthetic-token response-body",
+  );
+  privateError.stack = `${privateError.message}\n at C:\\private\\electron\\main.ts:1:1`;
+
+  assert.equal(typeof rendererSafeFailure, "function");
+  const failure = rendererSafeFailure?.(privateError);
+  assert.deepEqual(Object.keys(failure ?? {}).sort(), ["error", "ok"]);
+  assert.equal(failure?.ok, false);
+  assert.match(failure?.error ?? "", /처리|다시/);
+  assert.doesNotMatch(
+    JSON.stringify(failure),
+    /BOOTSTRAP|C:\\\\|bootstrap-credentials|Bearer|synthetic-token|response-body|main\.ts/i,
+  );
 });

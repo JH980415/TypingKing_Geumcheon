@@ -36,6 +36,8 @@ export type ApplicationResourcePaths = {
   rendererAssetBaseUrl: string;
 };
 
+export type TlsEnvironmentTarget = Pick<DeviceProfile, "eventProfileId" | "apiBaseUrl">;
+
 function isModeMatchedE2eProfile(
   environment: Record<string, string | undefined>,
   isPackaged: boolean
@@ -43,6 +45,38 @@ function isModeMatchedE2eProfile(
   const profile = environment.TYPINGKING_E2E_PROFILE;
   if (profile === "approved-ui" || profile === "functional-flow") return !isPackaged;
   return profile === "packaged-smoke" && isPackaged;
+}
+
+function isExactGeumcheonLoopbackTarget(target?: TlsEnvironmentTarget): boolean {
+  if (target?.eventProfileId !== "geumcheon-2026") return false;
+  const match = /^https:\/\/127\.0\.0\.1:([1-9]\d{0,4})$/.exec(target.apiBaseUrl);
+  return Boolean(match && Number(match[1]) <= 65_535);
+}
+
+export function assertSafeTlsEnvironment(
+  environment: Record<string, string | undefined>,
+  isPackaged: boolean,
+  target?: TlsEnvironmentTarget,
+): void {
+  const entries = Object.entries(environment);
+  if (entries.some(([name]) => name.toUpperCase() === "NODE_TLS_REJECT_UNAUTHORIZED")) {
+    throw new Error("TLS_ENVIRONMENT_REJECTED");
+  }
+
+  const extraCaEntries = entries.filter(([name]) => name.toUpperCase() === "NODE_EXTRA_CA_CERTS");
+  if (extraCaEntries.length === 0) return;
+  const [name, value] = extraCaEntries[0];
+  if (extraCaEntries.length !== 1
+    || name !== "NODE_EXTRA_CA_CERTS"
+    || !value?.trim()
+    || !isModeMatchedE2eProfile(environment, isPackaged)
+    || !isExactGeumcheonLoopbackTarget(target)) {
+    throw new Error("TLS_ENVIRONMENT_REJECTED");
+  }
+}
+
+export function formatStartupErrorForDisplay(_error: unknown): string {
+  return "보안 설정을 확인할 수 없어 시작하지 못했습니다. 관리자에게 문의해 주세요.";
 }
 
 export function shouldShowStartupErrorDialog(
@@ -104,6 +138,12 @@ export function recordModeFromPolicy(policy: EventVariantPolicy): "normal" | "ai
 
 export function portableRuntimeMigrationAllowed(profileId: EventProfileId): boolean {
   return profileId === "skillup-2026";
+}
+
+export function assertLegacyLocalBackupIpcAllowed(profileId: EventProfileId): void {
+  if (profileId === "geumcheon-2026") {
+    throw new Error("LEGACY_LOCAL_BACKUP_IPC_DISABLED");
+  }
 }
 
 export function resolveApplicationResourcePaths(input: {

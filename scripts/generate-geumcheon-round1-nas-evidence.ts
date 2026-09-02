@@ -99,12 +99,12 @@ export async function generateGeumcheonRound1NasEvidence(options: {
     const officialSnapshot = await app.inject({
       method: "GET",
       url: "/api/v1/records?session_kind=official&session_id=official-day1-round1&day_no=1&round_no=1",
-      headers: headers("operator"),
+      headers: headers("leaderboard"),
     });
     const practiceSnapshot = await app.inject({
       method: "GET",
       url: "/api/v1/records?session_kind=practice&session_id=practice-2026",
-      headers: headers("operator"),
+      headers: headers("leaderboard"),
     });
     assert.equal(officialSnapshot.statusCode, 200, officialSnapshot.body);
     assert.equal(practiceSnapshot.statusCode, 200, practiceSnapshot.body);
