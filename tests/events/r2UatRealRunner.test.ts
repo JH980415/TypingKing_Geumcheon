@@ -75,7 +75,8 @@ function makeBaseRunnerPackage(root: string): string {
   );
   const releaseRoot = path.join(root, "release");
   fs.mkdirSync(releaseRoot, { recursive: true });
-  for (const app of config.apps) fs.copyFileSync(process.execPath, path.join(releaseRoot, app.fileName));
+  const noOpExecutable = path.join(process.env.SystemRoot || "C:\\Windows", "System32", "rundll32.exe");
+  for (const app of config.apps) fs.copyFileSync(noOpExecutable, path.join(releaseRoot, app.fileName));
   for (const resource of config.requiredResources) {
     const target = path.join(releaseRoot, resource);
     fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -102,23 +103,23 @@ test("UAT runner builds an explicit Chromium userData switch", () => {
     `--user-data-dir=${path.resolve(userDataPath)}`
   ]);
 });
-test("break: tracked real UAT runner spawns an executable child with its isolated profile", async () => {
+test("tracked real UAT runner passes its isolated profile to the executable child", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r2-uat-real-runner-"));
   const lifecycle = runner.createLifecycle();
   try {
     const executablePath = path.join(root, "synthetic.exe");
-    fs.copyFileSync(process.execPath, executablePath);
+    fs.copyFileSync(path.join(process.env.SystemRoot || "C:\\Windows", "System32", "rundll32.exe"), executablePath);
     const mock = await runner.startMockNas({ temporaryRoot: root, tokens: { PC01: "a".repeat(43), LEADERBOARD01: "b".repeat(43) }, records: [] });
     lifecycle.mock = mock;
     await runner.runOneApp({
-      layout: { appPaths: new Map([["ai", executablePath]]), resourcePaths: [] },
-      config: { runtimeConfig: {} },
-      app: { key: "ai", fileName: "synthetic.exe", displayName: "synthetic app", role: "player", deviceId: "PC01", sessionKind: "official" },
-      mock,
-      tokens: { PC01: "a".repeat(43) },
-      caseRoot: path.join(root, "case"),
-      lifecycle
-    });
+        layout: { appPaths: new Map([["ai", executablePath]]), resourcePaths: [] },
+        config: { runtimeConfig: {} },
+        app: { key: "ai", fileName: "synthetic.exe", displayName: "synthetic app", role: "player", deviceId: "PC01", sessionKind: "official" },
+        mock,
+        tokens: { PC01: "a".repeat(43) },
+        caseRoot: path.join(root, "case"),
+        lifecycle
+      });
     assert.equal(lifecycle.childPids.size, 0);
     assert.equal(fs.existsSync(path.join(root, "case", "executable", "device-profile.json")), true);
   } finally {
@@ -197,3 +198,6 @@ test("base direct leaderboard path provisions a separate operator token before l
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+
+
