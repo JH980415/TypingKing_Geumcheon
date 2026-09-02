@@ -52,7 +52,7 @@ test("loads the approved Geumcheon screen assets and preserves SkillUp fallbacks
       vsBadge: geumcheonAssets.vsBadge
     },
     {
-      eventTitle: "assets/title_05_geumcheon_geumnarae_r203.png",
+      eventTitle: "assets/ai_타자왕_금나래의_도전.png",
       startBackground: "assets/bg_leaderboard_03_typing_hall_of_fame.png",
       playBackground: "assets/bg_main_03_geumcheon_data_city.png",
       leaderboardBackground: "assets/stage_01_03_science_classroom.png",
@@ -112,8 +112,8 @@ test("resolves profile-scoped Geumcheon assets without changing shared SkillUp U
 
   assert.equal(typeof resolveEventAssetUrl, "function");
   assert.equal(
-    resolveEventAssetUrl?.("file:///resources/assets", geumcheonProfile, "assets/title_05_geumcheon_geumnarae_r203.png"),
-    "file:///resources/assets/../events/geumcheon-2026/assets/title_05_geumcheon_geumnarae_r203.png"
+    resolveEventAssetUrl?.("file:///resources/assets", geumcheonProfile, "assets/ai_타자왕_금나래의_도전.png"),
+    "file:///resources/assets/../events/geumcheon-2026/assets/ai_타자왕_금나래의_도전.png"
   );
   assert.equal(
     resolveEventAssetUrl?.("file:///resources/assets", skillUpProfile, "assets/background/brand-soft.png"),

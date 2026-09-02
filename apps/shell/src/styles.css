@@ -3284,6 +3284,29 @@ html[data-event-profile="geumcheon-2026"] .app::before {
   background: transparent;
 }
 
+html[data-event-profile="geumcheon-2026"] .mode-card {
+  height: clamp(102px, 14.2vh, 154px);
+  min-height: clamp(102px, 14.2vh, 154px);
+  display: flex;
+  flex-direction: column;
+  padding-block: clamp(4px, 0.6vh, 7px);
+  overflow: hidden;
+}
+
+html[data-event-profile="geumcheon-2026"] .mode-card-art {
+  flex: 1 1 0;
+  min-height: 0;
+  height: auto;
+  max-height: none;
+  margin-bottom: 0;
+  object-fit: contain;
+}
+
+html[data-event-profile="geumcheon-2026"] .mode-card small {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
 html[data-event-profile="geumcheon-2026"] .brand-header,
 html[data-event-profile="geumcheon-2026"] .leaderboard-header {
   background: transparent;

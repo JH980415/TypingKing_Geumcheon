@@ -226,15 +226,17 @@ export function createChallengeSaveInput({
     },
     is_debug: debugModeType === "ai_challenge_debug",
     debug_mode_type: debugModeType === "ai_challenge_debug" ? debugModeType : "",
-    interruption: interruptionAction
+    ...(interruptionAction
       ? {
-          action: interruptionAction,
-          resultStage: Number(failedStage) || terminalStage,
-          participantProgressPercent: aiDisplay.participantProgressPercent,
-          stageCharCounts,
-          totalTypingUnits: interruptedTypingUnits
+          interruption: {
+            action: interruptionAction,
+            resultStage: Number(failedStage) || terminalStage,
+            participantProgressPercent: aiDisplay.participantProgressPercent,
+            stageCharCounts,
+            totalTypingUnits: interruptedTypingUnits
+          }
         }
-      : undefined
+      : {})
   };
 }
 

@@ -848,46 +848,61 @@ async function safeAsync<T>(task: () => Promise<T>, fallback?: string) {
   }
 }
 
-if (mayStartApplication) void app.whenReady().then(async () => {
-  let launchPolicy: ReturnType<typeof resolveLaunchPolicy> | undefined;
-  let startup: ReturnType<typeof resolveStartupProfile> | undefined;
-  let applicationResources: ApplicationResourcePaths | undefined;
+let launchPolicy: ReturnType<typeof resolveLaunchPolicy> | undefined;
+let startup: ReturnType<typeof resolveStartupProfile> | undefined;
+let applicationResources: ApplicationResourcePaths | undefined;
+let startupInitializationError: unknown;
+
+function initializeStartup(): void {
+  const startupResources = resolveApplicationResourcePaths({
+    isPackaged: app.isPackaged,
+    projectRoot: resolveRoot(),
+    resourcesPath: process.resourcesPath,
+    eventProfileId: metadata.eventProfileId || "skillup-2026",
+    role: variant.endsWith("leaderboard") ? "leaderboard" : "player"
+  });
+  startup = resolveStartupProfile({
+    isPackaged: app.isPackaged,
+    projectRoot: startupResources.resourceRoot,
+    executableDirectory: process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath),
+    localAppData: process.env.LOCALAPPDATA || process.env.APPDATA,
+    eventProfile: process.env.EVENT_PROFILE,
+    packagedEventProfile: metadata.eventProfileId,
+    runtimeRootOverride: process.env.TYPINGKING_RUNTIME_ROOT
+  });
+  assertSafeTlsEnvironment(
+    process.env,
+    app.isPackaged,
+    startup.deviceProfile && {
+      eventProfileId: startup.deviceProfile.eventProfileId,
+      apiBaseUrl: startup.deviceProfile.apiBaseUrl
+    }
+  );
+  installConfiguredExtraCa();
+  startupRuntimeRoot = startup.runtimeRoot;
+  if (startup.userDataPath) app.setPath("userData", startup.userDataPath);
+  launchPolicy = resolveLaunchPolicy(startup, variant);
+  applicationResources = resolveApplicationResourcePaths({
+    isPackaged: app.isPackaged,
+    projectRoot: resolveRoot(),
+    resourcesPath: process.resourcesPath,
+    eventProfileId: startup.eventProfile.profileId,
+    role: startup.eventProfile.variants[variant].role
+  });
+}
+
+if (mayStartApplication && app.isPackaged && selectedEventProfileId === "geumcheon-2026") {
   try {
-    const startupResources = resolveApplicationResourcePaths({
-      isPackaged: app.isPackaged,
-      projectRoot: resolveRoot(),
-      resourcesPath: process.resourcesPath,
-      eventProfileId: metadata.eventProfileId || "skillup-2026",
-      role: variant.endsWith("leaderboard") ? "leaderboard" : "player"
-    });
-    startup = resolveStartupProfile({
-      isPackaged: app.isPackaged,
-      projectRoot: startupResources.resourceRoot,
-      executableDirectory: process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath),
-      localAppData: process.env.LOCALAPPDATA || process.env.APPDATA,
-      eventProfile: process.env.EVENT_PROFILE,
-      packagedEventProfile: metadata.eventProfileId,
-      runtimeRootOverride: process.env.TYPINGKING_RUNTIME_ROOT
-    });
-    assertSafeTlsEnvironment(
-      process.env,
-      app.isPackaged,
-      startup.deviceProfile && {
-        eventProfileId: startup.deviceProfile.eventProfileId,
-        apiBaseUrl: startup.deviceProfile.apiBaseUrl
-      }
-    );
-    installConfiguredExtraCa();
-    startupRuntimeRoot = startup.runtimeRoot;
-    if (startup.userDataPath) app.setPath("userData", startup.userDataPath);
-    launchPolicy = resolveLaunchPolicy(startup, variant);
-    applicationResources = resolveApplicationResourcePaths({
-      isPackaged: app.isPackaged,
-      projectRoot: resolveRoot(),
-      resourcesPath: process.resourcesPath,
-      eventProfileId: startup.eventProfile.profileId,
-      role: startup.eventProfile.variants[variant].role
-    });
+    initializeStartup();
+  } catch (error) {
+    startupInitializationError = error;
+  }
+}
+
+if (mayStartApplication) void app.whenReady().then(async () => {
+  try {
+    if (startupInitializationError) throw startupInitializationError;
+    if (!launchPolicy || !startup || !applicationResources) initializeStartup();
   } catch (error) {
     appendStartupLog(`Startup profile initialization failed: ${errorMessage(error)}`);
     if (shouldShowStartupErrorDialog(process.env, app.isPackaged)) {
@@ -947,11 +962,13 @@ if (mayStartApplication) void app.whenReady().then(async () => {
         ]);
       }
     : undefined;
-  createWindow(variant, startup.eventProfile, applicationResources, beforeClose);
+  const activeEventProfile = startup.eventProfile;
+  const activeApplicationResources = applicationResources;
+  createWindow(variant, activeEventProfile, activeApplicationResources, beforeClose);
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow(variant, startup.eventProfile, applicationResources, beforeClose);
+      createWindow(variant, activeEventProfile, activeApplicationResources, beforeClose);
     }
   });
 });

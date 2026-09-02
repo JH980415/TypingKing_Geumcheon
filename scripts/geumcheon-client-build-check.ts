@@ -39,7 +39,7 @@ const publicResources = [
   "events/geumcheon-2026/assets/robot_05_festival_victory.png",
   "events/geumcheon-2026/assets/robot_defeat_01_geumnarae_typer.png",
   "events/geumcheon-2026/assets/stage_01_03_science_classroom.png",
-  "events/geumcheon-2026/assets/title_05_geumcheon_geumnarae_r203.png",
+  "events/geumcheon-2026/assets/ai_타자왕_금나래의_도전.png",
   "events/geumcheon-2026/assets/vs_03_science_portal.png",
   "events/geumcheon-2026/assets/ai_challenge/stage_badge_1_r203.png",
   "events/geumcheon-2026/assets/ai_challenge/stage_badge_2_r203.png",

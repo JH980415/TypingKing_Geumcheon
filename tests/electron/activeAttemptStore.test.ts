@@ -10,6 +10,7 @@ import {
   type ActiveAttemptCheckpointV2,
   type ActiveAttemptEncryption,
 } from "../../electron/activeAttemptStore";
+import { createChallengeSaveInput } from "../../apps/typing-game/src/AIChallengeGame";
 import type { SaveRecordInput } from "../../shared/types";
 
 const KEY = Buffer.alloc(32, 7);
@@ -146,6 +147,65 @@ test("stores a V2 checkpoint containing canonical attempt evidence", async () =>
     await store.save(activeAttempt);
 
     assert.deepEqual(await store.read(), activeAttempt);
+  } finally {
+    fs.rmSync(runtimeRoot, { recursive: true, force: true });
+  }
+});
+
+test("stores a completed AI defeat input without treating an absent interruption as malformed", async () => {
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-active-attempt-defeat-"));
+  const checkpointPath = path.join(runtimeRoot, "active-attempt.bin");
+  try {
+    const store = createActiveAttemptStore({
+      checkpointPath,
+      encryption: encryptionAdapter(),
+      eventProfileId: "geumcheon-2026",
+    });
+    const selections = [
+      { id: "gsc26-ai-s1-001", catalogVersion: "geumcheon-v1", stageNumber: 1, text: "1234" },
+      { id: "gsc26-ai-s2-001", catalogVersion: "geumcheon-v1", stageNumber: 2, text: "12345678" },
+      { id: "gsc26-ai-s3-001", catalogVersion: "geumcheon-v1", stageNumber: 3, text: "123456789012" },
+    ] as const;
+    const finalDefeat = createChallengeSaveInput({
+      participant: {
+        name: "합성패배참가자",
+        phone1: "010",
+        phone2: "0000",
+        phone3: "0001",
+        birthYear: "2014",
+        birthMonth: "1",
+        birthDay: "2",
+        privacyAgreedAt: "2026-09-18T01:00:00.000Z",
+      },
+      stageTexts: selections.map((selection) => selection.text) as [string, string, string],
+      stageTextSelections: selections,
+      battleRows: [{
+        stage: 1,
+        text: selections[0].text,
+        userTimeMs: 1_000,
+        userCpm: 0,
+        userAccuracy: 0,
+        aiTimeMs: 1_000,
+        aiElapsedMs: 1_000,
+        aiCpm: 240,
+        plannedAiCpm: 240,
+        aiTypedUnits: 4,
+        aiTypedChars: 4,
+        result: "AI_WIN",
+        userInput: "",
+      }],
+      status: "FAILED",
+      failedStage: "1",
+      terminalStage: 1,
+      isGeumcheon: true,
+      debugModeType: "",
+    });
+    const activeAttempt = { ...checkpointV2(), input: finalDefeat };
+
+    assert.equal(Object.hasOwn(finalDefeat, "interruption"), false);
+    await store.save(activeAttempt);
+
+    assert.deepEqual((await store.read())?.input, finalDefeat);
   } finally {
     fs.rmSync(runtimeRoot, { recursive: true, force: true });
   }

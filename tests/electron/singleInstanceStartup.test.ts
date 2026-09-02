@@ -37,10 +37,40 @@ function createElectronHarness(
   const appPath = packagedMetadata
     ? fs.mkdtempSync(path.join(os.tmpdir(), "typingking-main-test-"))
     : path.resolve();
+  const previousPortableExecutableDirectory = process.env.PORTABLE_EXECUTABLE_DIR;
+  const previousLocalAppData = process.env.LOCALAPPDATA;
+  const processWithResources = process as NodeJS.Process & { resourcesPath?: string };
+  const previousResourcesPath = processWithResources.resourcesPath;
   if (packagedMetadata) {
     fs.writeFileSync(
       path.join(appPath, "package.json"),
       JSON.stringify(packagedMetadata),
+      "utf8"
+    );
+  }
+  if (isPackaged && packagedMetadata?.typingKingEventProfile === "geumcheon-2026") {
+    const variant = String(packagedMetadata.typingKingVariant || "ai");
+    const role = variant.endsWith("leaderboard") ? "leaderboard" : "player";
+    const deviceId = role === "leaderboard" ? "LEADERBOARD01" : "PC01";
+    process.env.PORTABLE_EXECUTABLE_DIR = appPath;
+    process.env.LOCALAPPDATA = path.join(appPath, "LocalAppData");
+    processWithResources.resourcesPath = path.resolve();
+    fs.writeFileSync(
+      path.join(appPath, "device-profile.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        eventProfileId: "geumcheon-2026",
+        eventId: "geumcheon-science-festival-2026",
+        deviceId,
+        role,
+        apiBaseUrl: "https://127.0.0.1:14443",
+        sessions: {
+          official: { sessionId: "test-official", dayNo: 1, roundNo: 1 },
+          practice: { sessionId: "test-practice" }
+        },
+        requestTimeoutMs: 5_000,
+        retry: { initialDelayMs: 1_000, maxDelayMs: 2_000 }
+      }),
       "utf8"
     );
   }
@@ -53,6 +83,12 @@ function createElectronHarness(
     createdWindowOptions: () => browserWindowOptions,
     dispose: () => {
       if (packagedMetadata) fs.rmSync(appPath, { recursive: true, force: true });
+      if (previousPortableExecutableDirectory === undefined) delete process.env.PORTABLE_EXECUTABLE_DIR;
+      else process.env.PORTABLE_EXECUTABLE_DIR = previousPortableExecutableDirectory;
+      if (previousLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = previousLocalAppData;
+      if (previousResourcesPath === undefined) delete processWithResources.resourcesPath;
+      else processWithResources.resourcesPath = previousResourcesPath;
     },
     whenReadyCalls: () => readyCalls,
     electron: {
@@ -67,6 +103,9 @@ function createElectronHarness(
         },
         getAppPath: () => appPath,
         isPackaged,
+        setPath(name: string, value: string) {
+          events.push("set-path:" + name + ":" + value);
+        },
         on(eventName: string, listener: ElectronAppListener) {
           events.push(`on:${eventName}`);
           listeners.set(eventName, listener);
@@ -282,6 +321,24 @@ test("SkillUp and Geumcheon leaderboard launches keep the existing unlocked star
     assert.equal(harness.events.includes("exit:0"), false, current.label);
     assert.equal(harness.listeners.has("second-instance"), false, current.label);
     assert.equal(harness.whenReadyCalls(), 1, current.label);
+  }
+});
+
+test("packaged Geumcheon configures isolated userData before Electron readiness", () => {
+  const harness = createElectronHarness(false, [], true, {
+    typingKingEventProfile: "geumcheon-2026",
+    typingKingVariant: "ai-leaderboard"
+  });
+
+  try {
+    executeMain(harness);
+
+    const setPathIndex = harness.events.findIndex((event) => event.startsWith("set-path:userData:"));
+    const whenReadyIndex = harness.events.indexOf("when-ready");
+    assert.ok(setPathIndex >= 0, "packaged Geumcheon must configure the isolated userData path");
+    assert.ok(setPathIndex < whenReadyIndex, "userData must be configured before app.whenReady()");
+  } finally {
+    harness.dispose();
   }
 });
 

@@ -890,6 +890,94 @@ async function fillEntryForm(page: Page, variant: GameVariant, width: number): P
   await page.locator(".birth-row select").nth(2).selectOption(wide ? "19" : "12");
   await page.locator(".check-line input").check();
 }
+async function fillCurrentChallengeTarget(page: Page): Promise<void> {
+  const target = await page.locator(".duel-target").first().evaluate((element) =>
+    (element.textContent ?? "").replace(/\u00a0/g, " ").trim()
+  );
+  assert.ok(target.length > 0, "challenge target must be visible before synthetic input");
+  await page.locator(".challenge-input").fill(target);
+}
+
+async function captureApprovedTitleDefeat(
+  running: RunningApp,
+  width: number,
+  height: number
+): Promise<void> {
+  const { page } = running;
+  const modal = page.locator(".challenge-modal");
+  await modal.waitFor({ state: "visible", timeout: 30_000 });
+  assert.match(await modal.innerText(), /아쉽습니다\. 금나래가 먼저 입력을 완료했습니다\./);
+  assert.equal(
+    await modal.locator(".error-text").count(),
+    0,
+    "accepted defeat record must not show a recovery-file save failure",
+  );
+  assert.doesNotMatch(
+    await modal.innerText(),
+    /기록 저장에 실패했습니다|복구 파일에 임시 저장합니다/,
+  );
+  assert.match(
+    decodeURIComponent(await page.locator(".challenge-title-image").getAttribute("src") || ""),
+    /ai_타자왕_금나래의_도전\.png$/
+  );
+  await captureAndAssert(
+    running,
+    `result-defeat-ai-${width}x${height}`,
+    width,
+    height,
+    "bg_main_03_geumcheon_data_city.png",
+    [".challenge-title-image", ".challenge-modal-art"],
+    ".challenge-modal",
+    0.92
+  );
+}
+
+async function captureApprovedTitleVictory(
+  running: RunningApp,
+  width: number,
+  height: number
+): Promise<void> {
+  const { page } = running;
+  const modal = page.locator(".challenge-modal");
+  for (let stage = 0; stage < 3; stage += 1) {
+    await page.locator(".challenge-input:not([disabled])").waitFor({ state: "visible", timeout: 12_000 });
+    await page.waitForTimeout(900);
+    await fillCurrentChallengeTarget(page);
+    await modal.waitFor({ state: "visible", timeout: 20_000 });
+    assert.match(await modal.innerText(), /승리했습니다\. 금나래보다 빠르게 입력했습니다\./);
+    await modal.locator(".primary-button").first().click();
+    if (stage < 2) await modal.waitFor({ state: "hidden", timeout: 10_000 });
+  }
+
+  const resultPanel = page.locator(".challenge-result-panel");
+  await resultPanel.waitFor({ state: "visible", timeout: 20_000 });
+  const resultText = await resultPanel.innerText();
+  assert.equal(
+    await resultPanel.locator(".error-text").count(),
+    0,
+    "Victory result must not display a record persistence error"
+  );
+  assert.doesNotMatch(
+    resultText,
+    /기록 저장에 실패했습니다|복구 파일에 임시 저장합니다/,
+    "Victory result must not expose a false record persistence failure"
+  );
+  assert.match(
+    decodeURIComponent(await resultPanel.locator(".challenge-result-title").getAttribute("src") || ""),
+    /ai_타자왕_금나래의_도전\.png$/
+  );
+  await captureAndAssert(
+    running,
+    `result-victory-ai-${width}x${height}`,
+    width,
+    height,
+    "bg_main_03_geumcheon_data_city.png",
+    [".challenge-result-title", ".challenge-result-art"],
+    ".challenge-result-panel",
+    0.92
+  );
+}
+
 async function launchApp(
   variant: ApprovedUiVariant,
   scenarioRoot: string,
@@ -996,13 +1084,46 @@ async function runGame(
       ".hero-panel, .entry-panel",
       0.75
     );
-    const modeCardTitleSrc = await page
-      .locator(".entry-panel .mode-card.active .mode-card-art")
-      .getAttribute("src");
+    const modeCardArt = page.locator(".entry-panel .mode-card.active .mode-card-art");
+    const modeCardTitleSrc = await modeCardArt.getAttribute("src");
     assert.match(
       modeCardTitleSrc || "",
-      /title_05_geumcheon_geumnarae_r203\.png$/,
-      "Geumcheon game-mode card must use the R2.0.3 Geumnarae title asset"
+      /ai_타자왕_금나래의_도전\.png$/,
+      "Geumcheon game-mode card must use the user-approved title asset"
+    );
+    const modeCardGeometry = await modeCardArt.evaluate((element) => {
+      const image = element as HTMLImageElement;
+      const card = image.closest<HTMLElement>(".mode-card");
+      const imageRect = image.getBoundingClientRect();
+      const cardRect = card?.getBoundingClientRect();
+      const style = getComputedStyle(image);
+      const tolerance = 1;
+      return {
+        cardWidth: cardRect?.width || 0,
+        cardHeight: cardRect?.height || 0,
+        imageHeight: imageRect.height,
+        objectFit: style.objectFit,
+        duplicateTitleCount: card?.querySelectorAll("strong").length || 0,
+        duplicateTitleVisible: card?.innerText.includes("AI 타자왕 금나래를 이겨라!") || false,
+        imageWithinCard: Boolean(cardRect
+          && imageRect.left >= cardRect.left - tolerance
+          && imageRect.right <= cardRect.right + tolerance
+          && imageRect.top >= cardRect.top - tolerance
+          && imageRect.bottom <= cardRect.bottom + tolerance)
+      };
+    });
+    assert.equal(modeCardGeometry.objectFit, "contain");
+    assert.equal(modeCardGeometry.duplicateTitleCount, 0, "mode-card duplicate white title must be removed");
+    assert.equal(modeCardGeometry.duplicateTitleVisible, false, "mode-card duplicate title text must not remain visible");
+    assert.equal(modeCardGeometry.imageWithinCard, true, "mode-card title must remain inside the fixed card");
+    assert.ok(
+      modeCardGeometry.cardHeight >= (height <= 720 ? 96 : 145)
+        && modeCardGeometry.cardHeight <= (height <= 720 ? 110 : 160),
+      "mode-card height changed outside its approved fixed range: " + modeCardGeometry.cardHeight
+    );
+    assert.ok(
+      modeCardGeometry.imageHeight >= (height <= 720 ? 70 : 108),
+      "mode-card title is still too small: " + modeCardGeometry.imageHeight
     );
     await fillEntryForm(page, variant, width);
     await page.locator(".entry-panel .button-row .primary-button").first().click();
@@ -1015,7 +1136,7 @@ async function runGame(
       width,
       height,
       "bg_main_03_geumcheon_data_city.png",
-      [".geumcheon-header-title, .brand-header img", ".ai-boss-typing", ".vs-badge", ".stage-badge-img"],
+      [".brand-header img", ".ai-boss-typing", ".vs-badge", ".stage-badge-img"],
       ".duel-panel",
       null
     );
@@ -1030,6 +1151,38 @@ async function runGame(
         `stage ${index + 1} badge must use the Geumcheon event-local asset`
       );
     });
+  if (variant === "ai") {
+    await captureApprovedTitleVictory(app, width, height);
+    await closeRunningApp(app);
+    app = undefined;
+
+    const defeatRecordCountBefore = nasServer.recordsBySession.official.size;
+    const defeatScenarioRoot = path.join(scenarioRoot, "defeat");
+      ensureDir(defeatScenarioRoot);
+      app = await launchApp("ai", defeatScenarioRoot, width, height, nasServer, options);
+      const defeatPage = app.page;
+      await defeatPage.waitForLoadState("domcontentloaded");
+      await defeatPage.locator(".entry-panel").waitFor({ state: "visible", timeout: 20_000 });
+      await fillEntryForm(defeatPage, "ai", width);
+      await defeatPage.locator(".entry-panel input").first().fill(width === 1920 ? "합성공식패배A" : "합성공식패배B");
+      await defeatPage.locator(".phone-row input").nth(0).fill(width === 1920 ? "8301" : "8302");
+    await defeatPage.locator(".entry-panel .button-row .primary-button").first().click();
+    await defeatPage.locator(".challenge-screen").waitFor({ state: "visible", timeout: 20_000 });
+    await defeatPage.locator(".countdown-overlay").waitFor({ state: "hidden", timeout: 10_000 }).catch(() => undefined);
+    await defeatPage.locator(".challenge-modal").waitFor({ state: "visible", timeout: 30_000 });
+    const defeatSaveTimeoutAt = Date.now() + 15_000;
+    while (
+      nasServer.recordsBySession.official.size <= defeatRecordCountBefore
+      && Date.now() < defeatSaveTimeoutAt
+    ) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.ok(
+      nasServer.recordsBySession.official.size > defeatRecordCountBefore,
+      "defeat record must reach the authenticated mock NAS before evidence capture",
+    );
+    await captureApprovedTitleDefeat(app, width, height);
+  }
   } finally {
     await closeRunningApp(app);
   }
@@ -1074,9 +1227,19 @@ async function runLeaderboard(
       width,
       height,
       "stage_01_03_science_classroom.png",
-      [".geumcheon-header-title", centralTitleSelector],
+      [centralTitleSelector],
       ".leaderboard-board, .leaderboard-board .ranking-table",
       0.75
+    );
+    assert.equal(
+      await page.locator(".leaderboard-header .geumcheon-header-title").count(),
+      0,
+      "leaderboard outer title image must be removed"
+    );
+    assert.equal(
+      await page.locator(".leaderboard-header .eyebrow").count(),
+      0,
+      "leaderboard outer festival label must be removed"
     );
 
     const rowCount = await page.locator(rowSelector).count();
@@ -1187,7 +1350,7 @@ async function runLeaderboard(
       };
     });
     assert.match(structure.background, /stage_01_03_science_classroom\.png/);
-    assert.match(structure.titleSrc, /title_05_geumcheon_geumnarae_r203\.png$/);
+    assert.match(decodeURIComponent(structure.titleSrc), /ai_타자왕_금나래의_도전\.png$/);
     assert.equal(structure.titleTag, "IMG");
     assert.equal(structure.titleDisplay, "block");
     assert.equal(structure.titleObjectFit, "contain");
@@ -1354,7 +1517,7 @@ function assertApprovedUiNasWrites(nasServer: LocalNasServer): void {
   const recordPosts = nasServer.observations.filter(
     (observation) => observation.method === "POST" && observation.pathname === "/api/v1/records"
   );
-  assert.equal(recordPosts.length, sizes.length * 2, "each official/practice game run must POST one synthetic record");
+  assert.equal(recordPosts.length, sizes.length * 3, "each official result and practice run must POST synthetic records");
   assert.ok(
     recordPosts.every((observation) => observation.authorized
       && observation.credentialRole === "writer"
@@ -1366,7 +1529,7 @@ function assertApprovedUiNasWrites(nasServer: LocalNasServer): void {
 
   const officialIds = [...nasServer.recordsBySession.official.keys()];
   const practiceIds = [...nasServer.recordsBySession.practice.keys()];
-  assert.equal(officialIds.length, sizes.length, "official namespace must store one record per official game run");
+  assert.equal(officialIds.length, sizes.length * 2, "official namespace must store victory and defeat records per resolution");
   assert.equal(practiceIds.length, sizes.length, "practice namespace must store one record per practice game run");
   assert.deepEqual(
     officialIds.filter((recordId) => practiceIds.includes(recordId)),
@@ -1422,7 +1585,22 @@ async function main(): Promise<void> {
         await runLeaderboard("practice-leaderboard", size.width, size.height, nasServer, temporaryRoot, options);
       }
       assertLeaderboardResolutionParity();
-      if (!leaderboardsOnly) assertApprovedUiNasWrites(nasServer);
+      if (!leaderboardsOnly) {
+        assert.deepEqual(
+          rows
+            .map((row) => row.screen)
+            .filter((screen) => screen.startsWith("result-"))
+            .sort(),
+          [
+            "result-defeat-ai-1280x720",
+            "result-defeat-ai-1920x1080",
+            "result-victory-ai-1280x720",
+            "result-victory-ai-1920x1080"
+          ],
+          "approved title evidence must include victory and defeat at both target resolutions"
+        );
+        assertApprovedUiNasWrites(nasServer);
+      }
     }
   } finally {
     await stopHttpsServer(nasServer?.server).catch(() => undefined);

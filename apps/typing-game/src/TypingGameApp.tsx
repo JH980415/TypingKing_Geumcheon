@@ -934,7 +934,9 @@ export function TypingGameApp({ bootstrap }: Props) {
                   alt=""
                   className="mode-card-art"
                 />
-                <strong>{bootstrap.eventProfile.profileId === "geumcheon-2026" ? "AI 타자왕 금나래를 이겨라!" : bootstrap.variantPolicy.displayName}</strong>
+                {bootstrap.eventProfile.profileId !== "geumcheon-2026" && (
+                  <strong>{bootstrap.variantPolicy.displayName}</strong>
+                )}
                 <small>{bootstrap.eventProfile.profileId === "geumcheon-2026" ? "금나래와 1:1 대결" : "가상 AI 챌린저와 1:1 대결"}</small>
               </button>
               )}

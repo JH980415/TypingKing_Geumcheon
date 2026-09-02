@@ -397,10 +397,9 @@ export function LeaderboardApp({ bootstrap }: Props) {
     <main className="app leaderboard-app" style={{ backgroundImage: `url("${eventAsset(bootstrap.eventProfile.assets.leaderboardBackground)}")` }}>
       <header className="leaderboard-header">
         <div>
-          {bootstrap.eventProfile.profileId === "geumcheon-2026" && (
-            <img className="geumcheon-header-title" src={eventAsset(bootstrap.eventProfile.assets.eventTitle)} alt={bootstrap.eventProfile.eventName} />
+          {bootstrap.eventProfile.profileId !== "geumcheon-2026" && (
+            <p className="eyebrow">2026 일잘러 페스타</p>
           )}
-          <p className="eyebrow">{bootstrap.eventProfile.profileId === "geumcheon-2026" ? bootstrap.eventProfile.eventName : "2026 일잘러 페스타"}</p>
           <h1 className="visually-hidden">
             {bootstrap.variantPolicy.displayName}
           </h1>

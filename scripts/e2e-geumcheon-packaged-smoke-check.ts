@@ -101,7 +101,7 @@ type CaseSpec = {
   deviceId: "PC01" | "LEADERBOARD01";
   sessionKind: SessionKind;
   uiSelector: ".entry-panel" | ".leaderboard-app";
-  imageSelector: ".geumcheon-main-title-image" | ".geumcheon-header-title";
+  imageSelector: ".geumcheon-main-title-image" | ".leaderboard-ai-title-img";
 };
 
 type Check = {
@@ -172,7 +172,7 @@ const requiredPublicResources = [
   "events/geumcheon-2026/assets/robot_05_festival_victory.png",
   "events/geumcheon-2026/assets/robot_defeat_01_geumnarae_typer.png",
   "events/geumcheon-2026/assets/stage_01_03_science_classroom.png",
-  "events/geumcheon-2026/assets/title_05_geumcheon_geumnarae_r203.png",
+  "events/geumcheon-2026/assets/ai_타자왕_금나래의_도전.png",
   "events/geumcheon-2026/assets/vs_03_science_portal.png",
   "events/geumcheon-2026/assets/ai_challenge/stage_badge_1_r203.png",
   "events/geumcheon-2026/assets/ai_challenge/stage_badge_2_r203.png",
@@ -210,7 +210,7 @@ const cases: CaseSpec[] = [
     deviceId: "LEADERBOARD01",
     sessionKind: "official",
     uiSelector: ".leaderboard-app",
-    imageSelector: ".geumcheon-header-title"
+    imageSelector: ".leaderboard-ai-title-img"
   },
   {
     variant: "practice",
@@ -232,7 +232,7 @@ const cases: CaseSpec[] = [
     deviceId: "LEADERBOARD01",
     sessionKind: "practice",
     uiSelector: ".leaderboard-app",
-    imageSelector: ".geumcheon-header-title"
+    imageSelector: ".leaderboard-ai-title-img"
   }
 ];
 
@@ -249,6 +249,16 @@ function cleanDir(dir: string): void {
 
 function sha256(filePath: string): string {
   return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
+export function decodedUrlFileName(value: string): string {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(new URL(value).pathname).replace(/^\/([A-Za-z]:\/)/, "$1");
+  } catch {
+    decoded = decodeURIComponent(value);
+  }
+  return path.posix.basename(decoded.replaceAll("\\", "/"));
 }
 
 function assertStagedPublicResources(executableDirectory: string): void {
@@ -1214,17 +1224,40 @@ async function runCase(options: {
       addCheck(
         checks,
         "packaged player mode-card title asset",
-        modeCardArtSrc,
-        "*title_05_geumcheon_geumnarae_r203.png",
-        modeCardArtSrc.endsWith("title_05_geumcheon_geumnarae_r203.png")
+      decodedUrlFileName(modeCardArtSrc),
+      "*ai_타자왕_금나래의_도전.png",
+      decodedUrlFileName(modeCardArtSrc).endsWith("ai_타자왕_금나래의_도전.png")
       );
+      const modeCardGeometry = await modeCardArt.evaluate((element) => {
+        const imageElement = element as HTMLImageElement;
+        const card = imageElement.closest<HTMLElement>(".mode-card");
+        const imageRect = imageElement.getBoundingClientRect();
+        const cardRect = card?.getBoundingClientRect();
+        const tolerance = 1;
+        return {
+          cardHeight: cardRect?.height || 0,
+          imageHeight: imageRect.height,
+          objectFit: getComputedStyle(imageElement).objectFit,
+          duplicateTitleCount: card?.querySelectorAll("strong").length || 0,
+          duplicateTitleVisible: card?.innerText.includes("AI 타자왕 금나래를 이겨라!") || false,
+          imageWithinCard: Boolean(cardRect
+            && imageRect.left >= cardRect.left - tolerance
+            && imageRect.right <= cardRect.right + tolerance
+            && imageRect.top >= cardRect.top - tolerance
+            && imageRect.bottom <= cardRect.bottom + tolerance)
+        };
+      });
+      addCheck(checks, "packaged mode-card title uses contain", modeCardGeometry.objectFit, "contain", modeCardGeometry.objectFit === "contain");
+      addCheck(checks, "packaged mode-card duplicate title absent", modeCardGeometry.duplicateTitleCount, 0, modeCardGeometry.duplicateTitleCount === 0 && !modeCardGeometry.duplicateTitleVisible);
+      addCheck(checks, "packaged mode-card title stays inside card", modeCardGeometry.imageWithinCard, true, modeCardGeometry.imageWithinCard);
+      addCheck(checks, "packaged mode-card title enlarged", modeCardGeometry.imageHeight, ">= 72", modeCardGeometry.imageHeight >= 72);
       const legacyTitleMatches = await page.evaluate((patterns) => {
         const visibleText = [
           document.body.innerText,
           (document.querySelector(".entry-panel .mode-card.active") as HTMLElement | null)?.innerText ?? ""
         ];
         return patterns.filter((pattern) => visibleText.some((text) => text.includes(pattern)));
-      }, ["AI타자왕을이겨라", "AI 타자왕을 이겨라"]);
+      }, ["AI타자왕을이겨라", "AI 타자왕을 이겨라", "AI 타자왕 금나래를 이겨라!"]);
       addCheck(
         checks,
         "legacy player title text absent",
@@ -1237,6 +1270,12 @@ async function runCase(options: {
     const readiness = await page.evaluate(async () => (window as any).typingKing.checkGameStartReadiness("ai_challenge"));
     addCheck(checks, "local HTTPS readiness", readiness, { ok: true, data: { ready: true } }, readiness?.ok === true && readiness?.data?.ready === true);
     if (testCase.role === "leaderboard") {
+      const outerHeaderState = await page.evaluate(() => ({
+        titleCount: document.querySelectorAll(".leaderboard-header .geumcheon-header-title").length,
+        festivalLabelCount: document.querySelectorAll(".leaderboard-header .eyebrow").length
+      }));
+      addCheck(checks, "packaged leaderboard outer title absent", outerHeaderState.titleCount, 0, outerHeaderState.titleCount === 0);
+      addCheck(checks, "packaged leaderboard festival label absent", outerHeaderState.festivalLabelCount, 0, outerHeaderState.festivalLabelCount === 0);
       const records = await page.evaluate(async () => (window as any).typingKing.listRecords());
       addCheck(checks, "authenticated HTTPS records read", records?.ok, true, records?.ok === true && Array.isArray(records?.data));
     }
@@ -1458,10 +1497,12 @@ function markdownCell(value: unknown): string {
   return JSON.stringify(value).replace(/\|/g, "\\|").replace(/\r?\n/g, "\\n");
 }
 
-function writeReports(
+export function writePackagedSmokeReports(
   results: CaseResult[],
-  builds: Map<GeumcheonVariant, { hash: string; bytes: number }>
+  builds: Map<GeumcheonVariant, { hash: string; bytes: number }>,
+  targetRoot = artifactRoot
 ): void {
+  fs.mkdirSync(targetRoot, { recursive: true });
   const nativeTitleWin32Count = results.filter((result) => result.nativeTitleEvidence === "win32").length;
   const nativeTitleFallbackCount = results.filter((result) => result.nativeTitleEvidence === "document-fallback").length;
   const separateScreenshotCount = results.filter((result) => result.screenshotLimitation).length;
@@ -1491,9 +1532,9 @@ function writeReports(
     })),
     results
   };
-  fs.writeFileSync(path.join(artifactRoot, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
+  fs.writeFileSync(path.join(targetRoot, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
   for (const result of results) {
-    const target = path.join(artifactRoot, "observed", `${result.variant}.json`);
+    const target = path.join(targetRoot, "observed", `${result.variant}.json`);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, `${JSON.stringify(result, null, 2)}\n`, "utf8");
   }
@@ -1528,7 +1569,7 @@ function writeReports(
   lines.push("- `observed/<variant>.json`: per-variant non-secret assertions.");
   lines.push("- Packaged renderer screenshots are intentionally covered by the separate approved-UI screen QA evidence because these EXEs run hidden/off-screen.");
   lines.push("- Synthetic profiles, credentials, certificates, and AppData are deleted with the OS temporary run directory.");
-  fs.writeFileSync(path.join(artifactRoot, "report.md"), `${lines.join("\n")}\n`, "utf8");
+  fs.writeFileSync(path.join(targetRoot, "report.md"), `${lines.join("\n")}\n`, "utf8");
 }
 
 async function main(): Promise<void> {
@@ -1558,7 +1599,7 @@ async function main(): Promise<void> {
       }));
     }
   } finally {
-    writeReports(results, builds);
+    writePackagedSmokeReports(results, builds);
     await stopHttpsServer(server?.server).catch(() => undefined);
     fs.rmSync(temporaryRoot, { recursive: true, force: true });
   }
