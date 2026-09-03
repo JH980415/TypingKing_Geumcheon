@@ -5,12 +5,13 @@ import path from "node:path";
 import test from "node:test";
 
 import type { DeviceProfile } from "../../shared/events/types";
-import type { ReviewRuntimeContext, SaveRecordInput } from "../../shared/types";
+import type { RecordRow, ReviewRuntimeContext, SaveRecordInput } from "../../shared/types";
 import type { ActiveAttemptEncryption } from "../../electron/activeAttemptStore";
 import { buildRecordRow } from "../../shared/csv/fileStore";
 import {
   createReviewGeumcheonConnection,
   initializeGeumcheonConnection,
+  listGeumcheonRecords,
   validateReviewStorage
 } from "../../electron/geumcheonConnection";
 import { createReviewLocalRuntime } from "../../electron/review/reviewLocalRuntime";
@@ -45,6 +46,72 @@ const recordInput: SaveRecordInput = {
   stageTexts: ["1234", "5678", "9012"],
   stageTimesMs: [1000, 1000, 1000]
 };
+
+function recordRow(recordId: string, participantName: string): RecordRow {
+  return { record_id: recordId, participant_name: participantName } as RecordRow;
+}
+
+test("review player record listing uses its local review connection", async () => {
+  const reviewRows = [recordRow("review-r5-record-00000000-0000-4000-8000-000000000001", "기존 검토 참가자")];
+  let legacyReads = 0;
+
+  const rows = await listGeumcheonRecords({
+    connection: {
+      source: "review",
+      runtime: { loadRecords: async () => ({ rows: reviewRows }) }
+    },
+    role: "player",
+    readLegacy: async () => {
+      legacyReads += 1;
+      return [recordRow("legacy-player", "기존 CSV")];
+    }
+  });
+
+  assert.equal(rows, reviewRows);
+  assert.equal(legacyReads, 0);
+});
+
+test("production leaderboard record listing retains NAS runtime records", async () => {
+  const nasRows = [recordRow("nas-leaderboard", "기존 NAS 참가자")];
+  let legacyReads = 0;
+
+  const rows = await listGeumcheonRecords({
+    connection: {
+      source: "production",
+      runtime: { loadRecords: async () => ({ rows: nasRows }) }
+    },
+    role: "leaderboard",
+    readLegacy: async () => {
+      legacyReads += 1;
+      return [];
+    }
+  });
+
+  assert.equal(rows, nasRows);
+  assert.equal(legacyReads, 0);
+});
+
+test("production player record listing retains legacy records", async () => {
+  let runtimeReads = 0;
+  const legacyRows = [recordRow("legacy-player", "기존 CSV 참가자")];
+
+  const rows = await listGeumcheonRecords({
+    connection: {
+      source: "production",
+      runtime: {
+        loadRecords: async () => {
+          runtimeReads += 1;
+          return { rows: [recordRow("nas-player", "NAS 플레이어") ] };
+        }
+      }
+    },
+    role: "player",
+    readLegacy: async () => legacyRows
+  });
+
+  assert.equal(rows, legacyRows);
+  assert.equal(runtimeReads, 0);
+});
 
 test("review startup selects only the injected review connection without production dependencies", async () => {
   let productionCalls = 0;

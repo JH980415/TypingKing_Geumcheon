@@ -67,6 +67,7 @@ import { createGeumcheonNasRuntime, type GeumcheonNasRuntime } from "./nas/runti
 import {
   createReviewGeumcheonConnection,
   initializeGeumcheonConnection,
+  listGeumcheonRecords,
   validateReviewStorage,
   type ReviewGeumcheonConnection
 } from "./geumcheonConnection";
@@ -652,10 +653,11 @@ async function registerIpc(
   );
   ipcMain.handle("records:list", () =>
     safeAsync(async () => {
-      if (geumcheonNas && variantPolicy.role === "leaderboard") {
-        return (await geumcheonNas.runtime.loadRecords()).rows;
-      }
-      return readRecords(ctx);
+      return listGeumcheonRecords({
+        connection: geumcheonNas,
+        role: variantPolicy.role,
+        readLegacy: () => readRecords(ctx)
+      });
     }, "기록 파일을 읽을 수 없습니다. 파일이 열려 있거나 손상되었을 수 있습니다.")
   );
   ipcMain.handle(

@@ -50,6 +50,24 @@ export async function validateReviewStorage(options: {
   };
 }
 
+export type GeumcheonRecordListConnection = {
+  source: "production" | "review";
+  runtime: {
+    loadRecords(): Promise<{ rows: RecordRow[] }>;
+  };
+};
+
+export async function listGeumcheonRecords(options: {
+  connection: GeumcheonRecordListConnection | null;
+  role: "player" | "leaderboard";
+  readLegacy(): Promise<RecordRow[]> | RecordRow[];
+}): Promise<RecordRow[]> {
+  if (options.connection?.source === "review" || (options.connection && options.role === "leaderboard")) {
+    return (await options.connection.runtime.loadRecords()).rows;
+  }
+  return options.readLegacy();
+}
+
 export type ReviewGeumcheonConnection = {
   source: "review";
   reviewContext: ReviewRuntimeContext;
