@@ -191,31 +191,23 @@ test("CSV export uses canonical order and competition tie ranks", (context) => {
   runtime.config.syncMode = "local";
 
   const rows = [
-    record("a-fourth", builtCanonicalAttemptForRank("a-fourth", {
-      stageReached: 2,
-      wholeGameProgressRaw: 40,
-      participantAverageCpmRaw: 800,
-      totalActiveDuelTimeMs: 5_000
+    record("A", builtCanonicalAttemptForRank("A", {
+      stageReached: 2, wholeGameProgressRaw: 40, participantAverageCpmRaw: 500, totalActiveDuelTimeMs: 1_000
     })),
-    record("n-tie-new", builtCanonicalAttemptForRank("n-tie-new", {
-      stageReached: 2,
-      wholeGameProgressRaw: 45,
-      participantAverageCpmRaw: 900,
-      totalActiveDuelTimeMs: 10_000,
-      recordedAt: "2026-09-18T03:00:00.000Z"
+    record("B", builtCanonicalAttemptForRank("B", {
+      stageReached: 3, wholeGameProgressRaw: 100, participantAverageCpmRaw: 100, totalActiveDuelTimeMs: 99_000
     })),
-    record("z-first", builtCanonicalAttemptForRank("z-first", {
-      stageReached: 3,
-      wholeGameProgressRaw: 55,
-      participantAverageCpmRaw: 1,
-      totalActiveDuelTimeMs: 99_000
+    record("C", builtCanonicalAttemptForRank("C", {
+      stageReached: 3, wholeGameProgressRaw: 100, participantAverageCpmRaw: 350, totalActiveDuelTimeMs: 40_000
     })),
-    record("m-tie-old", builtCanonicalAttemptForRank("m-tie-old", {
-      stageReached: 2,
-      wholeGameProgressRaw: 45,
-      participantAverageCpmRaw: 900,
-      totalActiveDuelTimeMs: 10_000,
-      recordedAt: "2026-09-18T02:00:00.000Z"
+    record("D", builtCanonicalAttemptForRank("D", {
+      stageReached: 3, wholeGameProgressRaw: 100, participantAverageCpmRaw: 300, totalActiveDuelTimeMs: 5_000
+    })),
+    record("E", builtCanonicalAttemptForRank("E", {
+      stageReached: 2, wholeGameProgressRaw: 30, participantAverageCpmRaw: 250, totalActiveDuelTimeMs: 80_000
+    })),
+    record("F", builtCanonicalAttemptForRank("F", {
+      stageReached: 1, wholeGameProgressRaw: 10, participantAverageCpmRaw: 200, totalActiveDuelTimeMs: 2_000
     }))
   ];
 
@@ -236,10 +228,12 @@ test("CSV export uses canonical order and competition tie ranks", (context) => {
       recordId: row[1]
     })),
     [
-      { rank: "1", recordId: "z-first" },
-      { rank: "2", recordId: "m-tie-old" },
-      { rank: "2", recordId: "n-tie-new" },
-      { rank: "4", recordId: "a-fourth" }
+      { rank: "1", recordId: "C" },
+      { rank: "2", recordId: "D" },
+      { rank: "3", recordId: "B" },
+      { rank: "4", recordId: "A" },
+      { rank: "5", recordId: "E" },
+      { rank: "6", recordId: "F" }
     ]
   );
 });
@@ -313,8 +307,8 @@ test("CSV export preserves legacy AI ordering without a canonical extension", (c
   assert.deepEqual(
     csvRows.slice(1).map((row) => ({ rank: row[0], recordId: row[1] })),
     [
-      { rank: "1", recordId: "legacy-faster" },
-      { rank: "2", recordId: "legacy-slower" }
+      { rank: "1", recordId: "legacy-slower" },
+      { rank: "2", recordId: "legacy-faster" }
     ]
   );
 });

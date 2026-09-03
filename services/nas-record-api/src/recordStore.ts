@@ -30,6 +30,10 @@ import {
   isCanonicalAiAttemptV1,
 } from "../../../shared/utils/geumcheonAiAttempt.js";
 import {
+  compareCanonicalAiDisplayOrder,
+  compareLegacyAiRecords,
+} from "../../../shared/utils/ranking.js";
+import {
   verifyWritableDirectory,
   writeFileNoReplaceAtomic,
   type AtomicStoreHooks,
@@ -205,10 +209,7 @@ export class RecordStore {
       if (dirname(targetPath) !== directory) throw new StorageError("STORAGE_PATH_SUBSTITUTION");
       rows.push(await readStoredRow(targetPath));
     }
-    return rows.sort((left, right) =>
-      `${left.completed_at}_${left.record_id}`.localeCompare(
-        `${right.completed_at}_${right.record_id}`,
-      ));
+    return rows.sort(compareLeaderboardRecordOrder);
   }
 
   async putAdminAction(action: NasAdminActionV1): Promise<AdminActionPutResult> {
@@ -772,6 +773,20 @@ function plainObject(value: unknown): value is Record<string, unknown> {
 function inside(root: string, target: string): boolean {
   const difference = relative(root, target);
   return difference === "" || (!difference.startsWith("..") && !isAbsolute(difference));
+}
+
+function compareLeaderboardRecordOrder(left: RecordRow, right: RecordRow): number {
+  if (left.game_mode === "ai_challenge" && right.game_mode === "ai_challenge") {
+    if (left.canonicalAttempt && right.canonicalAttempt) {
+      return compareCanonicalAiDisplayOrder(left.canonicalAttempt, right.canonicalAttempt);
+    }
+    if (left.canonicalAttempt) return -1;
+    if (right.canonicalAttempt) return 1;
+    return compareLegacyAiRecords(left, right);
+  }
+  return `${left.completed_at}_${left.record_id}`.localeCompare(
+    `${right.completed_at}_${right.record_id}`,
+  );
 }
 
 function sha256(bytes: Uint8Array): string {

@@ -1,15 +1,13 @@
 import type { CanonicalAiAttemptV1, RecordRow } from "../types";
 
-export type CanonicalAiRankKey = readonly [number, number, number, number];
+export type CanonicalAiRankKey = readonly [number, number];
 
 export type CanonicalAiRankable = Pick<
   CanonicalAiAttemptV1,
-  | "stageReached"
-  | "wholeGameProgressRaw"
   | "participantAverageCpmRaw"
-  | "totalActiveDuelTimeMs"
   | "recordedAt"
   | "recordId"
+  | "result"
   | "contradictionCodes"
 >;
 
@@ -20,10 +18,8 @@ export type CanonicalAiRanked<T extends CanonicalAiRankable> = {
 
 export function canonicalAiRankKey(record: CanonicalAiRankable): CanonicalAiRankKey {
   return [
-    record.stageReached,
-    record.wholeGameProgressRaw,
-    record.participantAverageCpmRaw,
-    record.totalActiveDuelTimeMs
+    record.result === "PARTICIPANT_WIN" ? 0 : 1,
+    record.participantAverageCpmRaw
   ];
 }
 
@@ -31,10 +27,7 @@ export function compareCanonicalAiRankKeys(
   left: CanonicalAiRankKey,
   right: CanonicalAiRankKey
 ): number {
-  return right[0] - left[0] ||
-    right[1] - left[1] ||
-    right[2] - left[2] ||
-    left[3] - right[3];
+  return left[0] - right[0] || right[1] - left[1];
 }
 
 export function compareCanonicalAiDisplayOrder(
@@ -74,47 +67,23 @@ function legacyAiNumber(
 }
 
 function legacyAiResultRank(record: RecordRow): number {
-  if (String(record.challenge_result_label ?? "").includes("승리")) return 0;
-  if (String(record.challenge_result_label ?? "").includes("패배")) return 1;
+  const label = String(record.challenge_result_label ?? "");
+  if (label.includes("참여자 승리")) return 0;
+  if (label.includes("금나래 승리") || label.includes("참여자 패배")) return 1;
   return record.ai_challenge_status === "SUCCESS" ||
     record.final_vs_ai_result === "USER_WIN"
     ? 0
     : 1;
 }
 
-function legacyAiResultStage(record: RecordRow): number {
-  const stored = legacyAiNumber(record.result_stage, 0);
-  if (stored > 0) return Math.max(1, Math.min(3, Math.round(stored)));
-  const failed = legacyAiNumber(record.ai_failed_stage, 0);
-  if (failed > 0) return Math.max(1, Math.min(3, Math.round(failed)));
-  return legacyAiResultRank(record) === 0 ? 3 : 1;
-}
-
 export function compareLegacyAiRecords(a: RecordRow, b: RecordRow): number {
   const resultDiff = legacyAiResultRank(a) - legacyAiResultRank(b);
   if (resultDiff !== 0) return resultDiff;
 
-  if (legacyAiResultRank(a) === 0 && legacyAiResultRank(b) === 0) {
-    const duelDiff =
-      legacyAiNumber(a.duel_time_ms, Number.MAX_SAFE_INTEGER) -
-      legacyAiNumber(b.duel_time_ms, Number.MAX_SAFE_INTEGER);
-    if (duelDiff !== 0) return duelDiff;
-    const cpmDiff =
-      legacyAiNumber(b.participant_avg_cpm, -1) -
-      legacyAiNumber(a.participant_avg_cpm, -1);
-    if (cpmDiff !== 0) return cpmDiff;
-  } else {
-    const stageDiff = legacyAiResultStage(b) - legacyAiResultStage(a);
-    if (stageDiff !== 0) return stageDiff;
-    const progressDiff =
-      legacyAiNumber(b.participant_progress_percent, -1) -
-      legacyAiNumber(a.participant_progress_percent, -1);
-    if (progressDiff !== 0) return progressDiff;
-    const cpmDiff =
-      legacyAiNumber(b.participant_avg_cpm || b.final_cpm, -1) -
-      legacyAiNumber(a.participant_avg_cpm || a.final_cpm, -1);
-    if (cpmDiff !== 0) return cpmDiff;
-  }
+  const cpmDiff =
+    legacyAiNumber(b.participant_avg_cpm || b.final_cpm, -1) -
+    legacyAiNumber(a.participant_avg_cpm || a.final_cpm, -1);
+  if (cpmDiff !== 0) return cpmDiff;
 
   const completedDiff =
     new Date(a.completed_at).getTime() - new Date(b.completed_at).getTime();

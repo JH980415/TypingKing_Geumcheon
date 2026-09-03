@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import type { AppConfig, BootstrapData, CsvBackupStatus, LeaderboardSyncStatus, RecordRow } from "../../../shared/types";
 import {
   bestRecordOnly,
+  compareCanonicalAiDisplayOrder,
   compareLegacyAiRecords,
   isInterruptedRecord,
   rankCanonicalAiAttempts,
@@ -60,6 +61,11 @@ type AiLeaderboardEntry = {
 
 type RankedAiLeaderboardEntry = AiLeaderboardEntry & {
   rank: number;
+};
+
+type AiLeaderboardCandidate = {
+  entry: AiLeaderboardEntry;
+  attempt?: NonNullable<RecordRow["canonicalAttempt"]>;
 };
 
 let leaderboardRefreshInFlight = false;
@@ -178,7 +184,8 @@ export function LeaderboardApp({ bootstrap }: Props) {
       .map((record) => ({ record, display: buildAiLeaderboardDisplayV2(record) }));
     const visibleRanked = selectGeumcheonAiLeaderboardEntriesForMode(ranked, {
       isGeumcheonOfficialBoard,
-      isGeumcheonPracticeBoard
+      isGeumcheonPracticeBoard,
+      viewMode
     });
     const needle = search.trim().toLowerCase();
     if (!needle) return visibleRanked;
@@ -199,7 +206,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
         .toLowerCase()
         .includes(needle)
     );
-  }, [authorized, includeDebug, includeTest, isGeumcheonOfficialBoard, isGeumcheonPracticeBoard, records, search]);
+  }, [authorized, includeDebug, includeTest, isGeumcheonOfficialBoard, isGeumcheonPracticeBoard, records, search, viewMode]);
 
   const selected = records.find((record) => record.record_id === selectedId);
 
@@ -582,10 +589,10 @@ export function LeaderboardApp({ bootstrap }: Props) {
                 )}
 
                 <div className="admin-toolbar">
-                  <button className={viewMode === "best" ? "stage-pill active" : "stage-pill"} onClick={() => setViewMode("best")}>
+                  <button aria-pressed={viewMode === "best"} className={viewMode === "best" ? "stage-pill active" : "stage-pill"} onClick={() => setViewMode("best")}>
                     최고기록만 보기
                   </button>
-                  <button className={viewMode === "all" ? "stage-pill active" : "stage-pill"} onClick={() => setViewMode("all")}>
+                  <button aria-pressed={viewMode === "all"} className={viewMode === "all" ? "stage-pill active" : "stage-pill"} onClick={() => setViewMode("all")}>
                     전체기록 보기
                   </button>
                   <label className="check-line compact">
@@ -766,10 +773,18 @@ export function resolveLeaderboardEditSelection(
 
 export function selectGeumcheonAiLeaderboardEntriesForMode(
   entries: AiLeaderboardEntry[],
-  mode: { isGeumcheonOfficialBoard: boolean; isGeumcheonPracticeBoard: boolean }
+  mode: {
+    isGeumcheonOfficialBoard: boolean;
+    isGeumcheonPracticeBoard: boolean;
+    viewMode?: "all" | "best";
+  }
 ): RankedAiLeaderboardEntry[] {
+  const viewMode = mode.viewMode ?? "all";
   if (!mode.isGeumcheonOfficialBoard && !mode.isGeumcheonPracticeBoard) {
-    return [...entries]
+    const visibleEntries = viewMode === "best"
+      ? selectBestAiLeaderboardEntries(entries)
+      : entries;
+    return [...visibleEntries]
       .sort((left, right) => compareLegacyAiRecords(left.record, right.record))
       .map((entry, index) => ({ ...entry, rank: index + 1 }));
   }
@@ -783,23 +798,66 @@ export function selectGeumcheonAiLeaderboardEntriesForMode(
     }
     return [{ entry, attempt }];
   });
+  const legacyEntries = entries
+    .filter((entry) => entry.record.canonicalAttempt == null);
+  const visibleEntries: AiLeaderboardCandidate[] = [
+    ...canonicalEntries,
+    ...legacyEntries.map((entry) => ({ entry }))
+  ];
+  const selectedEntries: AiLeaderboardCandidate[] = viewMode === "best"
+    ? selectBestAiLeaderboardEntries(
+      visibleEntries
+    )
+    : visibleEntries;
+  const selectedCanonical = selectedEntries.filter(
+    (entry): entry is { entry: AiLeaderboardEntry; attempt: NonNullable<RecordRow["canonicalAttempt"]> } => entry.attempt != null
+  );
   const entryByAttempt = new Map(
-    canonicalEntries.map(({ entry, attempt }) => [attempt, entry])
+    selectedCanonical.map(({ entry, attempt }) => [attempt, entry])
   );
   const rankedCanonical = rankCanonicalAiAttempts(
-    canonicalEntries.map(({ attempt }) => attempt)
+    selectedCanonical.map(({ attempt }) => attempt)
   ).map(({ rank, record: attempt }) => ({
     ...entryByAttempt.get(attempt)!,
     rank
   }));
-  const legacyEntries = entries
-    .filter((entry) => entry.record.canonicalAttempt == null)
+  const rankedLegacy = selectedEntries
+    .filter((entry): entry is { entry: AiLeaderboardEntry } => entry.attempt == null)
+    .map(({ entry }) => entry)
     .sort((left, right) => compareLegacyAiRecords(left.record, right.record))
     .map((entry, index) => ({
       ...entry,
       rank: rankedCanonical.length + index + 1
     }));
-  return [...rankedCanonical, ...legacyEntries];
+  return [...rankedCanonical, ...rankedLegacy];
+}
+
+function selectBestAiLeaderboardEntries<T extends AiLeaderboardEntry | AiLeaderboardCandidate>(entries: T[]): T[] {
+  const bestByParticipant = new Map<string, T>();
+  for (const entry of entries) {
+    const record = "record" in entry ? entry.record : entry.entry.record;
+    const key = record.participantKey?.trim() ||
+      `${record.participant_name.trim()}|${record.phone_full.trim()}`;
+    const current = bestByParticipant.get(key);
+    if (!current || compareAiLeaderboardEntries(entry, current) < 0) {
+      bestByParticipant.set(key, entry);
+    }
+  }
+  return [...bestByParticipant.values()];
+}
+
+function compareAiLeaderboardEntries(
+  left: AiLeaderboardEntry | AiLeaderboardCandidate,
+  right: AiLeaderboardEntry | AiLeaderboardCandidate
+): number {
+  const leftEntry = "record" in left ? left : left.entry;
+  const rightEntry = "record" in right ? right : right.entry;
+  const leftAttempt = "record" in left ? left.record.canonicalAttempt : left.attempt;
+  const rightAttempt = "record" in right ? right.record.canonicalAttempt : right.attempt;
+  if (leftAttempt && rightAttempt) return compareCanonicalAiDisplayOrder(leftAttempt, rightAttempt);
+  if (leftAttempt) return -1;
+  if (rightAttempt) return 1;
+  return compareLegacyAiRecords(leftEntry.record, rightEntry.record);
 }
 
 function enrichRecordForExport(record: RecordRow): RecordRow {

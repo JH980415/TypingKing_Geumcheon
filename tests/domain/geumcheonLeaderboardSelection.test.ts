@@ -307,7 +307,7 @@ test("Geumcheon AI ranking ignores winner labels and completion timestamps", () 
 
   assert.deepEqual(
     visible.map(({ record: row }) => row.record_id),
-    ["higher-canonical-loss", "lower-canonical-winner"]
+    ["lower-canonical-winner", "higher-canonical-loss"]
   );
 });
 
@@ -374,14 +374,14 @@ test("Geumcheon AI ranking uses exactly four raw keys and competition tie ranks"
       rank: (item as typeof item & { rank: number }).rank
     })),
     [
-      { recordId: "stage-three", rank: 1 },
-      { recordId: "tie-older", rank: 2 },
-      { recordId: "tie-newer", rank: 2 },
-      { recordId: "higher-cpm-longer", rank: 4 },
+      { recordId: "progress-lower", rank: 1 },
+      { recordId: "stage-one", rank: 1 },
+      { recordId: "tie-older", rank: 3 },
+      { recordId: "tie-newer", rank: 3 },
+      { recordId: "higher-cpm-longer", rank: 5 },
       { recordId: "same-cpm-longer", rank: 5 },
-      { recordId: "lower-cpm-shorter", rank: 6 },
-      { recordId: "progress-lower", rank: 7 },
-      { recordId: "stage-one", rank: 8 }
+      { recordId: "lower-cpm-shorter", rank: 7 },
+      { recordId: "stage-three", rank: 8 }
     ]
   );
 });
@@ -418,6 +418,65 @@ test("Geumcheon official AI leaderboard keeps every repeated participant attempt
       { recordId: "retry-second", rank: 2 },
       { recordId: "retry-third", rank: 3 }
     ]
+  );
+});
+
+test("Geumcheon AI all mode keeps every attempt while best mode selects one per opaque participant key", () => {
+  const entries = [
+    entry(canonicalRecord("opaque-a-first", {
+      attemptId: "attempt-opaque-a-first",
+      participantAverageCpmRaw: 300,
+      recordedAt: "2026-09-18T01:00:00.000Z"
+    }, { participant_name: "동명이인", participantKey: "opaque-a" })),
+    entry(canonicalRecord("opaque-a-best", {
+      attemptId: "attempt-opaque-a-best",
+      participantAverageCpmRaw: 500,
+      recordedAt: "2026-09-18T02:00:00.000Z"
+    }, { participant_name: "동명이인", participantKey: "opaque-a" })),
+    entry(canonicalRecord("opaque-b-best", {
+      attemptId: "attempt-opaque-b-best",
+      participantAverageCpmRaw: 400,
+      recordedAt: "2026-09-18T03:00:00.000Z"
+    }, { participant_name: "동명이인", participantKey: "opaque-b" }))
+  ];
+
+  const all = selectGeumcheonAiLeaderboardEntriesForMode(entries, {
+    isGeumcheonOfficialBoard: true,
+    isGeumcheonPracticeBoard: false,
+    viewMode: "all"
+  });
+  const best = selectGeumcheonAiLeaderboardEntriesForMode(entries, {
+    isGeumcheonOfficialBoard: true,
+    isGeumcheonPracticeBoard: false,
+    viewMode: "best"
+  });
+
+  assert.deepEqual(all.map(({ record }) => record.record_id), ["opaque-a-best", "opaque-b-best", "opaque-a-first"]);
+  assert.deepEqual(best.map(({ record }) => record.record_id), ["opaque-a-best", "opaque-b-best"]);
+});
+
+test("Geumcheon AI best mode stays best when refreshed entries add another attempt", () => {
+  const mode = {
+    isGeumcheonOfficialBoard: true,
+    isGeumcheonPracticeBoard: false,
+    viewMode: "best" as const
+  };
+  const first = entry(canonicalRecord("refresh-first", {
+    attemptId: "attempt-refresh-first",
+    participantAverageCpmRaw: 300
+  }, { participantKey: "opaque-refresh" }));
+  const refreshed = entry(canonicalRecord("refresh-new", {
+    attemptId: "attempt-refresh-new",
+    participantAverageCpmRaw: 500
+  }, { participantKey: "opaque-refresh" }));
+
+  assert.deepEqual(
+    selectGeumcheonAiLeaderboardEntriesForMode([first], mode).map(({ record }) => record.record_id),
+    ["refresh-first"]
+  );
+  assert.deepEqual(
+    selectGeumcheonAiLeaderboardEntriesForMode([first, refreshed], mode).map(({ record }) => record.record_id),
+    ["refresh-new"]
   );
 });
 
