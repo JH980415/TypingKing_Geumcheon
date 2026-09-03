@@ -58,7 +58,7 @@ import {
   resolveStartupProfile
 } from "./startupProfile";
 import type { ApplicationResourcePaths, PackagedMetadata } from "./startupProfile";
-import { AdminAccessSessions } from "./adminAccessSession";
+import { AdminAccessSessions, resolveAdminPasswordForRuntime } from "./adminAccessSession";
 import { importBootstrapCredential, resolveBootstrapCredentialScopes } from "./nas/bootstrapCredential";
 import { NasCredentialStore } from "./nas/credentialStore";
 import { checkGeumcheonNasReadiness, requireGeumcheonCredential } from "./nas/readiness";
@@ -524,7 +524,7 @@ async function registerIpc(
     });
   }
   const adminAccessSessions = new AdminAccessSessions({
-    password: ctx.config.adminPassword,
+    password: resolveAdminPasswordForRuntime(ctx.config.adminPassword, startup?.reviewContext?.environment),
     ttlMs: 15 * 60 * 1000
   });
   ipcMain.handle("app:getBootstrap", () => ({

@@ -34,7 +34,9 @@
     "test:e2e:interruption": "tsx scripts/e2e-interruption-check.ts",
     "test:e2e:large-session": "tsx scripts/e2e-large-session-check.ts",
     "test:e2e:packaged": "tsx scripts/e2e-packaged-runtime-check.ts",
-    "test:e2e:geumcheon-multi-pc": "tsx scripts/e2e-geumcheon-multi-pc-nas-simulation.ts"
+    "test:e2e:geumcheon-multi-pc": "tsx scripts/e2e-geumcheon-multi-pc-nas-simulation.ts",
+    "dist:geumcheon:review": "npm run build && electron-builder --config electron-builder.geumcheon-ai-review.yml --publish=never && electron-builder --config electron-builder.geumcheon-ai-leaderboard-review.yml --publish=never && electron-builder --config electron-builder.geumcheon-practice-review.yml --publish=never && electron-builder --config electron-builder.geumcheon-practice-leaderboard-review.yml --publish=never",
+    "test:e2e:geumcheon-review": "tsx scripts/r5-standalone-review-check.ts"
   },
   "dependencies": {
     "csv-parse": "^5.6.0",

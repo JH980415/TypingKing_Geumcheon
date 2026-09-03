@@ -1,5 +1,14 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 
+export const REVIEW_LOCAL_ADMIN_PASSWORD = "0208";
+
+export function resolveAdminPasswordForRuntime(
+  configuredPassword: string,
+  environment?: string
+): string {
+  return environment === "review" ? REVIEW_LOCAL_ADMIN_PASSWORD : configuredPassword;
+}
+
 export type AdminAccessSender = {
   id: number;
   once(event: "destroyed", listener: () => void): unknown;
