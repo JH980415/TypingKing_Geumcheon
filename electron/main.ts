@@ -51,6 +51,7 @@ import {
   resolveE2eExtraCaPath,
   resolveLaunchPolicy,
   resolvePackagedMetadata,
+  resolveReviewUserDataPath,
   shouldHideE2eWindow,
   shouldShowStartupErrorDialog,
   resolveStartupProfile
@@ -71,12 +72,17 @@ let mainWindow: BrowserWindow | null = null;
 let startupRuntimeRoot: string | undefined;
 
 const metadata = packagedMetadata();
-const variant = resolveVariant(metadata.variant);
+const variant = resolveVariant(metadata.variant, app.isPackaged);
 const selectedEventProfileId = app.isPackaged
   ? metadata.eventProfileId
   : process.env.EVENT_PROFILE;
-const requiresSingleInstanceLock = selectedEventProfileId === "geumcheon-2026"
-  && (variant === "ai" || variant === "practice");
+const requiresSingleInstanceLock = metadata.reviewContext !== undefined || (selectedEventProfileId === "geumcheon-2026"
+  && (variant === "ai" || variant === "practice"));
+if (metadata.reviewContext) {
+  const localAppData = process.env.LOCALAPPDATA || process.env.APPDATA;
+  if (!localAppData) throw new Error("REVIEW_LOCALAPPDATA_REQUIRED");
+  app.setPath("userData", resolveReviewUserDataPath(localAppData, variant));
+}
 const mayStartApplication = !requiresSingleInstanceLock || app.requestSingleInstanceLock();
 if (!mayStartApplication) app.exit(0);
 else if (requiresSingleInstanceLock) {
@@ -135,7 +141,8 @@ function executableName(): string {
   return path.basename(process.env.PORTABLE_EXECUTABLE_FILE || process.execPath);
 }
 
-function resolveVariant(metadataVariant?: AppVariant): AppVariant {
+function resolveVariant(metadataVariant: AppVariant | undefined, isPackaged: boolean): AppVariant {
+  if (isPackaged && metadataVariant) return metadataVariant;
   const envVariant = process.env.APP_VARIANT;
   if (
     envVariant === "typing" ||
@@ -199,7 +206,8 @@ function packagedMetadata(): PackagedMetadata {
     return resolvePackagedMetadata(
       JSON.parse(fs.readFileSync(path.join(app.getAppPath(), "package.json"), "utf8"))
     );
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message === "PACKAGED_REVIEW_METADATA_REJECTED") throw error;
     return {};
   }
 }
@@ -504,11 +512,12 @@ async function registerIpc(
       config: ctx.config,
       assetBaseUrl: rendererAssetBaseUrl,
       notices: ctx.notices,
-      mode,
-      variant,
-      eventProfile,
-      deviceProfile
-    })
+        mode,
+        variant,
+        eventProfile,
+        deviceProfile,
+        reviewContext: startup?.reviewContext
+      })
   }));
 
   ipcMain.handle("admin:validate", (event, password: string, adminName?: string) => {
@@ -868,7 +877,8 @@ function initializeStartup(): void {
     localAppData: process.env.LOCALAPPDATA || process.env.APPDATA,
     eventProfile: process.env.EVENT_PROFILE,
     packagedEventProfile: metadata.eventProfileId,
-    runtimeRootOverride: process.env.TYPINGKING_RUNTIME_ROOT
+    runtimeRootOverride: process.env.TYPINGKING_RUNTIME_ROOT,
+    reviewContext: metadata.reviewContext
   });
   assertSafeTlsEnvironment(
     process.env,

@@ -469,3 +469,41 @@ test("legacy local backup IPC fails closed for Geumcheon and remains available f
     }
   }
 });
+
+test("packaged review fixes its metadata variant and userData before its instance lock", () => {
+  const harness = createElectronHarness(false, [], true, {
+    typingKingEnvironment: "review",
+    typingKingBuildId: "R2.0.4-R5",
+    typingKingEventProfile: "geumcheon-2026",
+    typingKingVariant: "ai",
+  });
+  try {
+    executeMain(harness, { eventProfile: "skillup-2026", variant: "practice" });
+    const userDataEvent = harness.events.find((event) => event.startsWith("set-path:userData:"));
+    const userDataIndex = harness.events.indexOf(userDataEvent || "");
+    const lockIndex = harness.events.indexOf("request-lock");
+    assert.equal(userDataEvent?.endsWith(path.join("Review", "userData-ai")), true);
+    assert.ok(userDataIndex >= 0 && userDataIndex < lockIndex, "review userData must precede its lock");
+    assert.equal(harness.events.includes("set-path:userData:" + path.join(process.env.LOCALAPPDATA || "", "ThePMD", "TypingKing", "Geumcheon2026", "Review", "userData-practice")), false);
+  } finally {
+    harness.dispose();
+  }
+});
+
+test("malformed packaged review metadata fails closed before environment fallback", () => {
+  const harness = createElectronHarness(false, [], true, {
+    typingKingEnvironment: "review",
+    typingKingBuildId: "wrong-build",
+    typingKingEventProfile: "geumcheon-2026",
+    typingKingVariant: "ai",
+  });
+  try {
+    assert.throws(
+      () => executeMain(harness, { eventProfile: "skillup-2026", variant: "practice" }),
+      /PACKAGED_REVIEW_METADATA_REJECTED/
+    );
+    assert.equal(harness.events.includes("request-lock"), false);
+  } finally {
+    harness.dispose();
+  }
+});

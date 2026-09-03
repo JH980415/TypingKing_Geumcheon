@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadDeviceProfile, loadEventProfile } from "../shared/events/eventProfile";
-import type { AppVariant, PcRole } from "../shared/types";
+import type { AppVariant, PcRole, ReviewRuntimeContext } from "../shared/types";
 import type { DeviceProfile, EventProfile, EventProfileId, EventVariantPolicy } from "../shared/events/types";
 
 export type StartupProfile = {
@@ -10,6 +10,7 @@ export type StartupProfile = {
   deviceProfile?: DeviceProfile;
   runtimeRoot: string;
   userDataPath?: string;
+  reviewContext?: ReviewRuntimeContext;
 };
 
 export type LaunchPolicy = { pcRole: PcRole };
@@ -22,12 +23,48 @@ export type StartupProfileOptions = {
   eventProfile?: string;
   packagedEventProfile?: string;
   runtimeRootOverride?: string;
+  reviewContext?: ReviewRuntimeContext;
 };
 
 export type PackagedMetadata = {
   eventProfileId?: EventProfileId;
   variant?: AppVariant;
+  reviewContext?: ReviewRuntimeContext;
 };
+
+const REVIEW_BUILD_ID = "R2.0.4-R5";
+const REVIEW_EVENT_ID = "geumcheon-science-festival-2026-review";
+
+function reviewContextForVariant(variant: AppVariant): ReviewRuntimeContext | undefined {
+  if (variant !== "ai" && variant !== "ai-leaderboard"
+    && variant !== "practice" && variant !== "practice-leaderboard") return undefined;
+  const sessionKind = variant.startsWith("practice") ? "practice" : "official";
+  const role = variant.endsWith("leaderboard") ? "leaderboard" : "player";
+  return {
+    environment: "review",
+    profileId: "geumcheon-2026",
+    eventId: REVIEW_EVENT_ID,
+    buildId: REVIEW_BUILD_ID,
+    deviceId: `review-${variant}`,
+    role,
+    sessionKind,
+    storageKind: "local"
+  };
+}
+
+export function resolveReviewStorageRoot(
+  localAppData: string,
+  sessionKind: ReviewRuntimeContext["sessionKind"]
+): string {
+  return path.join(localAppData, "ThePMD", "TypingKing", "Geumcheon2026", "Review", sessionKind);
+}
+
+export function resolveReviewUserDataPath(
+  localAppData: string,
+  variant: AppVariant
+): string {
+  return path.join(localAppData, "ThePMD", "TypingKing", "Geumcheon2026", "Review", `userData-${variant}`);
+}
 
 export type ApplicationResourcePaths = {
   resourceRoot: string;
@@ -129,7 +166,17 @@ export function resolvePackagedMetadata(value: unknown): PackagedMetadata {
     metadata.typingKingVariant === "practice" || metadata.typingKingVariant === "practice-leaderboard"
     ? metadata.typingKingVariant
     : undefined;
-  return { eventProfileId, variant };
+  const hasReviewMarker = metadata.typingKingEnvironment !== undefined || metadata.typingKingBuildId !== undefined;
+  if (!hasReviewMarker) return { eventProfileId, variant };
+
+  const reviewContext = metadata.typingKingEnvironment === "review"
+    && metadata.typingKingBuildId === REVIEW_BUILD_ID
+    && eventProfileId === "geumcheon-2026"
+    && variant !== undefined
+    ? reviewContextForVariant(variant)
+    : undefined;
+  if (!reviewContext) throw new Error("PACKAGED_REVIEW_METADATA_REJECTED");
+  return { eventProfileId, variant, reviewContext };
 }
 
 export function recordModeFromPolicy(policy: EventVariantPolicy): "normal" | "ai_challenge" {
@@ -251,6 +298,13 @@ function seedPackagedGeumcheonStageTexts(
 export function resolveLaunchPolicy(startup: StartupProfile, variant: AppVariant): LaunchPolicy {
   const variantPolicy = startup.eventProfile.variants[variant];
   if (!variantPolicy.enabled) throw new Error(`Variant ${variant} is disabled for ${startup.eventProfile.profileId}`);
+  if (startup.reviewContext) {
+    if (startup.reviewContext.role !== variantPolicy.role
+      || startup.reviewContext.sessionKind !== variantPolicy.sessionKind) {
+      throw new Error(`Review runtime cannot launch mismatched variant ${variant}`);
+    }
+    return { pcRole: startup.reviewContext.role };
+  }
   if (startup.eventProfile.profileId === "geumcheon-2026") {
     if (!startup.deviceProfile) throw new Error("Geumcheon launch requires a validated device profile");
     if (startup.deviceProfile.role !== variantPolicy.role) {
@@ -262,7 +316,7 @@ export function resolveLaunchPolicy(startup: StartupProfile, variant: AppVariant
 }
 
 export function resolveStartupProfile(options: StartupProfileOptions): StartupProfile {
-  const profileId = selectedProfileId(options);
+  const profileId = options.reviewContext?.profileId || selectedProfileId(options);
   const eventProfile = profileId === "skillup-2026" && options.isPackaged
     ? skillUpCompatibilityProfile
     : loadEventProfile(path.join(options.projectRoot, "events", profileId, "event.config.json"));
@@ -274,6 +328,21 @@ export function resolveStartupProfile(options: StartupProfileOptions): StartupPr
         ? path.join(localBase, "ThePMD", "TypingKing2026")
         : options.projectRoot;
     return { eventProfile, runtimeRoot };
+  }
+
+  if (options.reviewContext) {
+    if (options.reviewContext.profileId !== profileId) {
+      throw new Error("Review metadata does not match the selected event profile");
+    }
+    const localBase = options.localAppData || options.projectRoot;
+    const runtimeRoot = resolveReviewStorageRoot(localBase, options.reviewContext.sessionKind);
+    seedPackagedGeumcheonStageTexts(options, profileId, runtimeRoot);
+    return {
+      eventProfile,
+      runtimeRoot,
+      userDataPath: resolveReviewUserDataPath(localBase, options.reviewContext.deviceId.slice("review-".length) as AppVariant),
+      reviewContext: options.reviewContext
+    };
   }
 
   const deviceProfile = loadDeviceProfile(path.join(options.executableDirectory, "device-profile.json"));

@@ -20,6 +20,17 @@ export type AppVariant =
 export type SyncMode = "local" | "onedrive_manual";
 export type PcRole = "player" | "leaderboard";
 
+export type ReviewRuntimeContext = {
+  environment: "review";
+  profileId: "geumcheon-2026";
+  eventId: "geumcheon-science-festival-2026-review";
+  buildId: "R2.0.4-R5";
+  deviceId: string;
+  role: PcRole;
+  sessionKind: "official" | "practice";
+  storageKind: "local";
+};
+
 export type ThemeConfig = {
   primaryColor: string;
   accentColor: string;
@@ -447,4 +458,5 @@ export type BootstrapData = {
   eventProfile: EventProfile;
   variantPolicy: EventVariantPolicy;
   deviceProfile?: DeviceProfile;
+  reviewContext?: ReviewRuntimeContext;
 };

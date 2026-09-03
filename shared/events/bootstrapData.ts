@@ -1,4 +1,4 @@
-import type { AppConfig, AppMode, AppVariant, BootstrapData } from "../types";
+import type { AppConfig, AppMode, AppVariant, BootstrapData, ReviewRuntimeContext } from "../types";
 import type { EventProfile, SessionKind } from "./types";
 import { validateDeviceProfile, validateEventProfile, variantPolicyFor } from "./eventProfile";
 
@@ -10,6 +10,7 @@ type BootstrapInput = {
   variant: AppVariant;
   eventProfile: EventProfile;
   deviceProfile?: unknown;
+  reviewContext?: ReviewRuntimeContext;
 };
 
 export function resolveBootstrapTheme(
@@ -55,7 +56,8 @@ export function createBootstrapData(input: BootstrapInput): BootstrapData {
     variant: input.variant,
     eventProfile,
     variantPolicy,
-    deviceProfile
+    deviceProfile,
+    reviewContext: input.reviewContext
   };
 }
 
