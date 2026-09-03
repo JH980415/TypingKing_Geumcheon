@@ -72,7 +72,7 @@ let mainWindow: BrowserWindow | null = null;
 let startupRuntimeRoot: string | undefined;
 
 const metadata = packagedMetadata();
-const variant = resolveVariant(metadata.variant, app.isPackaged);
+const variant = resolveVariant(metadata.variant, metadata.reviewContext !== undefined);
 const selectedEventProfileId = app.isPackaged
   ? metadata.eventProfileId
   : process.env.EVENT_PROFILE;
@@ -141,8 +141,8 @@ function executableName(): string {
   return path.basename(process.env.PORTABLE_EXECUTABLE_FILE || process.execPath);
 }
 
-function resolveVariant(metadataVariant: AppVariant | undefined, isPackaged: boolean): AppVariant {
-  if (isPackaged && metadataVariant) return metadataVariant;
+function resolveVariant(metadataVariant: AppVariant | undefined, isReview: boolean): AppVariant {
+  if (isReview && metadataVariant) return metadataVariant;
   const envVariant = process.env.APP_VARIANT;
   if (
     envVariant === "typing" ||

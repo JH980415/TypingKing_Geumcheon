@@ -490,6 +490,19 @@ test("packaged review fixes its metadata variant and userData before its instanc
   }
 });
 
+test("ordinary packaged production builds retain environment variant precedence", () => {
+  const harness = createElectronHarness(false, [], true, {
+    typingKingEventProfile: "geumcheon-2026",
+    typingKingVariant: "ai-leaderboard",
+  });
+  try {
+    executeMain(harness, { eventProfile: "skillup-2026", variant: "practice" });
+    assert.equal(harness.events.includes("request-lock"), true, "APP_VARIANT=practice keeps its existing precedence");
+  } finally {
+    harness.dispose();
+  }
+});
+
 test("malformed packaged review metadata fails closed before environment fallback", () => {
   const harness = createElectronHarness(false, [], true, {
     typingKingEnvironment: "review",
