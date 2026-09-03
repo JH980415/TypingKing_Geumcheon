@@ -8,7 +8,7 @@
   "slogan": "AI와 소통하는 활기찬 미래 금천",
   "gameName": "G-Science AI 타자왕",
   "runtimeNamespace": "geumcheon-2026",
-  "stageTextCatalogVersion": "geumcheon-draft-20260825-v1",
+  "stageTextCatalogVersion": "geumcheon-r5-20260903-v1",
   "privacy": {
     "noticeVersion": null,
     "retentionExpiresAt": null
@@ -119,16 +119,16 @@
       "enabled": true,
       "stageSpeedRanges": {
         "stage1": {
-          "min": 150,
-          "max": 200
+          "min": 100,
+          "max": 125
         },
         "stage2": {
-          "min": 200,
-          "max": 250
+          "min": 125,
+          "max": 150
         },
         "stage3": {
-          "min": 250,
-          "max": 300
+          "min": 150,
+          "max": 200
         }
       },
       "countdownSeconds": 3,
@@ -140,15 +140,15 @@
       "stageSpeedRanges": {
         "stage1": {
           "min": 100,
-          "max": 150
+          "max": 125
         },
         "stage2": {
-          "min": 150,
-          "max": 200
+          "min": 125,
+          "max": 150
         },
         "stage3": {
-          "min": 200,
-          "max": 250
+          "min": 150,
+          "max": 200
         }
       },
       "countdownSeconds": 3,

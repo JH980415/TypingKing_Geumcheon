@@ -1751,11 +1751,16 @@ function getAiSnapshot(
   };
 }
 
-function createAiCpm(stage: number, config: AppConfig, fixedDebugSpeed = false): number {
+export function createAiCpm(
+  stage: number,
+  config: AppConfig,
+  fixedDebugSpeed = false,
+  random: () => number = Math.random
+): number {
   if (fixedDebugSpeed) return 100;
   const key = `stage${stage}` as "stage1" | "stage2" | "stage3";
   const range = config.aiChallenge.stageSpeedRanges[key];
   const min = Math.max(1, Math.floor(range.min));
-  const max = Math.max(min + 1, Math.floor(range.max));
-  return min + Math.floor(Math.random() * (max - min + 1));
+  const max = Math.max(min, Math.floor(range.max));
+  return min + Math.floor(random() * (max - min + 1));
 }

@@ -18,8 +18,8 @@ export type NasServerConfigV1 = {
     practice: { sessionId: string };
   };
   aiRanges: {
-    official: [[150, 200], [200, 250], [250, 300]];
-    practice: [[100, 150], [150, 200], [200, 250]];
+    official: [[100, 125], [125, 150], [150, 200]];
+    practice: [[100, 125], [125, 150], [150, 200]];
   };
 };
 
@@ -99,8 +99,8 @@ function parseEventConfig(value: unknown): Omit<NasServerConfigV1, "dataRoot"> {
   if (officialIds.has(practice.sessionId)) throw new Error("SESSION_ID_DUPLICATE");
 
   const aiRangesObject = exactObject(config.aiRanges, ["official", "practice"], "AI_RANGES");
-  assertExactRanges(aiRangesObject.official, [[150, 200], [200, 250], [250, 300]], "OFFICIAL_AI_RANGES_INVALID");
-  assertExactRanges(aiRangesObject.practice, [[100, 150], [150, 200], [200, 250]], "PRACTICE_AI_RANGES_INVALID");
+  assertExactRanges(aiRangesObject.official, [[100, 125], [125, 150], [150, 200]], "OFFICIAL_AI_RANGES_INVALID");
+  assertExactRanges(aiRangesObject.practice, [[100, 125], [125, 150], [150, 200]], "PRACTICE_AI_RANGES_INVALID");
 
   return {
     schemaVersion: 1,
@@ -109,8 +109,8 @@ function parseEventConfig(value: unknown): Omit<NasServerConfigV1, "dataRoot"> {
     stageTextCatalogPath,
     allowedSessions: { official, practice },
     aiRanges: {
-      official: [[150, 200], [200, 250], [250, 300]],
-      practice: [[100, 150], [150, 200], [200, 250]],
+      official: [[100, 125], [125, 150], [150, 200]],
+      practice: [[100, 125], [125, 150], [150, 200]],
     },
   };
 }

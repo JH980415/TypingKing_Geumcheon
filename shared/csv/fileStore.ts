@@ -38,7 +38,7 @@ import { buildPhoneFull, maskBirthdate, maskPhone, validatePhoneParts } from "..
 import { compareLegacyAiRecords, compareRecords, isInterruptedRecord, rankCanonicalAiAttempts } from "../utils/ranking";
 import { isCanonicalAiAttemptPubliclyRankable, isCanonicalAiAttemptV1 } from "../utils/geumcheonAiAttempt";
 import { calculateFinalCpm, calculateTotalUserTimeMs, countConvertedTypingUnits, countTypeableChars } from "../utils/typing";
-import { parseStageTextCatalog, validateStageTextCatalog } from "../events/stageTextCatalog";
+import { parseStageTextCatalog } from "../events/stageTextCatalog";
 import { drawStageTextFromBag, stageTextBagKey, type StageTextShuffleState } from "../utils/stageTextShuffle";
 
 type RuntimePaths = {
@@ -1305,11 +1305,7 @@ export function drawGeumcheonStageTexts(
 ): DrawStageTextsResult {
   if (input.role !== "player") throw new Error("Stage catalog draws require player role");
   const rows = parseStageTextCatalog(fs.readFileSync(input.catalogPath, "utf8"));
-  validateStageTextCatalog(rows, {
-    expectedVersion: input.catalogVersion,
-    expectedMode: "ai_challenge",
-    expectedRowsPerStage: 20
-  });
+  validateGeumcheonStageTextCatalog(rows, input.catalogVersion);
   const statePath = path.join(ctx.paths.root, "state", "stage-text-shuffle.json");
   let state = readStageTextShuffleState(statePath);
   const selections = ([1, 2, 3] as const).map((stageNumber) => {
@@ -1337,6 +1333,28 @@ export function drawGeumcheonStageTexts(
     catalogVersion: input.catalogVersion,
     selections: [selections[0], selections[1], selections[2]]
   };
+}
+
+function validateGeumcheonStageTextCatalog(rows: readonly StageText[], catalogVersion: string): void {
+  const expectedRowsByStage = { "1": 2, "2": 2, "3": 1 } as const;
+  const ids = new Set<string>();
+  const texts = new Set<string>();
+  for (const row of rows) {
+    if (!row.id || ids.has(row.id)) throw new Error("Geumcheon stage text IDs must be unique");
+    if (!row.text.trim() || texts.has(row.text)) throw new Error("Geumcheon stage text bodies must be unique");
+    if (!/^[가-힣ㄱ-ㅎㅏ-ㅣA-Z0-9 !,.~?\r\n]+$/.test(row.text)) throw new Error(`Geumcheon stage text contains unsupported characters: ${row.id}`);
+    if (row.catalog_version !== catalogVersion) throw new Error(`Unexpected Geumcheon catalog version: ${row.id}`);
+    if (row.game_mode !== "ai_challenge") throw new Error(`Unexpected Geumcheon game mode: ${row.id}`);
+    if (row.is_active !== "true") throw new Error(`Inactive Geumcheon catalog row: ${row.id}`);
+    if (!(row.stage_number in expectedRowsByStage)) throw new Error(`Invalid Geumcheon stage number: ${row.id}`);
+    ids.add(row.id);
+    texts.add(row.text);
+  }
+  for (const [stageNumber, expectedRows] of Object.entries(expectedRowsByStage)) {
+    if (rows.filter((row) => row.stage_number === stageNumber).length !== expectedRows) {
+      throw new Error(`Geumcheon stage ${stageNumber} requires exactly ${expectedRows} active rows`);
+    }
+  }
 }
 
 function writeJsonAtomic(filePath: string, value: unknown): void {

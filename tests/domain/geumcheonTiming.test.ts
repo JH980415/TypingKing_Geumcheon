@@ -3,7 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createGeumcheonFairness } from "../../apps/typing-game/src/AIChallengeGame";
+import { createAiCpm, createGeumcheonFairness } from "../../apps/typing-game/src/AIChallengeGame";
+import type { AppConfig } from "../../shared/types";
 import {
   loadEventProfile,
   resolveAiChallengeConfig
@@ -29,15 +30,28 @@ const profile = loadEventProfile(
 
 test("uses official and practice AI ranges from the event profile", () => {
   assert.deepEqual(resolveAiChallengeConfig(profile, "official").stageSpeedRanges, {
-    stage1: { min: 150, max: 200 },
-    stage2: { min: 200, max: 250 },
-    stage3: { min: 250, max: 300 }
+    stage1: { min: 100, max: 125 },
+    stage2: { min: 125, max: 150 },
+    stage3: { min: 150, max: 200 }
   });
   assert.deepEqual(resolveAiChallengeConfig(profile, "practice").stageSpeedRanges, {
-    stage1: { min: 100, max: 150 },
-    stage2: { min: 150, max: 200 },
-    stage3: { min: 200, max: 250 }
+    stage1: { min: 100, max: 125 },
+    stage2: { min: 125, max: 150 },
+    stage3: { min: 150, max: 200 }
   });
+});
+
+test("draws inclusive R5 Geumnarae CPM bounds for official and practice", () => {
+  for (const sessionKind of ["official", "practice"] as const) {
+    const config = { aiChallenge: resolveAiChallengeConfig(profile, sessionKind) } as AppConfig;
+    assert.deepEqual(config.aiChallenge.stageSpeedRanges, {
+      stage1: { min: 100, max: 125 },
+      stage2: { min: 125, max: 150 },
+      stage3: { min: 150, max: 200 }
+    });
+    assert.deepEqual([1, 2, 3].map((stage) => createAiCpm(stage, config, false, () => 0)), [100, 125, 150]);
+    assert.deepEqual([1, 2, 3].map((stage) => createAiCpm(stage, config, false, () => 0.999999999999)), [125, 150, 200]);
+  }
 });
 
 test("keeps SkillUp's configured AI plan unchanged", () => {
@@ -73,9 +87,9 @@ test("uses SkillUp control-dialog resume timing for Geumcheon too", () => {
 });
 
 const selections = [
-  { id: "gsc26-ai-s1-001", catalogVersion: "geumcheon-draft-20260825-v1", stageNumber: 1, text: "첫 번째 과학 문장" },
-  { id: "gsc26-ai-s2-001", catalogVersion: "geumcheon-draft-20260825-v1", stageNumber: 2, text: "두 번째 과학 문장" },
-  { id: "gsc26-ai-s3-001", catalogVersion: "geumcheon-draft-20260825-v1", stageNumber: 3, text: "세 번째 과학 문장" }
+  { id: "gsc26-ai-s1-001", catalogVersion: "geumcheon-r5-20260903-v1", stageNumber: 1, text: "로봇과 노는 금천과학축제" },
+  { id: "gsc26-ai-s2-001", catalogVersion: "geumcheon-r5-20260903-v1", stageNumber: 2, text: "인공지능 로봇의 신나는 축제!" },
+  { id: "gsc26-ai-s3-001", catalogVersion: "geumcheon-r5-20260903-v1", stageNumber: 3, text: "AI와 소통하는 활기찬 미래 금천" }
 ] as const;
 
 function fairness(stageCount: 1 | 2 | 3, terminal: "USER_WIN" | "AI_WIN" | "INTERRUPTED") {
@@ -87,11 +101,11 @@ function fairness(stageCount: 1 | 2 | 3, terminal: "USER_WIN" | "AI_WIN" | "INTE
     typedText: index === stageCount - 1 && terminal !== "USER_WIN" ? "입력 중인 끝 텍스트" : selection.text,
     userTimeMs: [1200, 2300, 3400][index],
     typingUnits: [10, 20, 30][index],
-    aiCpm: [175, 225, 275][index],
+    aiCpm: [100, 125, 150][index],
     result: index === stageCount - 1 ? terminal : "USER_WIN"
   }));
   return {
-    catalogVersion: "geumcheon-draft-20260825-v1",
+    catalogVersion: "geumcheon-r5-20260903-v1",
     totalUserTimeMs: stages.reduce((sum, stage) => sum + stage.userTimeMs, 0),
     stages
   };

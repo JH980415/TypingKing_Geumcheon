@@ -154,8 +154,8 @@ function configFixture() {
       practice: { sessionId: "practice-2026" },
     },
     aiRanges: {
-      official: [[150, 200], [200, 250], [250, 300]],
-      practice: [[100, 150], [150, 200], [200, 250]],
+      official: [[100, 125], [125, 150], [150, 200]],
+      practice: [[100, 125], [125, 150], [150, 200]],
     },
   };
   const tokenManifest = manifest();
@@ -181,8 +181,8 @@ test("loads strict NAS configuration from only the four approved environment pat
   const loaded = loadSyntheticConfig(fixture.env);
   assert.equal(loaded.schemaVersion, 1);
   assert.equal(loaded.dataRoot, fixture.env.NAS_DATA_ROOT);
-  assert.deepEqual(loaded.aiRanges.official, [[150, 200], [200, 250], [250, 300]]);
-  assert.deepEqual(loaded.aiRanges.practice, [[100, 150], [150, 200], [200, 250]]);
+  assert.deepEqual(loaded.aiRanges.official, [[100, 125], [125, 150], [150, 200]]);
+  assert.deepEqual(loaded.aiRanges.practice, [[100, 125], [125, 150], [150, 200]]);
   assert.equal(loaded.tokenManifest.tokens[0]?.tokenId, "PC01-write");
   assert.equal(loaded.participantHmacKey.byteLength, 32);
 });

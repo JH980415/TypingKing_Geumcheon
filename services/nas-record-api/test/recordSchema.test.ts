@@ -270,12 +270,12 @@ test("enforces event, writer device, and configured session scope", () => {
 test("preserves official/practice separation and validates each session AI range", () => {
   const practice = envelope(recordRow({
     ai_stage1_cpm: "100",
-    ai_stage2_cpm: "150",
-    ai_stage3_cpm: "200",
+    ai_stage2_cpm: "125",
+    ai_stage3_cpm: "150",
   }), PRACTICE_SESSION);
   assert.equal(validateAndNormalizeRecord(practice, principal, validationConfig("X:\\data"), RECEIVED_AT).session.kind, "practice");
 
-  practice.row.ai_stage1_cpm = "151";
+  practice.row.ai_stage1_cpm = "126";
   assert.throws(() => validateAndNormalizeRecord(practice, principal, validationConfig("X:\\data"), RECEIVED_AT), /AI_RANGE_INVALID/);
 });
 

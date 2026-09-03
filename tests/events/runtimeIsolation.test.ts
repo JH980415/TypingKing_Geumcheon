@@ -121,7 +121,7 @@ test("seeds a packaged Geumcheon runtime from the bundled catalog without a fall
   const runtimeCatalog = fs.readFileSync(runtime.paths.stageTextsFile, "utf8");
 
   assert.equal(runtime.notices.includes("문구 파일이 없어 기본 문구로 생성합니다."), false);
-  assert.match(runtimeCatalog, /과학은 질문에서 시작됩니다/);
+  assert.match(runtimeCatalog, /로봇과 노는 금천과학축제/);
 });
 
 test("allows executable-adjacent runtime migration only for legacy SkillUp", () => {
