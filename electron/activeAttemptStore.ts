@@ -31,6 +31,10 @@ export type ActiveAttemptEncryption = {
   decryptString(value: Buffer): string;
 };
 
+export type ActiveAttemptIdentityPolicy = {
+  isTrusted(recordId: unknown, attemptId: unknown): boolean;
+};
+
 export type ActiveAttemptStore = {
   save(checkpoint: ActiveAttemptCheckpointV2): Promise<void>;
   read(): Promise<ActiveAttemptCheckpointV2 | null>;
@@ -41,6 +45,7 @@ type ActiveAttemptStoreOptions = {
   checkpointPath: string;
   encryption: ActiveAttemptEncryption;
   eventProfileId: string;
+  identityPolicy?: ActiveAttemptIdentityPolicy;
   maxEncryptedBytes?: number;
   maxPlaintextBytes?: number;
 };
@@ -318,7 +323,11 @@ function isCheckpointV1(value: unknown, eventProfileId: string): value is Active
   );
 }
 
-function isCheckpointV2(value: unknown, eventProfileId: string): value is ActiveAttemptCheckpointV2 {
+function isCheckpointV2(
+  value: unknown,
+  eventProfileId: string,
+  identityPolicy: ActiveAttemptIdentityPolicy,
+): value is ActiveAttemptCheckpointV2 {
   return (
     isObject(value) &&
     hasOnlyKeys(value, [
@@ -337,11 +346,23 @@ function isCheckpointV2(value: unknown, eventProfileId: string): value is Active
     isString(value.recordId) &&
     value.recordId.length > 0 &&
     value.recordId.length <= 200 &&
-    isPairedGeumcheonAttemptIdentity(value.recordId, value.attemptId) &&
+    hasTrustedIdentity(identityPolicy, value.recordId, value.attemptId) &&
     isIsoTimestamp(value.recordedAt) &&
     isIsoTimestamp(value.updatedAt) &&
     isSaveRecordInput(value.input)
   );
+}
+
+function hasTrustedIdentity(
+  identityPolicy: ActiveAttemptIdentityPolicy,
+  recordId: unknown,
+  attemptId: unknown,
+): boolean {
+  try {
+    return identityPolicy.isTrusted(recordId, attemptId);
+  } catch {
+    return false;
+  }
 }
 
 function isIsoTimestamp(value: unknown): value is string {
@@ -374,6 +395,7 @@ export function createActiveAttemptStore(options: ActiveAttemptStoreOptions): Ac
     eventProfileId,
     maxEncryptedBytes = DEFAULT_MAX_ENCRYPTED_BYTES,
     maxPlaintextBytes = DEFAULT_MAX_PLAINTEXT_BYTES,
+    identityPolicy = { isTrusted: isPairedGeumcheonAttemptIdentity },
   } = options;
   if (
     !checkpointPath ||
@@ -388,7 +410,7 @@ export function createActiveAttemptStore(options: ActiveAttemptStoreOptions): Ac
 
   return {
     async save(checkpoint) {
-      if (!isCheckpointV2(checkpoint, eventProfileId)) fail("INVALID_CHECKPOINT");
+      if (!isCheckpointV2(checkpoint, eventProfileId, identityPolicy)) fail("INVALID_CHECKPOINT");
       requireEncryption(encryption);
       const plaintext = JSON.stringify(checkpoint);
       if (Buffer.byteLength(plaintext, "utf8") > maxPlaintextBytes) fail("TOO_LARGE");
@@ -450,7 +472,7 @@ export function createActiveAttemptStore(options: ActiveAttemptStoreOptions): Ac
       } catch {
         fail("INVALID_CHECKPOINT");
       }
-      if (isCheckpointV2(parsed, eventProfileId)) return parsed;
+      if (isCheckpointV2(parsed, eventProfileId, identityPolicy)) return parsed;
       if (isCheckpointV1(parsed, eventProfileId)) {
         const upgraded = upgradeCheckpointV1(parsed);
         if (upgraded != null) return upgraded;

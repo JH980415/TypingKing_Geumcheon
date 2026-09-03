@@ -19,6 +19,10 @@ export type AttemptPersistenceIdentity = GeumcheonAttemptIdentityIds & {
   recordedAt: string;
 };
 
+export type AttemptIdentityPolicy = {
+  isTrusted(recordId: unknown, attemptId: unknown): boolean;
+};
+
 export type ActiveAttemptStoreLike = {
   save(checkpoint: ActiveAttemptCheckpoint): Promise<void>;
   read(): Promise<ActiveAttemptCheckpoint | null>;
@@ -40,6 +44,7 @@ export function createGeumcheonRecordRuntime(options: {
   now(): string;
   persistLocal(input: SaveRecordInput, identity: AttemptPersistenceIdentity): Promise<RecordRow>;
   enqueue(row: RecordRow): Promise<void>;
+  identityPolicy?: AttemptIdentityPolicy;
 }): GeumcheonRecordRuntime {
   let cached: ActiveAttemptCheckpoint | null | undefined;
   let operation = Promise.resolve<void>(undefined);
@@ -59,7 +64,7 @@ export function createGeumcheonRecordRuntime(options: {
     const previous = await current();
     const updatedAt = options.now();
     const identity = previous ?? options.createAttemptIdentity();
-    assertTrustedIdentity(identity, options.deviceId);
+    assertTrustedIdentity(identity, options.deviceId, options.identityPolicy);
     const recordedAt = previous?.recordedAt ?? updatedAt;
     const checkpoint: ActiveAttemptCheckpoint = {
       schemaVersion: 2,
@@ -82,7 +87,7 @@ export function createGeumcheonRecordRuntime(options: {
   }
 
   async function persist(checkpoint: ActiveAttemptCheckpoint): Promise<RecordRow> {
-    assertTrustedIdentity(checkpoint, options.deviceId);
+    assertTrustedIdentity(checkpoint, options.deviceId, options.identityPolicy);
     const identity = {
       recordId: checkpoint.recordId,
       attemptId: checkpoint.attemptId,
@@ -112,7 +117,14 @@ export function createGeumcheonRecordRuntime(options: {
 function assertTrustedIdentity(
   identity: GeumcheonAttemptIdentityIds,
   deviceId: string,
+  identityPolicy?: AttemptIdentityPolicy,
 ): void {
+  if (identityPolicy != null) {
+    if (!identityPolicy.isTrusted(identity.recordId, identity.attemptId)) {
+      throw new Error("ATTEMPT_IDENTITY_INVALID");
+    }
+    return;
+  }
   if (!isPairedGeumcheonAttemptIdentity(identity.recordId, identity.attemptId)) {
     throw new Error("ATTEMPT_IDENTITY_INVALID");
   }
