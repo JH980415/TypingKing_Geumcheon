@@ -7,6 +7,7 @@ import path from "node:path";
 import tls from "node:tls";
 import {
   addStageText,
+  buildRecordRow,
   clearRecords,
   cleanupLegacyOneDriveArtifacts,
   deleteRecord,
@@ -64,6 +65,12 @@ import { checkGeumcheonNasReadiness, requireGeumcheonCredential } from "./nas/re
 import { rendererSafeFailure } from "./nas/piiBoundary";
 import { createGeumcheonNasRuntime, type GeumcheonNasRuntime } from "./nas/runtime";
 import {
+  createReviewGeumcheonConnection,
+  initializeGeumcheonConnection,
+  validateReviewStorage,
+  type ReviewGeumcheonConnection
+} from "./geumcheonConnection";
+import {
   RendererCheckpointFence,
   requestRendererActiveAttemptCheckpoint
 } from "./rendererCheckpointHandshake";
@@ -95,11 +102,14 @@ else if (requiresSingleInstanceLock) {
 }
 
 type GeumcheonNasConnection = {
+  source: "production";
   runtime: GeumcheonNasRuntime;
   checkpointFence: RendererCheckpointFence;
   checkReadiness(): Promise<GameStartReadiness>;
   flush(): ReturnType<GeumcheonNasRuntime["flush"]>;
 };
+
+type GeumcheonConnection = GeumcheonNasConnection | ReviewGeumcheonConnection;
 
 if (mayStartApplication) {
   app.commandLine.appendSwitch("disable-gpu");
@@ -317,6 +327,7 @@ async function initializeGeumcheonNasConnection(
 
   let flushInFlight: ReturnType<GeumcheonNasRuntime["flush"]> | null = null;
   const connection: GeumcheonNasConnection = {
+    source: "production",
     runtime,
     checkpointFence: new RendererCheckpointFence(),
     checkReadiness: () => checkGeumcheonNasReadiness({
@@ -473,7 +484,7 @@ async function registerIpc(
   deviceProfile: ReturnType<typeof resolveStartupProfile>["deviceProfile"],
   pcRole: PcRole,
   applicationResources: ApplicationResourcePaths
-): Promise<GeumcheonNasConnection | null> {
+): Promise<GeumcheonConnection | null> {
   const variantPolicy = eventProfile.variants[variant];
   const isPracticeVariant = variantPolicy.sessionKind === "practice";
   // ensureRuntime(설정 로드) 전에 연습모드를 확정해야 세션 경로가 "연습회차" 폴더로 계산된다.
@@ -492,15 +503,24 @@ async function registerIpc(
   const rendererAssetBaseUrl = eventProfile.profileId === "geumcheon-2026"
     ? applicationResources.rendererAssetBaseUrl
     : ctx.assetBaseUrl;
-  let geumcheonNas: GeumcheonNasConnection | null = null;
+  let geumcheonNas: GeumcheonConnection | null = null;
   if (eventProfile.profileId === "geumcheon-2026") {
-    if (!deviceProfile) throw new Error("Geumcheon launch requires validated device profile");
-    geumcheonNas = await initializeGeumcheonNasConnection(
-      eventProfile,
+    geumcheonNas = await initializeGeumcheonConnection({
+      reviewContext: startup?.reviewContext,
       deviceProfile,
-      variantPolicy.sessionKind,
-      ctx
-    );
+      createProduction: (profile) => initializeGeumcheonNasConnection(
+        eventProfile,
+        profile,
+        variantPolicy.sessionKind,
+        ctx
+      ),
+      createReview: async (reviewContext) => createReviewGeumcheonConnection({
+        reviewContext,
+        runtimeRoot,
+        encryption: safeStorage,
+        persistLocal: async (input, recordId) => ({ record_id: recordId, ...buildRecordRow(input) })
+      })
+    });
   }
   const adminAccessSessions = new AdminAccessSessions({
     password: ctx.config.adminPassword,
@@ -532,6 +552,18 @@ async function registerIpc(
     }
     return { ok: true, data: { adminName: authenticated.adminName } };
   });
+  ipcMain.handle("review:validateStorage", (event) =>
+    safeAsync(async () => {
+      if (!startup?.reviewContext || !geumcheonNas || geumcheonNas.source !== "review") {
+        throw new Error("REVIEW_STORAGE_VALIDATION_UNAVAILABLE");
+      }
+      return validateReviewStorage({
+        reviewContext: startup.reviewContext,
+        runtime: geumcheonNas.localRuntime,
+        requireAdmin: () => { adminAccessSessions.require(event.sender); }
+      });
+    }, "로컬 검토 저장소를 확인할 수 없습니다.")
+  );
 
   ipcMain.handle("stage:list", () => safe(() => readStageTexts(ctx)));
   ipcMain.handle("stage:draw", (_event, input: DrawStageTextsInput) =>
@@ -923,7 +955,7 @@ if (mayStartApplication) void app.whenReady().then(async () => {
   }
   if (!launchPolicy || !startup || !applicationResources) return;
   app.setAppUserModelId(appUserModelId(startup.eventProfile, startup.eventProfile.variants[variant]));
-  let geumcheonNas: GeumcheonNasConnection | null;
+  let geumcheonNas: GeumcheonConnection | null;
   try {
     geumcheonNas = await registerIpc(
       variant,

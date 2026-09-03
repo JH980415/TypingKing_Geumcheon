@@ -9,6 +9,7 @@ import type {
   OneDriveCleanupResult,
   QueuedRecordFlushResult,
   RecordRow,
+  ReviewStorageValidation,
   SaveRecordInput,
   StageText,
   DrawStageTextsInput,
@@ -20,6 +21,7 @@ declare global {
     typingKing: {
       getBootstrap(): Promise<ApiResult<BootstrapData>>;
       validateAdmin(password: string, adminName?: string): Promise<ApiResult<{ adminName: string }>>;
+      validateReviewStorage(): Promise<ApiResult<ReviewStorageValidation>>;
       listStageTexts(): Promise<ApiResult<StageText[]>>;
       drawStageTexts(input: DrawStageTextsInput): Promise<ApiResult<DrawStageTextsResult>>;
       getStageReadiness(gameMode?: string): Promise<ApiResult<string[]>>;

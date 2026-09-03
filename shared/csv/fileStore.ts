@@ -2583,11 +2583,7 @@ export function flushQueuedRecords(ctx: RuntimeContext): QueuedRecordFlushResult
   return { attempted: files.length, sent, failed, targetPaths, failures };
 }
 
-export async function saveRecord(
-  ctx: RuntimeContext,
-  input: SaveRecordInput,
-  stableRecordId?: string
-): Promise<RecordRow> {
+export function buildRecordRow(input: SaveRecordInput): Omit<RecordRow, "record_id"> {
   const phoneError = validatePhoneParts(input.phone_part1, input.phone_part2, input.phone_part3);
   if (phoneError) throw new Error(phoneError);
 
@@ -2718,6 +2714,16 @@ export async function saveRecord(
     is_admin_edited: "false",
     ...(fairness ? { fairness } : {})
   };
+
+  return rowWithoutId;
+}
+
+export async function saveRecord(
+  ctx: RuntimeContext,
+  input: SaveRecordInput,
+  stableRecordId?: string
+): Promise<RecordRow> {
+  const rowWithoutId = buildRecordRow(input);
 
   if (usesOneDriveJson(ctx)) {
     const row: RecordRow = {

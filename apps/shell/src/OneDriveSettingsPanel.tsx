@@ -5,6 +5,7 @@ import type {
   EventProfileId,
   PcRole,
   QueuedRecordFlushResult,
+  ReviewStorageValidation,
   SessionKind
 } from "../../../shared/types";
 
@@ -155,6 +156,55 @@ function roleLabel(role: PcRole): string {
   return role === "leaderboard" ? "리더보드" : "플레이어";
 }
 
+export function formatReviewStorageValidationMessage(result: ReviewStorageValidation): string {
+  const session = result.session === "practice" ? "연습회차" : "공식회차";
+  const outcome = result.result === "normal" ? "정상" : "오류";
+  return `로컬 검토 저장소 / 검토 환경 / ${roleLabel(result.role)} / ${session} / ${outcome}`;
+}
+
+function GeumcheonReviewStatusPanel({
+  role,
+  sessionKind = "official"
+}: Pick<Props, "role" | "sessionKind">) {
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [validated, setValidated] = useState(false);
+  const sessionLabel = sessionKind === "practice" ? "연습회차" : "공식회차";
+
+  async function validateStorage() {
+    setBusy(true);
+    const response = await window.typingKing.validateReviewStorage();
+    setBusy(false);
+    const result = response.ok ? response.data : undefined;
+    setValidated(result?.result === "normal");
+    setMessage(result
+      ? formatReviewStorageValidationMessage(result)
+      : `로컬 검토 저장소 / 검토 환경 / ${roleLabel(role)} / ${sessionLabel} / 오류`);
+  }
+
+  return (
+    <section className="onedrive-settings-panel geumcheon-nas-status-panel">
+      <div className="onedrive-settings-title">
+        <div>
+          <p className="eyebrow">로컬 검토 저장소</p>
+          <h3>검토 환경·역할·세션 검증</h3>
+          <p className="app-role-summary">검토 환경 / {roleLabel(role)} / {sessionLabel}</p>
+        </div>
+        <span className={validated ? "setup-state ready" : "setup-state pending"}>
+          {validated ? "정상" : "검증 필요"}
+        </span>
+      </div>
+      <p className="settings-helper">로컬 검토 저장소의 현재 세션 기록을 확인합니다.</p>
+      <div className="button-row">
+        <button className="primary-button" onClick={validateStorage} disabled={busy}>
+          로컬 저장소 검증
+        </button>
+      </div>
+      {message && <p className="notice-text">{message}</p>}
+    </section>
+  );
+}
+
 function geumcheonSessionLabel(deviceProfile: DeviceProfile | undefined, sessionKind: SessionKind | undefined): string {
   if (sessionKind === "practice") return "연습회차";
   const official = deviceProfile?.sessions.official;
@@ -252,6 +302,7 @@ function GeumcheonNasStatusPanel({
 
 export function OneDriveSettingsPanel(props: Props) {
   if (props.eventProfileId === "geumcheon-2026") {
+    if (!props.deviceProfile) return <GeumcheonReviewStatusPanel {...props} />;
     return <GeumcheonNasStatusPanel {...props} />;
   }
   return <SkillUpOneDriveSettingsPanel {...props} />;

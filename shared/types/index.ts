@@ -31,6 +31,14 @@ export type ReviewRuntimeContext = {
   storageKind: "local";
 };
 
+export type ReviewStorageValidation = {
+  storage: "local";
+  environment: "review";
+  role: PcRole;
+  session: "official" | "practice";
+  result: "normal" | "error";
+};
+
 export type ThemeConfig = {
   primaryColor: string;
   accentColor: string;

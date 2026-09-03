@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("typingKing", {
   getBootstrap: () => ipcRenderer.invoke("app:getBootstrap"),
   validateAdmin: (password: string, adminName?: string) =>
     ipcRenderer.invoke("admin:validate", password, adminName),
+  validateReviewStorage: () => ipcRenderer.invoke("review:validateStorage"),
   listStageTexts: () => ipcRenderer.invoke("stage:list"),
   drawStageTexts: (input: DrawStageTextsInput) => ipcRenderer.invoke("stage:draw", input),
   getStageReadiness: (gameMode?: string) => ipcRenderer.invoke("stage:readiness", gameMode),
