@@ -152,4 +152,33 @@ test("lists canonical AI records by participant win then CPM, independent of tot
     (await store.list(OFFICIAL_SESSION)).map((row) => row.record_id.slice("gsc26-pc01-".length, "gsc26-pc01-".length + 8)),
     ["00000003", "00000004", "00000002", "00000001", "00000005", "00000006"]
   );
+
+  const targetRecordId = "gsc26-pc01-00000003-0001-4001-8001-000000000003";
+  await store.putAdminAction({
+    schema_version: 1,
+    event_id: "geumcheon-science-festival-2026",
+    session: OFFICIAL_SESSION,
+    action_id: "gsc26-action-77777777-7777-4777-8777-777777777777",
+    created_at: "2026-08-26T03:11:00.000Z",
+    admin_name: "운영자",
+    action_type: "hide",
+    target_record_id: targetRecordId,
+    hidden: true,
+  });
+  await store.putAdminAction({
+    schema_version: 1,
+    event_id: "geumcheon-science-festival-2026",
+    session: OFFICIAL_SESSION,
+    action_id: "gsc26-action-88888888-8888-4888-8888-888888888888",
+    created_at: "2026-08-26T03:12:00.000Z",
+    admin_name: "운영자",
+    action_type: "hide",
+    target_record_id: targetRecordId,
+    hidden: false,
+  });
+
+  assert.deepEqual(
+    (await store.listEffective(OFFICIAL_SESSION)).map((row) => row.record_id.slice("gsc26-pc01-".length, "gsc26-pc01-".length + 8)),
+    ["00000003", "00000004", "00000002", "00000001", "00000005", "00000006"]
+  );
 });

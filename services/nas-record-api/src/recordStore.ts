@@ -279,7 +279,9 @@ export class RecordStore {
       }
     }
 
-    return [...visible.values()].filter(isEffectiveCanonicalRow);
+    return [...visible.values()]
+      .filter(isEffectiveCanonicalRow)
+      .sort(compareLeaderboardRecordOrder);
   }
 
   private async existingRecordIfPresent(
