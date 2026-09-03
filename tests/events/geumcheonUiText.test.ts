@@ -83,6 +83,21 @@ test("Geumcheon challenge screen names the AI competitor as Geumnarae", () => {
   assert.doesNotMatch(html, /AI보다 먼저/);
 });
 
+test("renders a dedicated Geumcheon game-name row before the separate stage badge row", () => {
+  const html = renderChallengeMarkup();
+  const stageCenterStart = html.indexOf('<div class="challenge-stage-center">');
+  const stageCenterEnd = html.indexOf("</header>", stageCenterStart);
+  const stageCenter = html.slice(stageCenterStart, stageCenterEnd);
+
+  assert.ok(stageCenterStart >= 0 && stageCenterEnd > stageCenterStart, "challenge stage center must render");
+  assert.match(stageCenter, /class="challenge-game-name eyebrow">G-Science AI 타자왕<\/p>/);
+  assert.match(stageCenter, /class="stage-badge-row"/);
+  assert.ok(
+    stageCenter.indexOf("challenge-game-name") < stageCenter.indexOf("stage-badge-row"),
+    "game-name row must precede the separate stage badge row"
+  );
+});
+
 test("Geumcheon official leaderboard removes the outer festival title while keeping the panel title", () => {
   const html = renderLeaderboardMarkup();
 

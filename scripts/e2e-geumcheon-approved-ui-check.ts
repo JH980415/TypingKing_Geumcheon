@@ -108,10 +108,12 @@ const officialSessionId = "approved-ui-official";
 const rows: ScreenCheck[] = [];
 const leaderboardChecks: LeaderboardBehaviorCheck[] = [];
 const countdownScreenshots: string[] = [];
+const uiDetailScreenshots: string[] = [];
+const syntheticAdminPassword = "typingking-approved-ui-admin-r5";
 const leaderboardsOnly = process.env.TYPINGKING_E2E_LEADERBOARDS_ONLY === "1";
 const sizes = [
-  { width: 1920, height: 1080 },
-  { width: 1280, height: 720 }
+  { width: 1280, height: 720 },
+  { width: 1920, height: 1080 }
 ];
 
 function syntheticLeaderboardRows(): RecordRow[] {
@@ -214,7 +216,7 @@ function syntheticLeaderboardRows(): RecordRow[] {
       participant_result_time_ms: String(participantTimeMs),
       participant_avg_cpm: String(520 - index * 5),
       duel_time_ms: String(participantTimeMs),
-      participantKey: `synthetic-participant-${suffix}`
+      participantKey: index === 11 ? "synthetic-participant-01" : `synthetic-participant-${suffix}`
     };
   });
 }
@@ -287,7 +289,7 @@ function writeSyntheticProfiles(
     path.join(runtimeConfigDir, "config.json"),
     `${JSON.stringify({
       ...DEFAULT_CONFIG,
-      adminPassword: crypto.randomBytes(24).toString("base64url")
+      adminPassword: syntheticAdminPassword
     }, null, 2)}\n`,
     "utf8"
   );
@@ -689,10 +691,29 @@ async function captureHiddenWindow(
   const pngBase64 = await running.app.evaluate(async ({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0];
     if (!window) throw new Error("Approved UI BrowserWindow is missing");
+    window.webContents.invalidate();
+    await new Promise((resolve) => setTimeout(resolve, 75));
     const image = await window.webContents.capturePage();
     return image.toPNG().toString("base64");
   });
   fs.writeFileSync(screenshotPath, Buffer.from(pngBase64, "base64"));
+}
+
+async function warmHiddenWindowCompositor(running: RunningApp): Promise<void> {
+  await running.app.evaluate(async ({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error("Approved UI BrowserWindow is missing");
+    window.webContents.invalidate();
+    await window.webContents.capturePage();
+  });
+}
+
+async function captureSettledHiddenWindow(
+  running: RunningApp,
+  screenshotPath: string
+): Promise<void> {
+  await warmHiddenWindowCompositor(running);
+  await captureHiddenWindow(running, screenshotPath);
 }
 
 async function captureAndAssertChallengeCountdown(
@@ -703,6 +724,7 @@ async function captureAndAssertChallengeCountdown(
 ): Promise<void> {
   const { page } = running;
   let firstBossRect: { left: number; top: number; right: number; bottom: number } | undefined;
+  await warmHiddenWindowCompositor(running);
 
   for (const value of ["3", "2", "1", "START"]) {
     await page.waitForFunction(
@@ -837,7 +859,7 @@ async function captureAndAssert(
   const dir = path.join(artifactRoot, `${width}x${height}`);
   ensureDir(dir);
   const screenshot = path.join(dir, `${screen}.png`);
-  await captureHiddenWindow(running, screenshot);
+  await captureSettledHiddenWindow(running, screenshot);
   rows.push({
     screen,
     resolution: `${width}x${height}`,
@@ -890,6 +912,143 @@ async function fillEntryForm(page: Page, variant: GameVariant, width: number): P
   await page.locator(".birth-row select").nth(2).selectOption(wide ? "19" : "12");
   await page.locator(".check-line input").check();
 }
+
+async function assertGeumcheonFocusStyles(page: Page): Promise<void> {
+  const selectors = [
+    [".entry-panel input:not([type])", "text input"],
+    [".entry-panel select", "select"],
+    [".entry-panel input[type=\"checkbox\"]", "checkbox"],
+    [".entry-panel .text-button", "text button"],
+    [".entry-panel .primary-button", "primary button"]
+  ] as const;
+  const styles: Array<{
+    label: string;
+    outlineColor: string;
+    outlineStyle: string;
+    outlineWidth: string;
+    borderColor: string;
+    boxShadow: string;
+  }> = [];
+  for (const [selector, label] of selectors) {
+    const locator = page.locator(selector).first();
+    await locator.focus();
+    styles.push(await locator.evaluate((element, currentLabel) => {
+      const style = getComputedStyle(element);
+      return {
+        label: currentLabel,
+        outlineColor: style.outlineColor,
+        outlineStyle: style.outlineStyle,
+        outlineWidth: style.outlineWidth,
+        borderColor: style.borderColor,
+        boxShadow: style.boxShadow
+      };
+    }, label));
+  }
+  styles.push(await page.evaluate(() => {
+    const textarea = document.createElement("textarea");
+    textarea.setAttribute("aria-label", "E2E focus textarea");
+    document.querySelector(".entry-panel")?.append(textarea);
+    textarea.focus();
+    const style = getComputedStyle(textarea);
+    const result = {
+      label: "textarea",
+      outlineColor: style.outlineColor,
+      outlineStyle: style.outlineStyle,
+      outlineWidth: style.outlineWidth,
+      borderColor: style.borderColor,
+      boxShadow: style.boxShadow
+    };
+    textarea.remove();
+    return result;
+  }));
+
+  const approvedFocusColors = new Set(["rgb(196, 0, 128)", "rgb(85, 45, 141)"]);
+  const forbiddenYellow = "rgb(254, 217, 0)";
+  for (const style of styles) {
+    assert.equal(style.outlineStyle, "solid", style.label + " must expose one solid focus outline");
+    assert.ok(Number.parseFloat(style.outlineWidth) >= 3, style.label + " focus outline is not visible enough");
+    assert.equal(
+      approvedFocusColors.has(style.outlineColor),
+      true,
+      style.label + " focus outline must be Geumcheon magenta or purple; computed=" + JSON.stringify(style)
+    );
+    assert.equal(style.boxShadow, "none", style.label + " must not stack a second focus shadow");
+    assert.notEqual(style.borderColor, forbiddenYellow, style.label + " must not use a yellow focus border");
+    assert.notEqual(style.outlineColor, forbiddenYellow, style.label + " must not use a yellow focus outline");
+  }
+}
+
+async function assertGeumcheonStartLayout(page: Page, width: number): Promise<void> {
+  const layout = await page.evaluate(() => {
+    const panel = document.querySelector<HTMLElement>(".entry-panel");
+    const eventCopy = panel?.querySelector<HTMLElement>(".entry-event-copy");
+    const formGroup = panel?.querySelector<HTMLElement>(".entry-form-group");
+    const actions = panel?.querySelector<HTMLElement>(":scope > .button-row");
+    const titleGroup = document.querySelector<HTMLElement>(".left-title-group");
+    const title = titleGroup?.querySelector<HTMLImageElement>(".geumcheon-main-title-image");
+    const subtitle = titleGroup?.querySelector<HTMLElement>(".hero-copy");
+    const panelRect = panel?.getBoundingClientRect();
+    const eventRect = eventCopy?.getBoundingClientRect();
+    const formRect = formGroup?.getBoundingClientRect();
+    const actionRect = actions?.getBoundingClientRect();
+    const titleGroupRect = titleGroup?.getBoundingClientRect();
+    const titleRect = title?.getBoundingClientRect();
+    const subtitleRect = subtitle?.getBoundingClientRect();
+    const panelStyle = panel ? getComputedStyle(panel) : undefined;
+    return {
+      modeCardCount: panel?.querySelectorAll(".mode-card, .mode-selector").length ?? -1,
+      eventCopyCount: panel?.querySelectorAll(".entry-event-copy").length ?? -1,
+      eventCopyText: eventCopy?.innerText.trim() ?? "",
+      firstChildIsEventCopy: panel?.firstElementChild === eventCopy,
+      lastChildIsActions: panel?.lastElementChild === actions,
+      titleGroupHasTitle: Boolean(title),
+      titleGroupHasSubtitle: Boolean(subtitle),
+      titleDrawnWidthRatio: titleRect && titleGroupRect && title?.naturalWidth && title.naturalHeight
+        ? Math.min(titleRect.width, titleRect.height * (title.naturalWidth / title.naturalHeight)) / titleGroupRect.width
+        : 0,
+      titleCenterOffset: titleRect && titleGroupRect
+        ? Math.abs((titleRect.left + titleRect.width / 2) - (titleGroupRect.left + titleGroupRect.width / 2))
+        : Number.POSITIVE_INFINITY,
+      subtitleCenterOffset: subtitleRect && titleGroupRect
+        ? Math.abs((subtitleRect.left + subtitleRect.width / 2) - (titleGroupRect.left + titleGroupRect.width / 2))
+        : Number.POSITIVE_INFINITY,
+      titleWithinGroup: Boolean(titleRect && titleGroupRect
+        && titleRect.left >= titleGroupRect.left - 1
+        && titleRect.right <= titleGroupRect.right + 1),
+      subtitleWithinGroup: Boolean(subtitleRect && titleGroupRect
+        && subtitleRect.left >= titleGroupRect.left - 1
+        && subtitleRect.right <= titleGroupRect.right + 1),
+      formCenterOffset: eventRect && formRect && actionRect
+        ? Math.abs((formRect.top + formRect.height / 2) - (eventRect.bottom + (actionRect.top - eventRect.bottom) / 2))
+        : Number.POSITIVE_INFINITY,
+      actionBottomGap: panelRect && actionRect ? panelRect.bottom - actionRect.bottom : Number.POSITIVE_INFINITY,
+      panelPaddingBottom: Number.parseFloat(panelStyle?.paddingBottom || "0")
+    };
+  });
+  assert.equal(layout.modeCardCount, 0, "Geumcheon right panel must not render a mode card or selector");
+  assert.equal(layout.eventCopyCount, 1, "Geumcheon right panel must render exactly one event copy");
+  assert.match(layout.eventCopyText, /2026 G-Science Festival\s+AI와 소통하는 활기찬 미래 금천/);
+  assert.equal(layout.firstChildIsEventCopy, true, "event copy must stay at the right-panel top");
+  assert.equal(layout.lastChildIsActions, true, "start and admin actions must stay at the right-panel bottom");
+  assert.equal(layout.titleGroupHasTitle, true, "left title group must contain the approved title");
+  assert.equal(layout.titleGroupHasSubtitle, true, "left title group must contain the exact subtitle");
+  const minimumTitleWidthRatio = width <= 1366 ? 0.5 : 0.75;
+  assert.ok(
+    layout.titleDrawnWidthRatio >= minimumTitleWidthRatio,
+    "approved title artwork must remain large within the shared title width"
+  );
+  const centerTolerance = Math.max(2, width * 0.002);
+  assert.ok(layout.titleCenterOffset <= centerTolerance, "approved title must center within .left-title-group");
+  assert.ok(layout.subtitleCenterOffset <= centerTolerance, "subtitle must center within .left-title-group");
+  assert.equal(layout.titleWithinGroup, true, "approved title must stay inside the shared max width");
+  assert.equal(layout.subtitleWithinGroup, true, "subtitle must stay inside the shared max width");
+  assert.ok(layout.formCenterOffset <= 18, "participant input group must be vertically centered between copy and actions");
+  assert.ok(
+    Math.abs(layout.actionBottomGap - layout.panelPaddingBottom) <= 3,
+    "start and admin actions must remain anchored to the panel bottom"
+  );
+}
+
 async function fillCurrentChallengeTarget(page: Page): Promise<void> {
   const target = await page.locator(".duel-target").first().evaluate((element) =>
     (element.textContent ?? "").replace(/\u00a0/g, " ").trim()
@@ -934,6 +1093,7 @@ async function captureApprovedTitleDefeat(
 
 async function captureApprovedTitleVictory(
   running: RunningApp,
+  variant: GameVariant,
   width: number,
   height: number
 ): Promise<void> {
@@ -941,6 +1101,8 @@ async function captureApprovedTitleVictory(
   const modal = page.locator(".challenge-modal");
   for (let stage = 0; stage < 3; stage += 1) {
     await page.locator(".challenge-input:not([disabled])").waitFor({ state: "visible", timeout: 12_000 });
+    await page.locator(".countdown-overlay").waitFor({ state: "hidden", timeout: 10_000 });
+    await assertChallengeHeaderLayout(running, variant, stage + 1, width, height);
     await page.waitForTimeout(900);
     await fillCurrentChallengeTarget(page);
     await modal.waitFor({ state: "visible", timeout: 20_000 });
@@ -968,7 +1130,7 @@ async function captureApprovedTitleVictory(
   );
   await captureAndAssert(
     running,
-    `result-victory-ai-${width}x${height}`,
+    `result-victory-${variant}-${width}x${height}`,
     width,
     height,
     "bg_main_03_geumcheon_data_city.png",
@@ -976,6 +1138,59 @@ async function captureApprovedTitleVictory(
     ".challenge-result-panel",
     0.92
   );
+}
+
+async function assertChallengeHeaderLayout(
+  running: RunningApp,
+  variant: GameVariant,
+  stage: number,
+  width: number,
+  height: number
+): Promise<void> {
+  const { page } = running;
+  await page.locator(`.challenge-stage-center .stage-badge.current .stage-badge-img[alt="Stage ${stage}"]`).waitFor({
+    state: "visible",
+    timeout: 10_000
+  });
+  const geometry = await page.evaluate(() => {
+    const header = document.querySelector<HTMLElement>(".challenge-top");
+    const center = document.querySelector<HTMLElement>(".challenge-stage-center");
+    const title = center?.querySelector<HTMLElement>(".challenge-game-name");
+    const badges = center?.querySelector<HTMLElement>(".stage-badge-row");
+    const headerRect = header?.getBoundingClientRect();
+    const centerRect = center?.getBoundingClientRect();
+    const titleRect = title?.getBoundingClientRect();
+    const badgeRect = badges?.getBoundingClientRect();
+    return {
+      titleText: title?.innerText.trim() ?? "",
+      titleColor: title ? getComputedStyle(title).color : "",
+      titleBeforeBadges: Boolean(title && badges && (title.compareDocumentPosition(badges) & Node.DOCUMENT_POSITION_FOLLOWING)),
+      noOverlap: Boolean(titleRect && badgeRect && titleRect.bottom <= badgeRect.top),
+      centerWithinHeader: Boolean(centerRect && headerRect
+        && centerRect.top >= headerRect.top - 1
+        && centerRect.bottom <= headerRect.bottom + 1),
+      titleWithinCenter: Boolean(titleRect && centerRect
+        && titleRect.top >= centerRect.top - 1
+        && titleRect.bottom <= centerRect.bottom + 1),
+      badgesWithinCenter: Boolean(badgeRect && centerRect
+        && badgeRect.top >= centerRect.top - 1
+        && badgeRect.bottom <= centerRect.bottom + 1)
+    };
+  });
+  assert.equal(geometry.titleText, "G-Science AI 타자왕", `stage ${stage} must show the Geumcheon game name`);
+  assert.equal(geometry.titleColor, "rgb(255, 255, 255)", `stage ${stage} game name must remain legible on the dark header`);
+  assert.equal(geometry.titleBeforeBadges, true, `stage ${stage} game-name row must precede stage badges`);
+  assert.equal(geometry.noOverlap, true, `stage ${stage} game-name row must not overlap stage badges`);
+  assert.equal(geometry.centerWithinHeader, true, `stage ${stage} title and badges must stay inside the challenge header`);
+  assert.equal(geometry.titleWithinCenter, true, `stage ${stage} game name must stay inside its reserved row`);
+  assert.equal(geometry.badgesWithinCenter, true, `stage ${stage} badges must stay inside their reserved row`);
+  const screenshotPath = path.join(
+    artifactRoot,
+    `${width}x${height}`,
+    `play-${variant}-stage-${stage}-${width}x${height}.png`
+  );
+  await captureSettledHiddenWindow(running, screenshotPath);
+  uiDetailScreenshots.push(toPortableProjectPath(root, screenshotPath));
 }
 
 async function launchApp(
@@ -1070,7 +1285,7 @@ async function runGame(
       `${JSON.stringify(initialState, null, 2)}\n`,
       "utf8"
     );
-    await captureHiddenWindow(app, diagnosticScreenshot);
+    await captureSettledHiddenWindow(app, diagnosticScreenshot);
     await page.locator(".entry-panel").waitFor({ state: "visible", timeout: 20_000 });
     fs.rmSync(diagnosticJson, { force: true });
     fs.rmSync(diagnosticScreenshot, { force: true });
@@ -1084,48 +1299,9 @@ async function runGame(
       ".hero-panel, .entry-panel",
       0.75
     );
-    const modeCardArt = page.locator(".entry-panel .mode-card.active .mode-card-art");
-    const modeCardTitleSrc = await modeCardArt.getAttribute("src");
-    assert.match(
-      modeCardTitleSrc || "",
-      /ai_타자왕_금나래의_도전\.png$/,
-      "Geumcheon game-mode card must use the user-approved title asset"
-    );
-    const modeCardGeometry = await modeCardArt.evaluate((element) => {
-      const image = element as HTMLImageElement;
-      const card = image.closest<HTMLElement>(".mode-card");
-      const imageRect = image.getBoundingClientRect();
-      const cardRect = card?.getBoundingClientRect();
-      const style = getComputedStyle(image);
-      const tolerance = 1;
-      return {
-        cardWidth: cardRect?.width || 0,
-        cardHeight: cardRect?.height || 0,
-        imageHeight: imageRect.height,
-        objectFit: style.objectFit,
-        duplicateTitleCount: card?.querySelectorAll("strong").length || 0,
-        duplicateTitleVisible: card?.innerText.includes("AI 타자왕 금나래를 이겨라!") || false,
-        imageWithinCard: Boolean(cardRect
-          && imageRect.left >= cardRect.left - tolerance
-          && imageRect.right <= cardRect.right + tolerance
-          && imageRect.top >= cardRect.top - tolerance
-          && imageRect.bottom <= cardRect.bottom + tolerance)
-      };
-    });
-    assert.equal(modeCardGeometry.objectFit, "contain");
-    assert.equal(modeCardGeometry.duplicateTitleCount, 0, "mode-card duplicate white title must be removed");
-    assert.equal(modeCardGeometry.duplicateTitleVisible, false, "mode-card duplicate title text must not remain visible");
-    assert.equal(modeCardGeometry.imageWithinCard, true, "mode-card title must remain inside the fixed card");
-    assert.ok(
-      modeCardGeometry.cardHeight >= (height <= 720 ? 96 : 145)
-        && modeCardGeometry.cardHeight <= (height <= 720 ? 110 : 160),
-      "mode-card height changed outside its approved fixed range: " + modeCardGeometry.cardHeight
-    );
-    assert.ok(
-      modeCardGeometry.imageHeight >= (height <= 720 ? 70 : 108),
-      "mode-card title is still too small: " + modeCardGeometry.imageHeight
-    );
     await fillEntryForm(page, variant, width);
+    await assertGeumcheonFocusStyles(page);
+    await assertGeumcheonStartLayout(page, width);
     await page.locator(".entry-panel .button-row .primary-button").first().click();
     await page.locator(".challenge-screen").waitFor({ state: "visible", timeout: 20_000 });
     await captureAndAssertChallengeCountdown(app, variant, width, height);
@@ -1151,8 +1327,8 @@ async function runGame(
         `stage ${index + 1} badge must use the Geumcheon event-local asset`
       );
     });
+    await captureApprovedTitleVictory(app, variant, width, height);
   if (variant === "ai") {
-    await captureApprovedTitleVictory(app, width, height);
     await closeRunningApp(app);
     app = undefined;
 
@@ -1367,6 +1543,46 @@ async function runLeaderboard(
       `leaderboard title container must remain horizontally centered; offset=${structure.titleContainerCenterOffsetPx}`
     );
 
+    const selectViewMode = async (mode: "all" | "best"): Promise<number> => {
+      await page.locator(".leaderboard-header .primary-button").click();
+      const adminModal = page.locator(".admin-modal");
+      await adminModal.waitFor({ state: "visible", timeout: 10_000 });
+      await adminModal.locator("input[type=\"password\"]").fill(syntheticAdminPassword);
+      await adminModal.locator(".admin-login-grid .primary-button").click();
+      const label = mode === "all" ? "전체기록 보기" : "최고기록만 보기";
+      const toggle = adminModal.locator(".admin-toolbar button", { hasText: label });
+      await toggle.waitFor({ state: "visible", timeout: 10_000 });
+      await toggle.click();
+      await page.waitForFunction(
+        ({ selector, expectedMode }) => {
+          const buttons = Array.from(document.querySelectorAll<HTMLButtonElement>(".admin-toolbar button"));
+          const expectedText = expectedMode === "all" ? "전체기록 보기" : "최고기록만 보기";
+          const pressed = buttons.find((button) => button.innerText.includes(expectedText));
+          return pressed?.getAttribute("aria-pressed") === "true"
+            && document.querySelectorAll(selector).length >= 10;
+        },
+        { selector: rowSelector, expectedMode: mode },
+        { timeout: 10_000 }
+      );
+      const count = await page.locator(rowSelector).count();
+      await adminModal.locator(".icon-button").click();
+      await adminModal.waitFor({ state: "hidden", timeout: 10_000 });
+      const screenshotPath = path.join(
+        artifactRoot,
+        `${width}x${height}`,
+        `leaderboard-${screenVariant}-${mode}-${width}x${height}.png`
+      );
+      await captureSettledHiddenWindow(app!, screenshotPath);
+      uiDetailScreenshots.push(toPortableProjectPath(root, screenshotPath));
+      return count;
+    };
+    const allRowCount = await selectViewMode("all");
+    const bestRowCount = await selectViewMode("best");
+    assert.equal(allRowCount, rowCount, "all-record view must preserve every visible synthetic attempt");
+    assert.ok(bestRowCount >= 10, "best-record view must keep at least ten synthetic participants");
+    assert.ok(bestRowCount < allRowCount, "best-record view must collapse the repeated synthetic participant");
+    await selectViewMode("all");
+
     const searchInput = page.locator(".search-input");
     await searchInput.fill("1007");
     await page.waitForFunction(
@@ -1379,7 +1595,7 @@ async function runLeaderboard(
     assert.match(await page.locator(rowSelector).first().innerText(), /010-\*\*\*\*-1007/);
     const evidenceDir = path.join(artifactRoot, `${width}x${height}`);
     const searchScreenshotPath = path.join(evidenceDir, `leaderboard-${screenVariant}-${width}x${height}-search.png`);
-    await captureHiddenWindow(app, searchScreenshotPath);
+    await captureSettledHiddenWindow(app, searchScreenshotPath);
     await searchInput.fill("");
     await page.waitForFunction(
       ({ selector, expected }) => document.querySelectorAll(selector).length === expected,
@@ -1391,7 +1607,7 @@ async function runLeaderboard(
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
       await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
     });
-    await captureHiddenWindow(
+    await captureSettledHiddenWindow(
       app,
       path.join(evidenceDir, `leaderboard-${screenVariant}-${width}x${height}.png`)
     );
@@ -1413,7 +1629,7 @@ async function runLeaderboard(
     assert.equal(scrollable, true, "populated leaderboard body must be scrollable");
     assert.equal(scrolled, true, "leaderboard body did not scroll to lower rows");
     const scrollScreenshotPath = path.join(evidenceDir, `leaderboard-${screenVariant}-${width}x${height}-scroll.png`);
-    await captureHiddenWindow(app, scrollScreenshotPath);
+    await captureSettledHiddenWindow(app, scrollScreenshotPath);
     leaderboardChecks.push({
       variant,
       resolution: `${width}x${height}`,
@@ -1595,16 +1811,18 @@ async function main(): Promise<void> {
             "result-defeat-ai-1280x720",
             "result-defeat-ai-1920x1080",
             "result-victory-ai-1280x720",
-            "result-victory-ai-1920x1080"
+            "result-victory-ai-1920x1080",
+            "result-victory-practice-1280x720",
+            "result-victory-practice-1920x1080"
           ],
-          "approved title evidence must include victory and defeat at both target resolutions"
+          "approved title evidence must include official and practice victory plus official defeat at both target resolutions"
         );
         assertApprovedUiNasWrites(nasServer);
       }
     }
   } finally {
     await stopHttpsServer(nasServer?.server).catch(() => undefined);
-    fs.rmSync(temporaryRoot, { recursive: true, force: true });
+    fs.rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     if (options.mode === "automated") {
       writeReport();
     }
@@ -1617,7 +1835,8 @@ async function main(): Promise<void> {
       screenshots: [
         ...rows.map((row) => row.screenshot),
         ...leaderboardChecks.flatMap((check) => [check.searchScreenshot, check.scrollScreenshot]),
-        ...countdownScreenshots
+        ...countdownScreenshots,
+        ...uiDetailScreenshots
       ]
     }, null, 2));
   }

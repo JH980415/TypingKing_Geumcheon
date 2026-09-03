@@ -126,6 +126,7 @@ export function TypingGameApp({ bootstrap }: Props) {
   const { assetBaseUrl } = bootstrap;
   const [config, setConfig] = useState(bootstrap.config);
   const isPracticeApp = bootstrap.variantPolicy.sessionKind === "practice";
+  const isGeumcheon = bootstrap.eventProfile.profileId === "geumcheon-2026";
   const forcedGameMode: GameMode | null = bootstrap.variantPolicy.gameModes.length === 1
     ? bootstrap.variantPolicy.gameModes[0]
     : null;
@@ -843,26 +844,28 @@ export function TypingGameApp({ bootstrap }: Props) {
       {bootstrap.eventProfile.profileId !== "geumcheon-2026" && <BrandHeader bootstrap={bootstrap} />}
       <section className="start-grid" key={startFormKey}>
         <div className="hero-panel">
-          <div className="brand-slogan-row">
+          {!isGeumcheon && <div className="brand-slogan-row">
             <p className="eyebrow">{bootstrap.eventProfile.profileId === "geumcheon-2026" ? bootstrap.eventProfile.eventNameEn : "Work, Re:design"}</p>
             <span className="brand-subtitle">{bootstrap.eventProfile.profileId === "geumcheon-2026" ? bootstrap.eventProfile.slogan : "일의 본질을 묻다."}</span>
-          </div>
+          </div>}
           {gameMode === "ai_challenge" ? (
             <>
-              <FallbackAssetImage
-                src={bootstrap.eventProfile.profileId === "geumcheon-2026"
-                  ? profileAsset(bootstrap.eventProfile.assets.eventTitle)
-                  : asset("ai_challenge/ai_title_oneline_trimmed.png")}
-                fallbackSrc={bootstrap.eventProfile.profileId === "geumcheon-2026"
+              <div className="left-title-group">
+                <FallbackAssetImage
+                  src={bootstrap.eventProfile.profileId === "geumcheon-2026"
                     ? profileAsset(bootstrap.eventProfile.assets.eventTitle)
-                    : asset("ai_challenge/ai_challenge_title.png")}
-                alt={bootstrap.eventProfile.profileId === "geumcheon-2026" ? "AI 타자왕 금나래를 이겨라!" : bootstrap.variantPolicy.displayName}
-                className={bootstrap.eventProfile.profileId === "geumcheon-2026"
-                  ? "mode-title-image start-ai-title-image ai-title-image geumcheon-main-title-image"
-                  : "mode-title-image start-ai-title-image ai-title-image"}
-                fallback={<h1>{bootstrap.eventProfile.profileId === "geumcheon-2026" ? "AI 타자왕 금나래를 이겨라!" : bootstrap.variantPolicy.displayName}</h1>}
-              />
-              <p className="hero-copy">3개의 스테이지에서 금나래보다 먼저 정확하게 입력하세요.</p>
+                    : asset("ai_challenge/ai_title_oneline_trimmed.png")}
+                  fallbackSrc={bootstrap.eventProfile.profileId === "geumcheon-2026"
+                      ? profileAsset(bootstrap.eventProfile.assets.eventTitle)
+                      : asset("ai_challenge/ai_challenge_title.png")}
+                  alt={bootstrap.eventProfile.profileId === "geumcheon-2026" ? "AI 타자왕 금나래를 이겨라!" : bootstrap.variantPolicy.displayName}
+                  className={bootstrap.eventProfile.profileId === "geumcheon-2026"
+                    ? "mode-title-image start-ai-title-image ai-title-image geumcheon-main-title-image"
+                    : "mode-title-image start-ai-title-image ai-title-image"}
+                  fallback={<h1>{bootstrap.eventProfile.profileId === "geumcheon-2026" ? "AI 타자왕 금나래를 이겨라!" : bootstrap.variantPolicy.displayName}</h1>}
+                />
+                <p className="hero-copy">3개의 스테이지에서 금나래보다 먼저 정확하게 입력하세요.</p>
+              </div>
               {bootstrap.eventProfile.profileId === "geumcheon-2026" && (
                 <FallbackAssetImage
                   src={profileAsset(bootstrap.eventProfile.assets.aiBossMain)}
@@ -894,7 +897,18 @@ export function TypingGameApp({ bootstrap }: Props) {
           </section>
         </div>
         <form className="entry-panel" onSubmit={(event) => event.preventDefault()}>
-          <div className="field">
+          {isGeumcheon ? (
+            <div className="entry-event-copy">
+              <strong>{bootstrap.eventProfile.eventNameEn}</strong>
+              <span>{bootstrap.eventProfile.slogan}</span>
+              {isPracticeApp && (
+                <p className="practice-mode-note">
+                  지금은 자유 연습회차입니다. <small>※ 공식 순위 및 사은품 집계 제외</small>
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="field">
             <span>게임 모드</span>
             {isPracticeApp && (
               <p className="practice-mode-note">
@@ -942,6 +956,8 @@ export function TypingGameApp({ bootstrap }: Props) {
               )}
             </div>
           </div>
+          )}
+          <div className="entry-form-group">
           <label className="field">
             <span>이름</span>
             <input value={name} onChange={(event) => setName(event.target.value)} placeholder="참여자 이름" />
@@ -1010,6 +1026,7 @@ export function TypingGameApp({ bootstrap }: Props) {
           </button>
 
           <p className={canStart ? "notice-text" : "error-text"}>{formMessage || validationMessage}</p>
+          </div>
           <div className="button-row split">
             <button className="primary-button large" disabled={!canStart} onClick={() => void startGame()}>
               시작

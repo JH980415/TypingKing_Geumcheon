@@ -1036,8 +1036,8 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
           <AiTitle assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} className="challenge-title-image" />
         </div>
         <div className="challenge-stage-center">
+          <p className="challenge-game-name eyebrow">{eventProfile.profileId === "geumcheon-2026" ? eventProfile.gameName : "AI 타자왕을 이겨라"}</p>
           <StageBadges assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} badgePaths={eventProfile.assets.stageBadges} currentStage={stageIndex + 1} completedStages={battles.map((battle) => battle.stage)} />
-          <p className="eyebrow">{eventProfile.profileId === "geumcheon-2026" ? eventProfile.gameName : "AI 타자왕을 이겨라"}</p>
         </div>
         <strong>{countdown || (running ? "대결 중" : "결과 확인")}</strong>
         <div className="button-row game-control-row challenge-game-controls">

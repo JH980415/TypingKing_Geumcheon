@@ -187,6 +187,11 @@ button:disabled {
   font-weight: 800;
 }
 
+.left-title-group,
+.entry-form-group {
+  display: contents;
+}
+
 .brand-slogan-row {
   position: relative;
   z-index: 1;
@@ -3351,9 +3356,32 @@ html[data-event-profile="geumcheon-2026"] .geumcheon-main-title-image {
   position: relative;
   z-index: 1;
   width: min(100%, 620px);
-  max-height: clamp(92px, 14vh, 150px);
+  max-height: clamp(140px, 18vh, 190px);
   margin: 0 auto 8px;
   object-fit: contain;
+}
+
+html[data-event-profile="geumcheon-2026"] .left-title-group {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 620px);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+html[data-event-profile="geumcheon-2026"] .left-title-group .geumcheon-main-title-image {
+  width: 100%;
+  max-width: 100%;
+  margin-inline: 0;
+}
+
+html[data-event-profile="geumcheon-2026"] .left-title-group .hero-copy {
+  width: 100%;
+  margin: clamp(8px, 1.4vh, 16px) 0 0;
+  text-align: center;
 }
 
 html[data-event-profile="geumcheon-2026"] .geumcheon-main-robot {
@@ -3369,7 +3397,7 @@ html[data-event-profile="geumcheon-2026"] .geumcheon-main-robot {
 
 @media (max-width: 1400px), (max-height: 800px) {
   html[data-event-profile="geumcheon-2026"] .geumcheon-main-title-image {
-    max-height: 95px;
+    max-height: 180px;
   }
 
   html[data-event-profile="geumcheon-2026"] .geumcheon-main-robot {
@@ -3399,12 +3427,82 @@ html[data-event-profile="geumcheon-2026"] .secondary-button {
   color: var(--white);
 }
 
+html[data-event-profile="geumcheon-2026"] .entry-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: clamp(10px, 1.6vh, 18px);
+}
+
+html[data-event-profile="geumcheon-2026"] .entry-event-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  color: var(--geumcheon-purple);
+  font-size: clamp(14px, 1.1vw, 19px);
+  line-height: 1.25;
+  font-weight: 900;
+}
+
+html[data-event-profile="geumcheon-2026"] .entry-event-copy strong {
+  color: var(--geumcheon-magenta);
+  font-weight: 1000;
+}
+
+html[data-event-profile="geumcheon-2026"] .entry-event-copy .practice-mode-note {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+html[data-event-profile="geumcheon-2026"] .entry-form-group {
+  width: 100%;
+  min-height: 0;
+  align-self: center;
+  display: flex;
+  flex-direction: column;
+  gap: clamp(8px, 1.25vh, 14px);
+}
+
+html[data-event-profile="geumcheon-2026"] .entry-form-group > .error-text,
+html[data-event-profile="geumcheon-2026"] .entry-form-group > .notice-text {
+  min-height: 28px;
+}
+
+html[data-event-profile="geumcheon-2026"] .entry-panel > .button-row {
+  align-self: end;
+  margin: 0;
+}
+
 html[data-event-profile="geumcheon-2026"] input:focus,
 html[data-event-profile="geumcheon-2026"] select:focus,
 html[data-event-profile="geumcheon-2026"] textarea:focus,
-html[data-event-profile="geumcheon-2026"] button:focus-visible {
-  outline: 4px solid var(--yellow);
+html[data-event-profile="geumcheon-2026"] button:focus {
+  outline: 4px solid var(--geumcheon-magenta);
   outline-offset: 3px;
+  box-shadow: none;
+}
+
+html[data-event-profile="geumcheon-2026"] .challenge-stage-center {
+  grid-template-rows: auto auto;
+  gap: clamp(4px, 0.7vh, 8px);
+}
+
+html[data-event-profile="geumcheon-2026"] .challenge-stage-center .challenge-game-name,
+html[data-event-profile="geumcheon-2026"] .challenge-stage-center .stage-badge-row {
+  position: relative;
+  margin: 0;
+}
+
+html[data-event-profile="geumcheon-2026"] .challenge-stage-center .challenge-game-name {
+  z-index: 2;
+  color: var(--white);
+  line-height: 1.2;
+  white-space: nowrap;
+  text-shadow: 0 2px 8px rgba(14, 6, 48, 0.72);
+}
+
+html[data-event-profile="geumcheon-2026"] .challenge-stage-center .stage-badge-row {
+  z-index: 1;
 }
 
 html[data-event-profile="geumcheon-2026"] .ranking-head,
@@ -3499,7 +3597,7 @@ html[data-event-profile="geumcheon-2026"] .leader-actions button {
 
 @media (min-width: 1401px) and (min-height: 801px) {
   html[data-event-profile="geumcheon-2026"] .geumcheon-main-title-image {
-    max-height: 120px;
+    max-height: 280px;
   }
 
   html[data-event-profile="geumcheon-2026"] .geumcheon-main-robot {

@@ -23,7 +23,7 @@ function geumcheonBootstrap(variant: "ai" | "ai-leaderboard", mode: "game" | "le
   });
 }
 
-test("renders the user-approved Geumcheon title without a duplicate mode-card label", () => {
+test("groups the approved Geumcheon title and exact subtitle in one centered left title group", () => {
   const html = renderToStaticMarkup(
     createElement(typingGameModule.TypingGameApp, {
       bootstrap: geumcheonBootstrap("ai", "game")
@@ -33,13 +33,29 @@ test("renders the user-approved Geumcheon title without a duplicate mode-card la
   assert.match(html, /bg_leaderboard_03_typing_hall_of_fame\.png/);
   assert.match(html, /ai_타자왕_금나래의_도전\.png/);
   assert.match(html, /robot_03_speed_champion\.png/);
-  assert.ok((html.match(/ai_타자왕_금나래의_도전\.png/g) ?? []).length >= 2);
   assert.doesNotMatch(html, /ai_title_(compact|oneline_trimmed)\.png|ai_challenge_title\.png/);
 
-  const modeCard = html.match(/<button[^>]*class="mode-card active"[\s\S]*?<\/button>/)?.[0];
-  assert.ok(modeCard, "active game-mode card must render");
-  assert.match(modeCard, /ai_타자왕_금나래의_도전\.png/);
-  assert.doesNotMatch(modeCard, /<strong>|AI 타자왕 금나래를 이겨라!/);
+  const leftTitleGroup = html.match(/<div class="left-title-group">[\s\S]*?<\/div>/)?.[0];
+  assert.ok(leftTitleGroup, "approved title and subtitle must share .left-title-group");
+  assert.match(leftTitleGroup, /geumcheon-main-title-image/);
+  assert.match(leftTitleGroup, />3개의 스테이지에서 금나래보다 먼저 정확하게 입력하세요\.<\/p>/);
+});
+
+test("replaces the Geumcheon right-panel mode card with one event copy above the participant form", () => {
+  const html = renderToStaticMarkup(
+    createElement(typingGameModule.TypingGameApp, {
+      bootstrap: geumcheonBootstrap("ai", "game")
+    })
+  );
+
+  const entryPanel = html.match(/<form class="entry-panel"[^>]*>[\s\S]*?<\/form>/)?.[0];
+  assert.ok(entryPanel, "entry panel must render");
+  assert.match(entryPanel, /^<form class="entry-panel"[^>]*><div class="entry-event-copy">/);
+  assert.equal((entryPanel.match(/class="entry-event-copy"/g) ?? []).length, 1);
+  assert.match(entryPanel, /2026 G-Science Festival/);
+  assert.match(entryPanel, /AI와 소통하는 활기찬 미래 금천/);
+  assert.match(entryPanel, /class="entry-form-group"/);
+  assert.doesNotMatch(entryPanel, /mode-selector|mode-card|게임 모드/);
 });
 
 test("uses the user-approved Geumcheon title and refreshed stage badges", () => {
