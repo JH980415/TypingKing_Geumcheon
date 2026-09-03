@@ -78,6 +78,16 @@ test("real Geumcheon player draws accept 2/2/1 and reject a wrong stage count", 
       () => drawGeumcheonStageTexts({ paths: { root: runtimeRoot } } as RuntimeContext, { ...input, catalogPath: malformedCatalogPath }),
       /Geumcheon stage 2 requires exactly 2 active rows/
     );
+
+    fs.writeFileSync(
+      malformedCatalogPath,
+      fs.readFileSync(input.catalogPath, "utf8").replace("인공지능 로봇의 신나는 축제!", "인공지능 로봇의 신나는  축제!"),
+      "utf8"
+    );
+    assert.throws(
+      () => drawGeumcheonStageTexts({ paths: { root: runtimeRoot } } as RuntimeContext, { ...input, catalogPath: malformedCatalogPath }),
+      /Unexpected Geumcheon stage text:/
+    );
   } finally {
     fs.rmSync(runtimeRoot, { recursive: true, force: true });
   }

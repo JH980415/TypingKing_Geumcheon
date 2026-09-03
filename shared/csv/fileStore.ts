@@ -1337,6 +1337,13 @@ export function drawGeumcheonStageTexts(
 
 function validateGeumcheonStageTextCatalog(rows: readonly StageText[], catalogVersion: string): void {
   const expectedRowsByStage = { "1": 2, "2": 2, "3": 1 } as const;
+  const canonicalRows = new Map([
+    ["gsc26-ai-s1-001", { stageNumber: "1", text: "로봇과 노는 금천과학축제" }],
+    ["gsc26-ai-s1-002", { stageNumber: "1", text: "인공지능과 함께하는 축제" }],
+    ["gsc26-ai-s2-001", { stageNumber: "2", text: "인공지능 로봇의 신나는 축제!" }],
+    ["gsc26-ai-s2-002", { stageNumber: "2", text: "AI야, 금천과학축제 놀러가자!" }],
+    ["gsc26-ai-s3-001", { stageNumber: "3", text: "AI와 소통하는 활기찬 미래 금천" }]
+  ]);
   const ids = new Set<string>();
   const texts = new Set<string>();
   for (const row of rows) {
@@ -1347,6 +1354,10 @@ function validateGeumcheonStageTextCatalog(rows: readonly StageText[], catalogVe
     if (row.game_mode !== "ai_challenge") throw new Error(`Unexpected Geumcheon game mode: ${row.id}`);
     if (row.is_active !== "true") throw new Error(`Inactive Geumcheon catalog row: ${row.id}`);
     if (!(row.stage_number in expectedRowsByStage)) throw new Error(`Invalid Geumcheon stage number: ${row.id}`);
+    const canonicalRow = canonicalRows.get(row.id);
+    if (canonicalRow == null || canonicalRow.stageNumber !== row.stage_number || canonicalRow.text !== row.text) {
+      throw new Error(`Unexpected Geumcheon stage text: ${row.id}`);
+    }
     ids.add(row.id);
     texts.add(row.text);
   }
@@ -1355,6 +1366,7 @@ function validateGeumcheonStageTextCatalog(rows: readonly StageText[], catalogVe
       throw new Error(`Geumcheon stage ${stageNumber} requires exactly ${expectedRows} active rows`);
     }
   }
+  if (ids.size !== canonicalRows.size) throw new Error("Geumcheon catalog rows do not match the canonical R5 catalog");
 }
 
 function writeJsonAtomic(filePath: string, value: unknown): void {
