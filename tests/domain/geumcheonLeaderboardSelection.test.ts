@@ -455,6 +455,74 @@ test("Geumcheon AI all mode keeps every attempt while best mode selects one per 
   assert.deepEqual(best.map(({ record }) => record.record_id), ["opaque-a-best", "opaque-b-best"]);
 });
 
+test("Geumcheon AI participant grouping prefers the canonical opaque key", () => {
+  const participantKey = (leaderboardModule as typeof leaderboardModule & {
+    aiLeaderboardParticipantKey?: (row: RecordRow) => string;
+  }).aiLeaderboardParticipantKey;
+
+  assert.equal(typeof participantKey, "function");
+  assert.equal(participantKey?.(record({ participantKey: "  server-hmac-canonical  " })), "server-hmac-canonical");
+});
+
+test("Geumcheon AI fallback participant key normalizes phone and birthdate without exposing either", () => {
+  const participantKey = (leaderboardModule as typeof leaderboardModule & {
+    aiLeaderboardParticipantKey?: (row: RecordRow) => string;
+  }).aiLeaderboardParticipantKey;
+  assert.equal(typeof participantKey, "function");
+
+  const compact = participantKey?.(record({
+    participantKey: undefined,
+    phone_full: "01012345678",
+    birthdate: "2014-01-01"
+  }));
+  const formatted = participantKey?.(record({
+    participantKey: undefined,
+    phone_full: "010-1234-5678",
+    birthdate: "2014. 01. 01"
+  }));
+
+  assert.match(compact ?? "", /^legacy-sha256:[a-f0-9]{64}$/);
+  assert.equal(formatted, compact);
+  assert.doesNotMatch(compact ?? "", /01012345678|20140101/);
+});
+
+test("Geumcheon AI best mode separates namesakes by birthdate and keeps only the best retry", () => {
+  const entries = [
+    entry(canonicalRecord("same-person-slower", {
+      participantAverageCpmRaw: 300
+    }, {
+      participant_name: "동명이인",
+      participantKey: undefined,
+      phone_full: "010-1234-5678",
+      birthdate: "2014-01-01"
+    })),
+    entry(canonicalRecord("same-person-best", {
+      participantAverageCpmRaw: 500
+    }, {
+      participant_name: "동명이인",
+      participantKey: undefined,
+      phone_full: "01012345678",
+      birthdate: "2014. 01. 01"
+    })),
+    entry(canonicalRecord("namesake-other-birthdate", {
+      participantAverageCpmRaw: 400
+    }, {
+      participant_name: "동명이인",
+      participantKey: undefined,
+      phone_full: "01012345678",
+      birthdate: "2014-02-01"
+    }))
+  ];
+
+  const best = selectGeumcheonAiLeaderboardEntriesForMode(entries, {
+    isGeumcheonOfficialBoard: true,
+    isGeumcheonPracticeBoard: false,
+    viewMode: "best"
+  });
+
+  assert.deepEqual(best.map(({ record }) => record.record_id), ["same-person-best", "namesake-other-birthdate"]);
+});
+
 test("Geumcheon AI best mode stays best when refreshed entries add another attempt", () => {
   const mode = {
     isGeumcheonOfficialBoard: true,
