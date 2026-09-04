@@ -157,7 +157,7 @@ export function createReviewGeumcheonConnection(options: {
     reviewContext: options.reviewContext,
     localRuntime,
     checkpointFence: new RendererCheckpointFence(),
-    checkReadiness: async () => localRuntime.list().then(
+    checkReadiness: async () => localRuntime.validateStorage().then(
       () => ({ ready: true }),
       () => ({ ready: false, message: "로컬 검토 저장소를 확인할 수 없습니다." })
     ),

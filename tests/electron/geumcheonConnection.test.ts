@@ -228,6 +228,25 @@ test("review storage validation requires admin access and returns fixed safe lab
   );
 });
 
+test("review readiness fails closed when the local storage root is unavailable", async (t) => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r5-review-readiness-"));
+  const unavailableRoot = path.join(parent, "storage-root");
+  fs.writeFileSync(unavailableRoot, "not-a-directory", "utf8");
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+
+  const connection = createReviewGeumcheonConnection({
+    reviewContext,
+    runtimeRoot: unavailableRoot,
+    encryption: testEncryption,
+    persistLocal: async (input, recordId) => ({ record_id: recordId, ...buildRecordRow(input) })
+  });
+
+  assert.deepEqual(await connection.checkReadiness(), {
+    ready: false,
+    message: "로컬 검토 저장소를 확인할 수 없습니다."
+  });
+});
+
 test("review connection keeps checkpoint, records and admin mutations on the actual local runtime", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r5-review-connection-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
