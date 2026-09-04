@@ -65,6 +65,91 @@ test("runtime gate rejects helper, credential, fallback, residue, and missing re
   }
 });
 
+test("packaged player window gate requires default outer bounds and contained five-line guide", () => {
+  type Rect = { left: number; top: number; right: number; bottom: number; width: number; height: number };
+  type Observation = {
+    innerWidth: number;
+    innerHeight: number;
+    outerWidth: number;
+    outerHeight: number;
+    heroPanel: Rect | null;
+    heroGuideCard: Rect | null;
+    fifthGuideLine: Rect | null;
+    guideLineCount: number;
+  };
+  const assess = (reviewHarness as unknown as {
+    assessPlayerWindowLayout?: (observation: Observation) => string[];
+  }).assessPlayerWindowLayout;
+  assert.equal(typeof assess, "function");
+  const valid: Observation = {
+    innerWidth: 1424,
+    innerHeight: 861,
+    outerWidth: 1440,
+    outerHeight: 900,
+    heroPanel: { left: 40, top: 80, right: 900, bottom: 820, width: 860, height: 740 },
+    heroGuideCard: { left: 80, top: 300, right: 860, bottom: 780, width: 780, height: 480 },
+    fifthGuideLine: { left: 100, top: 700, right: 840, bottom: 760, width: 740, height: 60 },
+    guideLineCount: 5
+  };
+
+  assert.deepEqual(assess!(valid), []);
+  assert.deepEqual(assess!({ ...valid, outerWidth: 1439 }), ["WINDOW_OUTER_BOUNDS:1439x900"]);
+  assert.deepEqual(assess!({
+    ...valid,
+    heroGuideCard: { ...valid.heroGuideCard!, right: 901, width: 821 }
+  }), ["HERO_GUIDE_CARD_NOT_CONTAINED"]);
+  assert.deepEqual(assess!({
+    ...valid,
+    fifthGuideLine: { ...valid.fifthGuideLine!, bottom: 821, height: 121 }
+  }), ["FIFTH_GUIDE_LINE_NOT_CONTAINED"]);
+  assert.deepEqual(assess!({ ...valid, guideLineCount: 4 }), ["HERO_GUIDE_LINE_COUNT:4"]);
+});
+
+test("review storage gate requires the exact normal tuple even when IPC reports ok", () => {
+  const assess = (reviewHarness as unknown as {
+    assessReviewStorageValidation?: (
+      response: unknown,
+      expected: { role: string; session: string }
+    ) => string[];
+  }).assessReviewStorageValidation;
+  assert.equal(typeof assess, "function");
+  const valid = {
+    ok: true,
+    data: {
+      storage: "local",
+      environment: "review",
+      role: "player",
+      session: "official",
+      result: "normal"
+    }
+  };
+
+  assert.deepEqual(assess!(valid, { role: "player", session: "official" }), []);
+  assert.deepEqual(assess!({
+    ...valid,
+    data: { ...valid.data, result: "error" }
+  }, { role: "player", session: "official" }), ["REVIEW_STORAGE_RESULT_NOT_NORMAL"]);
+  assert.deepEqual(assess!({
+    ok: true,
+    data: {
+      storage: "onedrive",
+      environment: "production",
+      role: "leaderboard",
+      session: "practice",
+      result: "error"
+    }
+  }, { role: "player", session: "official" }), [
+    "REVIEW_STORAGE_KIND_MISMATCH",
+    "REVIEW_STORAGE_ENVIRONMENT_MISMATCH",
+    "REVIEW_STORAGE_ROLE_MISMATCH",
+    "REVIEW_STORAGE_SESSION_MISMATCH",
+    "REVIEW_STORAGE_RESULT_NOT_NORMAL"
+  ]);
+  assert.deepEqual(assess!({ ok: false }, { role: "player", session: "official" }), [
+    "REVIEW_STORAGE_VALIDATION_NOT_OK"
+  ]);
+});
+
 test("packaged gate requires rejection from every exposed external-storage API", () => {
   const methods = (reviewHarness as unknown as {
     REVIEW_EXTERNAL_STORAGE_API_METHODS?: readonly string[];

@@ -31,6 +31,26 @@ type RuntimeObservation = {
   unexpectedFiles?: string[];
 };
 
+type RectObservation = {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+  width: number;
+  height: number;
+};
+
+type PlayerWindowLayoutObservation = {
+  innerWidth: number;
+  innerHeight: number;
+  outerWidth: number;
+  outerHeight: number;
+  heroPanel: RectObservation | null;
+  heroGuideCard: RectObservation | null;
+  fifthGuideLine: RectObservation | null;
+  guideLineCount: number;
+};
+
 export const REVIEW_EXTERNAL_STORAGE_API_METHODS = [
   "publishStageTextsToOneDrive",
   "getOneDriveSettings",
@@ -53,6 +73,67 @@ export function assessReviewExternalStorageBoundary(
     else if (!observation.rejected) violations.push(`REVIEW_EXTERNAL_STORAGE_ACCEPTED:${method}`);
   }
   return violations;
+}
+
+export function assessPlayerWindowLayout(observation: PlayerWindowLayoutObservation): string[] {
+  const violations: string[] = [];
+  if (observation.outerWidth !== 1440 || observation.outerHeight !== 900) {
+    violations.push(`WINDOW_OUTER_BOUNDS:${observation.outerWidth}x${observation.outerHeight}`);
+  }
+  if (
+    !Number.isFinite(observation.innerWidth)
+    || observation.innerWidth <= 0
+    || !Number.isFinite(observation.innerHeight)
+    || observation.innerHeight <= 0
+  ) {
+    violations.push("WINDOW_INNER_BOUNDS_INVALID");
+  }
+  if (observation.guideLineCount !== 5) {
+    violations.push(`HERO_GUIDE_LINE_COUNT:${observation.guideLineCount}`);
+  }
+  if (!containsRect(observation.heroPanel, observation.heroGuideCard)) {
+    violations.push("HERO_GUIDE_CARD_NOT_CONTAINED");
+  }
+  if (
+    !containsRect(observation.heroGuideCard, observation.fifthGuideLine)
+    || !containsRect(observation.heroPanel, observation.fifthGuideLine)
+  ) {
+    violations.push("FIFTH_GUIDE_LINE_NOT_CONTAINED");
+  }
+  return violations;
+}
+
+export function assessReviewStorageValidation(
+  response: unknown,
+  expected: { role: string; session: string }
+): string[] {
+  if (typeof response !== "object" || response == null || (response as { ok?: unknown }).ok !== true) {
+    return ["REVIEW_STORAGE_VALIDATION_NOT_OK"];
+  }
+  const data = (response as { data?: Record<string, unknown> }).data;
+  const violations: string[] = [];
+  if (data?.storage !== "local") violations.push("REVIEW_STORAGE_KIND_MISMATCH");
+  if (data?.environment !== "review") violations.push("REVIEW_STORAGE_ENVIRONMENT_MISMATCH");
+  if (data?.role !== expected.role) violations.push("REVIEW_STORAGE_ROLE_MISMATCH");
+  if (data?.session !== expected.session) violations.push("REVIEW_STORAGE_SESSION_MISMATCH");
+  if (data?.result !== "normal") violations.push("REVIEW_STORAGE_RESULT_NOT_NORMAL");
+  return violations;
+}
+
+function containsRect(container: RectObservation | null, content: RectObservation | null): boolean {
+  if (!container || !content) return false;
+  const values = [
+    container.left, container.top, container.right, container.bottom, container.width, container.height,
+    content.left, content.top, content.right, content.bottom, content.width, content.height
+  ];
+  if (!values.every(Number.isFinite) || container.width <= 0 || container.height <= 0 || content.width <= 0 || content.height <= 0) {
+    return false;
+  }
+  const epsilon = 0.5;
+  return content.left >= container.left - epsilon
+    && content.top >= container.top - epsilon
+    && content.right <= container.right + epsilon
+    && content.bottom <= container.bottom + epsilon;
 }
 
 const MIN_PORTABLE_BYTES = 10 * 1024 * 1024;
@@ -172,6 +253,36 @@ async function observeExternalStorageBoundary(
     }
     return observations;
   }, REVIEW_EXTERNAL_STORAGE_API_METHODS);
+}
+
+async function observePlayerWindowLayout(page: Page): Promise<PlayerWindowLayoutObservation> {
+  return page.evaluate(() => {
+    const rect = (element: Element | null): RectObservation | null => {
+      if (!element) return null;
+      const bounds = element.getBoundingClientRect();
+      return {
+        left: bounds.left,
+        top: bounds.top,
+        right: bounds.right,
+        bottom: bounds.bottom,
+        width: bounds.width,
+        height: bounds.height
+      };
+    };
+    const heroPanel = document.querySelector(".hero-panel");
+    const heroGuideCard = heroPanel?.querySelector(".hero-guide-card") ?? null;
+    const guideLines = heroGuideCard?.querySelectorAll(".hero-guide-list > li");
+    return {
+      innerWidth: window.innerWidth,
+      innerHeight: window.innerHeight,
+      outerWidth: window.outerWidth,
+      outerHeight: window.outerHeight,
+      heroPanel: rect(heroPanel),
+      heroGuideCard: rect(heroGuideCard),
+      fifthGuideLine: rect(guideLines?.item(4) ?? null),
+      guideLineCount: guideLines?.length ?? 0
+    };
+  });
 }
 
 export function inspectReviewArtifacts(inputs: ArtifactInput[]): { artifacts: ArtifactFinding[]; violations: string[] } {
@@ -388,6 +499,7 @@ async function runOne(spec: typeof specs[number], exePath: string, outputRoot: s
   let bootstrap: any;
   let storageValidation: any;
   let externalStorageBoundary: any;
+  let playerWindowLayout: PlayerWindowLayoutObservation | null = null;
   let processes: ProcessInfo[] = [];
   try {
     let ws: string | undefined;
@@ -397,13 +509,25 @@ async function runOne(spec: typeof specs[number], exePath: string, outputRoot: s
     page = browser.contexts().flatMap((context) => context.pages()).find((candidate) => candidate.url().startsWith("file:"))!;
     await page.locator(spec.selector).waitFor({ state: "visible", timeout: 30_000 });
     assert.equal(await page.title(), spec.title);
+    if (spec.role === "player") {
+      playerWindowLayout = await observePlayerWindowLayout(page);
+      assert.deepEqual(
+        assessPlayerWindowLayout(playerWindowLayout),
+        [],
+        `${spec.variant} packaged player window/layout contract failed`
+      );
+    }
     const bootstrapResult = await page.evaluate(async () => (window as any).typingKing.getBootstrap());
     assert.equal(bootstrapResult?.ok, true);
     bootstrap = bootstrapResult.data;
     const auth = await page.evaluate(async (password) => (window as any).typingKing.validateAdmin(password, "synthetic-review-admin"), REVIEW_LOCAL_ADMIN_PASSWORD);
     assert.equal(auth?.ok, true);
     storageValidation = await page.evaluate(async () => (window as any).typingKing.validateReviewStorage());
-    assert.equal(storageValidation?.ok, true);
+    assert.deepEqual(
+      assessReviewStorageValidation(storageValidation, { role: spec.role, session: spec.session }),
+      [],
+      `${spec.variant} review storage validation tuple failed`
+    );
     const reviewStorageRoot = path.join(
       localAppData,
       "ThePMD",
@@ -456,7 +580,7 @@ async function runOne(spec: typeof specs[number], exePath: string, outputRoot: s
   const unexpectedFiles = listing.filter((name) => name !== path.basename(exePath));
   const finalViolations = assessRuntimeObservation({ expectedVariant: spec.variant, expectedRole: spec.role, expectedSession: spec.session, bootstrap, notices: bootstrap?.notices, cleanExit, residualProcessCount: processTree(pid).length, unexpectedFiles });
   if (finalViolations.length && !error) error = finalViolations.join(",");
-  return { variant: spec.variant, role: spec.role, session: spec.session, pid, title: spec.title, bootstrap: bootstrap ? { variant: bootstrap.variant, reviewContext: bootstrap.reviewContext, notices: bootstrap.notices } : null, storageValidation: storageValidation?.data ?? null, externalStorageBoundary, processSnapshot: processes.map(({ ProcessId, ParentProcessId, Name, MainWindowTitle }) => ({ ProcessId, ParentProcessId, Name, MainWindowTitle })), flow, cleanExit, forcedCleanup, residualProcessCount: processTree(pid).length, executableFolderListing: listing, error, verdict: error ? "FAIL" : "PASS" };
+  return { variant: spec.variant, role: spec.role, session: spec.session, pid, title: spec.title, bootstrap: bootstrap ? { variant: bootstrap.variant, reviewContext: bootstrap.reviewContext, notices: bootstrap.notices } : null, storageValidation: storageValidation?.data ?? null, playerWindowLayout, externalStorageBoundary, processSnapshot: processes.map(({ ProcessId, ParentProcessId, Name, MainWindowTitle }) => ({ ProcessId, ParentProcessId, Name, MainWindowTitle })), flow, cleanExit, forcedCleanup, residualProcessCount: processTree(pid).length, executableFolderListing: listing, error, verdict: error ? "FAIL" : "PASS" };
 }
 
 function parseArgs(argv: string[]): { outputRoot: string; inputs: Map<Variant, string> } {
