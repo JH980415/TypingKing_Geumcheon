@@ -702,7 +702,13 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
   function beginStage(nextStageIndex: number) {
     clearCountdownTimers();
     const nextTargetUnits = countConvertedTypingUnits(stageTexts[nextStageIndex]);
-    const nextAiPlan = createAiPlan(nextStageIndex + 1, nextTargetUnits, config, debugModeType === "ai_challenge_debug");
+    const nextAiPlan = createAiPlan(
+      nextStageIndex + 1,
+      nextTargetUnits,
+      config,
+      debugModeType === "ai_challenge_debug",
+      eventProfile.profileId === "geumcheon-2026"
+    );
     aiPlanRef.current = nextAiPlan;
     setAiPlan(nextAiPlan);
     setInput("");
@@ -793,7 +799,8 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
           currentStageIndex + 1,
           currentTargetTypingUnits,
           config,
-          debugModeType === "ai_challenge_debug"
+          debugModeType === "ai_challenge_debug",
+          isGeumcheon
         )
       : aiPlanRef.current;
     const currentAiSnapshot = getAiSnapshot(currentPlan, currentElapsedMs, currentTargetTypingUnits);
@@ -1683,7 +1690,13 @@ function AssetImage({
   );
 }
 
-function createAiPlan(stage: number, targetTypingUnits: number, config: AppConfig, fixedDebugSpeed = false): AiPlan {
+export function createAiPlan(
+  stage: number,
+  targetTypingUnits: number,
+  config: AppConfig,
+  fixedDebugSpeed = false,
+  lockStageCpm = false
+): AiPlan {
   const intervalMs = Math.max(100, Math.floor(config.aiChallenge.aiSpeedChangeIntervalMs ?? 500));
   const enterDelayMs = Math.max(0, Math.floor(config.aiChallenge.aiEnterDelayMs ?? 0));
   const segments: AiSpeedSegment[] = [];
@@ -1699,8 +1712,9 @@ function createAiPlan(stage: number, targetTypingUnits: number, config: AppConfi
     };
   }
 
+  const lockedCpm = lockStageCpm ? createAiCpm(stage, config, fixedDebugSpeed) : null;
   while (typedUnits < targetTypingUnits && segments.length < 10000) {
-    const cpm = createAiCpm(stage, config, fixedDebugSpeed);
+    const cpm = lockedCpm ?? createAiCpm(stage, config, fixedDebugSpeed);
     const unitsPerMs = cpm / 60000;
     const remainingUnits = targetTypingUnits - typedUnits;
     const fullIntervalUnits = unitsPerMs * intervalMs;

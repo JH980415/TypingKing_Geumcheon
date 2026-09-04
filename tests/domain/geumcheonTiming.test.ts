@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createAiCpm, createGeumcheonFairness } from "../../apps/typing-game/src/AIChallengeGame";
+import { createAiCpm, createAiPlan, createGeumcheonFairness } from "../../apps/typing-game/src/AIChallengeGame";
 import type { AppConfig } from "../../shared/types";
 import {
   loadEventProfile,
@@ -52,6 +52,73 @@ test("draws inclusive R5 Geumnarae CPM bounds for official and practice", () => 
     assert.deepEqual([1, 2, 3].map((stage) => createAiCpm(stage, config, false, () => 0)), [100, 125, 150]);
     assert.deepEqual([1, 2, 3].map((stage) => createAiCpm(stage, config, false, () => 0.999999999999)), [125, 150, 200]);
   }
+});
+
+test("uses one inclusive fixed CPM per AI stage plan", (t) => {
+  const boundaryCases = [
+    { firstRandom: 0, laterRandom: 0.999999999999, expectedCpms: [100, 125, 150] },
+    { firstRandom: 0.999999999999, laterRandom: 0, expectedCpms: [125, 150, 200] }
+  ];
+  let firstRandom = 0;
+  let laterRandom = 0;
+  let randomDraws = 0;
+
+  t.mock.method(Math, "random", () => {
+    randomDraws += 1;
+    return randomDraws === 1 ? firstRandom : laterRandom;
+  });
+
+  for (const sessionKind of ["official", "practice"] as const) {
+    const config = { aiChallenge: resolveAiChallengeConfig(profile, sessionKind) } as AppConfig;
+    for (const boundary of boundaryCases) {
+      for (const stage of [1, 2, 3]) {
+        firstRandom = boundary.firstRandom;
+        laterRandom = boundary.laterRandom;
+        randomDraws = 0;
+        const plan = createAiPlan(stage, 20, config, false, true);
+        const expectedCpm = boundary.expectedCpms[stage - 1];
+
+        assert.ok(plan.segments.length > 1, "fixture must span multiple AI speed segments");
+        assert.deepEqual(
+          {
+            randomDraws,
+            segmentCpms: [...new Set(plan.segments.map((segment) => segment.cpm))],
+            averageCpm: plan.averageCpm
+          },
+          {
+            randomDraws: 1,
+            segmentCpms: [expectedCpm],
+            averageCpm: expectedCpm
+          }
+        );
+      }
+    }
+  }
+});
+
+test("preserves per-segment CPM draws for unlocked SkillUp plans", (t) => {
+  const skillup = loadEventProfile(path.resolve("events/skillup-2026/event.config.json"));
+  const config = { aiChallenge: resolveAiChallengeConfig(skillup, "official") } as AppConfig;
+  let randomDraws = 0;
+
+  t.mock.method(Math, "random", () => {
+    randomDraws += 1;
+    return randomDraws === 1 ? 0 : 0.999999999999;
+  });
+
+  const plan = createAiPlan(1, 20, config, false, false);
+
+  assert.ok(plan.segments.length > 1, "fixture must span multiple AI speed segments");
+  assert.deepEqual(
+    {
+      multipleDraws: randomDraws > 1,
+      segmentCpms: [...new Set(plan.segments.map((segment) => segment.cpm))]
+    },
+    {
+      multipleDraws: true,
+      segmentCpms: [300, 350]
+    }
+  );
 });
 
 test("keeps SkillUp's configured AI plan unchanged", () => {
