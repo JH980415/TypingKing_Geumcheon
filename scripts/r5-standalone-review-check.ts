@@ -232,20 +232,36 @@ async function observeExternalStorageBoundary(
 ): Promise<Array<{ method: string; rejected: boolean }>> {
   return page.evaluate(async (methods) => {
     const api = (window as any).typingKing;
-    const calls: Record<string, () => Promise<any>> = {
-      publishStageTextsToOneDrive: () => api.publishStageTextsToOneDrive(),
-      getOneDriveSettings: () => api.getOneDriveSettings(),
-      updateOneDriveSettings: () => api.updateOneDriveSettings({ syncMode: "local" }),
-      validateOneDriveSetup: () => api.validateOneDriveSetup(),
-      pokeOneDriveSync: () => api.pokeOneDriveSync("review-boundary-check"),
-      cleanupLegacyOneDriveArtifacts: () => api.cleanupLegacyOneDriveArtifacts(),
-      chooseOneDriveRoot: () => api.chooseOneDriveRoot(),
-      openSessionFolder: () => api.openSessionFolder()
-    };
     const observations: Array<{ method: string; rejected: boolean }> = [];
     for (const method of methods) {
       try {
-        const response = await calls[method]();
+        let response: any;
+        switch (method) {
+          case "publishStageTextsToOneDrive":
+            response = await api.publishStageTextsToOneDrive();
+            break;
+          case "getOneDriveSettings":
+            response = await api.getOneDriveSettings();
+            break;
+          case "updateOneDriveSettings":
+            response = await api.updateOneDriveSettings({ syncMode: "local" });
+            break;
+          case "validateOneDriveSetup":
+            response = await api.validateOneDriveSetup();
+            break;
+          case "pokeOneDriveSync":
+            response = await api.pokeOneDriveSync("review-boundary-check");
+            break;
+          case "cleanupLegacyOneDriveArtifacts":
+            response = await api.cleanupLegacyOneDriveArtifacts();
+            break;
+          case "chooseOneDriveRoot":
+            response = await api.chooseOneDriveRoot();
+            break;
+          case "openSessionFolder":
+            response = await api.openSessionFolder();
+            break;
+        }
         observations.push({ method, rejected: response?.ok === false });
       } catch {
         observations.push({ method, rejected: false });
@@ -257,29 +273,42 @@ async function observeExternalStorageBoundary(
 
 async function observePlayerWindowLayout(page: Page): Promise<PlayerWindowLayoutObservation> {
   return page.evaluate(() => {
-    const rect = (element: Element | null): RectObservation | null => {
-      if (!element) return null;
-      const bounds = element.getBoundingClientRect();
-      return {
-        left: bounds.left,
-        top: bounds.top,
-        right: bounds.right,
-        bottom: bounds.bottom,
-        width: bounds.width,
-        height: bounds.height
-      };
-    };
     const heroPanel = document.querySelector(".hero-panel");
     const heroGuideCard = heroPanel?.querySelector(".hero-guide-card") ?? null;
     const guideLines = heroGuideCard?.querySelectorAll(".hero-guide-list > li");
+    const fifthGuideLine = guideLines?.item(4) ?? null;
+    const heroPanelBounds = heroPanel?.getBoundingClientRect();
+    const heroGuideCardBounds = heroGuideCard?.getBoundingClientRect();
+    const fifthGuideLineBounds = fifthGuideLine?.getBoundingClientRect();
     return {
       innerWidth: window.innerWidth,
       innerHeight: window.innerHeight,
       outerWidth: window.outerWidth,
       outerHeight: window.outerHeight,
-      heroPanel: rect(heroPanel),
-      heroGuideCard: rect(heroGuideCard),
-      fifthGuideLine: rect(guideLines?.item(4) ?? null),
+      heroPanel: heroPanelBounds ? {
+        left: heroPanelBounds.left,
+        top: heroPanelBounds.top,
+        right: heroPanelBounds.right,
+        bottom: heroPanelBounds.bottom,
+        width: heroPanelBounds.width,
+        height: heroPanelBounds.height
+      } : null,
+      heroGuideCard: heroGuideCardBounds ? {
+        left: heroGuideCardBounds.left,
+        top: heroGuideCardBounds.top,
+        right: heroGuideCardBounds.right,
+        bottom: heroGuideCardBounds.bottom,
+        width: heroGuideCardBounds.width,
+        height: heroGuideCardBounds.height
+      } : null,
+      fifthGuideLine: fifthGuideLineBounds ? {
+        left: fifthGuideLineBounds.left,
+        top: fifthGuideLineBounds.top,
+        right: fifthGuideLineBounds.right,
+        bottom: fifthGuideLineBounds.bottom,
+        width: fifthGuideLineBounds.width,
+        height: fifthGuideLineBounds.height
+      } : null,
       guideLineCount: guideLines?.length ?? 0
     };
   });
