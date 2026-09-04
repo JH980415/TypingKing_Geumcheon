@@ -3,6 +3,7 @@ import path from "node:path";
 import type { DeviceProfile } from "../shared/events/types";
 import type {
   GameStartReadiness,
+  PcRole,
   RecordRow,
   ReviewRuntimeContext,
   ReviewStorageValidation,
@@ -34,13 +35,37 @@ export async function initializeGeumcheonConnection<TProduction, TReview>(
   return options.createProduction(options.deviceProfile);
 }
 
+export const REVIEW_EXTERNAL_STORAGE_IPC_CHANNELS = [
+  "stage:publishShared",
+  "sync:getSettings",
+  "sync:updateSettings",
+  "sync:validateSetup",
+  "sync:poke",
+  "sync:cleanupLegacyArtifacts",
+  "sync:chooseRoot",
+  "sync:openSessionFolder"
+] as const;
+
+export type ReviewExternalStorageIpcChannel = typeof REVIEW_EXTERNAL_STORAGE_IPC_CHANNELS[number];
+
+export function assertReviewExternalStorageIpcAllowed(
+  reviewContext: ReviewRuntimeContext | undefined,
+  _channel: ReviewExternalStorageIpcChannel
+): void {
+  if (reviewContext) throw new Error("REVIEW_EXTERNAL_STORAGE_DISABLED");
+}
+
+export function assertPlayerRecordSaveAllowed(role: PcRole): void {
+  if (role !== "player") throw new Error("RECORD_SAVE_PLAYER_ONLY");
+}
+
 export async function validateReviewStorage(options: {
   reviewContext: ReviewRuntimeContext;
-  runtime: Pick<ReviewLocalRuntime, "list">;
+  runtime: Pick<ReviewLocalRuntime, "validateStorage">;
   requireAdmin(): void;
 }): Promise<ReviewStorageValidation> {
   options.requireAdmin();
-  const result = await options.runtime.list().then(() => "normal" as const, () => "error" as const);
+  const result = await options.runtime.validateStorage().then(() => "normal" as const, () => "error" as const);
   return {
     storage: "local",
     environment: "review",
@@ -103,7 +128,8 @@ export function createReviewGeumcheonConnection(options: {
   const localRuntime = createReviewLocalRuntime({
     rootDir: options.runtimeRoot,
     role: options.reviewContext.role,
-    session: reviewSession(options.reviewContext)
+    session: reviewSession(options.reviewContext),
+    reviewContext: options.reviewContext
   });
   const store = createActiveAttemptStore({
     checkpointPath: path.join(options.runtimeRoot, ".review-state", `active-attempt-${options.reviewContext.sessionKind}.bin`),

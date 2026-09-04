@@ -65,6 +65,37 @@ test("runtime gate rejects helper, credential, fallback, residue, and missing re
   }
 });
 
+test("packaged gate requires rejection from every exposed external-storage API", () => {
+  const methods = (reviewHarness as unknown as {
+    REVIEW_EXTERNAL_STORAGE_API_METHODS?: readonly string[];
+  }).REVIEW_EXTERNAL_STORAGE_API_METHODS;
+  const assess = (reviewHarness as unknown as {
+    assessReviewExternalStorageBoundary?: (
+      observations: Array<{ method: string; rejected: boolean }>
+    ) => string[];
+  }).assessReviewExternalStorageBoundary;
+  assert.deepEqual(methods, [
+    "publishStageTextsToOneDrive",
+    "getOneDriveSettings",
+    "updateOneDriveSettings",
+    "validateOneDriveSetup",
+    "pokeOneDriveSync",
+    "cleanupLegacyOneDriveArtifacts",
+    "chooseOneDriveRoot",
+    "openSessionFolder"
+  ]);
+  assert.equal(typeof assess, "function");
+
+  const rejected = methods!.map((method) => ({ method, rejected: true }));
+  assert.deepEqual(assess!(rejected), []);
+  assert.deepEqual(assess!(rejected.filter((entry) => entry.method !== "getOneDriveSettings")), [
+    "REVIEW_EXTERNAL_STORAGE_MISSING:getOneDriveSettings"
+  ]);
+  assert.deepEqual(assess!(rejected.map((entry) =>
+    entry.method === "chooseOneDriveRoot" ? { ...entry, rejected: false } : entry
+  )), ["REVIEW_EXTERNAL_STORAGE_ACCEPTED:chooseOneDriveRoot"]);
+});
+
 test("runtime title contract stays distinct from packaged product names", () => {
   const titleFor = (reviewHarness as unknown as {
     expectedRendererTitle?: (variant: string) => string;

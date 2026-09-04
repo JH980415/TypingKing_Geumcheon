@@ -65,6 +65,8 @@ import { checkGeumcheonNasReadiness, requireGeumcheonCredential } from "./nas/re
 import { rendererSafeFailure } from "./nas/piiBoundary";
 import { createGeumcheonNasRuntime, type GeumcheonNasRuntime } from "./nas/runtime";
 import {
+  assertPlayerRecordSaveAllowed,
+  assertReviewExternalStorageIpcAllowed,
   createReviewGeumcheonConnection,
   initializeGeumcheonConnection,
   listGeumcheonRecords,
@@ -609,6 +611,7 @@ async function registerIpc(
   );
   ipcMain.handle("stage:publishShared", (event) =>
     safeAsync(async () => {
+      assertReviewExternalStorageIpcAllowed(startup?.reviewContext, "stage:publishShared");
       adminAccessSessions.require(event.sender);
       return publishStageTextsToOneDrive(ctx);
     })
@@ -632,6 +635,7 @@ async function registerIpc(
   );
   ipcMain.handle("records:save", (_event, input: SaveRecordInput) =>
     safeAsync(async () => {
+      assertPlayerRecordSaveAllowed(variantPolicy.role);
       if (geumcheonNas) {
         const row = await geumcheonNas.runtime.save(input);
         void geumcheonNas.flush().catch((error) => {
@@ -790,27 +794,34 @@ async function registerIpc(
     }, "기록 서버에 다시 올리지 못했습니다. 인터넷 연결과 NAS 서버 상태를 확인해 주세요.")
   );
   ipcMain.handle("sync:getSettings", () =>
-    safe(() => redactRendererConfig(getOneDriveSettings(ctx, pcRole)))
+    safe(() => {
+      assertReviewExternalStorageIpcAllowed(startup?.reviewContext, "sync:getSettings");
+      return redactRendererConfig(getOneDriveSettings(ctx, pcRole));
+    })
   );
   ipcMain.handle("sync:updateSettings", (event, patch) =>
     safe(() => {
+      assertReviewExternalStorageIpcAllowed(startup?.reviewContext, "sync:updateSettings");
       adminAccessSessions.require(event.sender);
       return redactRendererConfig(updateOneDriveSettings(ctx, patch, pcRole));
     })
   );
   ipcMain.handle("sync:validateSetup", (event) =>
     safe(() => {
+      assertReviewExternalStorageIpcAllowed(startup?.reviewContext, "sync:validateSetup");
       adminAccessSessions.require(event.sender);
       return redactRendererConfig(validateOneDriveSetup(ctx, pcRole));
     })
   );
   ipcMain.handle("sync:poke", (event, reason?: string) => safe(() => {
+    assertReviewExternalStorageIpcAllowed(startup?.reviewContext, "sync:poke");
     adminAccessSessions.require(event.sender);
     return pokeOneDriveSync(ctx, reason || "manual");
   }));
   ipcMain.handle("sync:cleanupLegacyArtifacts", (event) =>
     safe(
       () => {
+        assertReviewExternalStorageIpcAllowed(startup?.reviewContext, "sync:cleanupLegacyArtifacts");
         adminAccessSessions.require(event.sender);
         return cleanupLegacyOneDriveArtifacts(ctx);
       },
@@ -818,7 +829,10 @@ async function registerIpc(
     )
   );
   ipcMain.handle("sync:chooseRoot", async (event) => {
-    const authorized = safe(() => adminAccessSessions.require(event.sender));
+    const authorized = safe(() => {
+      assertReviewExternalStorageIpcAllowed(startup?.reviewContext, "sync:chooseRoot");
+      return adminAccessSessions.require(event.sender);
+    });
     if (!authorized.ok) return authorized;
     const dialogOptions: OpenDialogOptions = {
       title: "OneDrive 루트 폴더 선택",
@@ -844,6 +858,7 @@ async function registerIpc(
   });
   ipcMain.handle("sync:openSessionFolder", (event) =>
     safeAsync(async () => {
+      assertReviewExternalStorageIpcAllowed(startup?.reviewContext, "sync:openSessionFolder");
       adminAccessSessions.require(event.sender);
       const settings = getOneDriveSettings(ctx, pcRole);
       const target = settings.sessionDataRoot || settings.oneDriveRoot || resolveRoot();

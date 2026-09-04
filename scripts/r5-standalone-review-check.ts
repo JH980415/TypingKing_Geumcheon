@@ -9,6 +9,7 @@ import { pathToFileURL } from "node:url";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { REVIEW_LOCAL_ADMIN_PASSWORD } from "../electron/adminAccessSession";
 import { parseStageTextCatalog } from "../shared/events/stageTextCatalog";
+import type { SaveRecordInput } from "../shared/types";
 
 type Variant = "ai" | "ai-leaderboard" | "practice" | "practice-leaderboard";
 type Role = "player" | "leaderboard";
@@ -30,8 +31,45 @@ type RuntimeObservation = {
   unexpectedFiles?: string[];
 };
 
+export const REVIEW_EXTERNAL_STORAGE_API_METHODS = [
+  "publishStageTextsToOneDrive",
+  "getOneDriveSettings",
+  "updateOneDriveSettings",
+  "validateOneDriveSetup",
+  "pokeOneDriveSync",
+  "cleanupLegacyOneDriveArtifacts",
+  "chooseOneDriveRoot",
+  "openSessionFolder"
+] as const;
+
+export function assessReviewExternalStorageBoundary(
+  observations: Array<{ method: string; rejected: boolean }>
+): string[] {
+  const byMethod = new Map(observations.map((observation) => [observation.method, observation]));
+  const violations: string[] = [];
+  for (const method of REVIEW_EXTERNAL_STORAGE_API_METHODS) {
+    const observation = byMethod.get(method);
+    if (!observation) violations.push(`REVIEW_EXTERNAL_STORAGE_MISSING:${method}`);
+    else if (!observation.rejected) violations.push(`REVIEW_EXTERNAL_STORAGE_ACCEPTED:${method}`);
+  }
+  return violations;
+}
+
 const MIN_PORTABLE_BYTES = 10 * 1024 * 1024;
 const FALLBACK_NOTICE = "문구 파일이 없어 기본 문구로 생성합니다.";
+const LEADERBOARD_REJECTED_SAVE_INPUT: SaveRecordInput = {
+  participant_name: "리더보드 저장 거부 확인",
+  phone_part1: "010",
+  phone_part2: "0000",
+  phone_part3: "0001",
+  birth_year: "2012",
+  birth_month: "01",
+  birth_day: "02",
+  privacy_agreed: true,
+  privacy_agreed_at: "2026-09-03T01:00:00.000Z",
+  stageTexts: ["1234", "5678", "9012"],
+  stageTimesMs: [1000, 1000, 1000]
+};
 const canonicalStageTexts = parseStageTextCatalog(
   fs.readFileSync(path.resolve("events/geumcheon-2026/stage_texts.csv"), "utf8")
 ).reduce((byStage, row) => {
@@ -86,6 +124,54 @@ const specs: Array<{
 
 function sha256(filePath: string): string {
   return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex").toUpperCase();
+}
+
+function snapshotDirectory(root: string): string[] {
+  if (!fs.existsSync(root)) return [];
+  const snapshot: string[] = [];
+  const visit = (current: string) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name))) {
+      const fullPath = path.join(current, entry.name);
+      const relativePath = path.relative(root, fullPath).replaceAll("\\", "/");
+      if (entry.isDirectory()) {
+        snapshot.push(`${relativePath}/`);
+        visit(fullPath);
+      } else {
+        const bytes = fs.statSync(fullPath).size;
+        snapshot.push(`${relativePath}:${bytes}:${sha256(fullPath)}`);
+      }
+    }
+  };
+  visit(root);
+  return snapshot;
+}
+
+async function observeExternalStorageBoundary(
+  page: Page
+): Promise<Array<{ method: string; rejected: boolean }>> {
+  return page.evaluate(async (methods) => {
+    const api = (window as any).typingKing;
+    const calls: Record<string, () => Promise<any>> = {
+      publishStageTextsToOneDrive: () => api.publishStageTextsToOneDrive(),
+      getOneDriveSettings: () => api.getOneDriveSettings(),
+      updateOneDriveSettings: () => api.updateOneDriveSettings({ syncMode: "local" }),
+      validateOneDriveSetup: () => api.validateOneDriveSetup(),
+      pokeOneDriveSync: () => api.pokeOneDriveSync("review-boundary-check"),
+      cleanupLegacyOneDriveArtifacts: () => api.cleanupLegacyOneDriveArtifacts(),
+      chooseOneDriveRoot: () => api.chooseOneDriveRoot(),
+      openSessionFolder: () => api.openSessionFolder()
+    };
+    const observations: Array<{ method: string; rejected: boolean }> = [];
+    for (const method of methods) {
+      try {
+        const response = await calls[method]();
+        observations.push({ method, rejected: response?.ok === false });
+      } catch {
+        observations.push({ method, rejected: false });
+      }
+    }
+    return observations;
+  }, REVIEW_EXTERNAL_STORAGE_API_METHODS);
 }
 
 export function inspectReviewArtifacts(inputs: ArtifactInput[]): { artifacts: ArtifactFinding[]; violations: string[] } {
@@ -250,6 +336,19 @@ async function leaderboardFlow(page: Page, expected: { recordId: string; partici
   assert.ok(rows.some((row) => row.record_id === expected.recordId), `${variant} pair record not shared within two refreshes`);
   const crossLeak = rows.filter((row) => row.record_id === forbiddenId).length;
   assert.equal(crossLeak, 0, `${variant} cross namespace leak`);
+  const recordIdsBeforeRejectedSave = rows.map((row) => row.record_id).sort();
+  const rejectedSave = await page.evaluate(
+    async (input) => (window as any).typingKing.saveRecord(input),
+    LEADERBOARD_REJECTED_SAVE_INPUT
+  );
+  assert.equal(rejectedSave?.ok, false, `${variant} leaderboard record save was accepted`);
+  const recordsAfterRejectedSave = await page.evaluate(async () => (window as any).typingKing.listRecords());
+  assert.equal(recordsAfterRejectedSave?.ok, true);
+  assert.deepEqual(
+    recordsAfterRejectedSave.data.map((row: any) => row.record_id).sort(),
+    recordIdsBeforeRejectedSave,
+    `${variant} leaderboard rejected save changed record ids`
+  );
   const search = page.locator(".search-input");
   await search.fill(expected.searchNeedle);
   await waitUntil("searched leaderboard row", () => page.locator(".ranking-row").count().then((count) => count === 1), 10_000);
@@ -288,6 +387,7 @@ async function runOne(spec: typeof specs[number], exePath: string, outputRoot: s
   let flow: any;
   let bootstrap: any;
   let storageValidation: any;
+  let externalStorageBoundary: any;
   let processes: ProcessInfo[] = [];
   try {
     let ws: string | undefined;
@@ -304,6 +404,23 @@ async function runOne(spec: typeof specs[number], exePath: string, outputRoot: s
     assert.equal(auth?.ok, true);
     storageValidation = await page.evaluate(async () => (window as any).typingKing.validateReviewStorage());
     assert.equal(storageValidation?.ok, true);
+    const reviewStorageRoot = path.join(
+      localAppData,
+      "ThePMD",
+      "TypingKing",
+      "Geumcheon2026",
+      "Review",
+      spec.session
+    );
+    const storageBefore = snapshotDirectory(reviewStorageRoot);
+    const observations = await observeExternalStorageBoundary(page);
+    const storageAfter = snapshotDirectory(reviewStorageRoot);
+    externalStorageBoundary = {
+      observations,
+      storageUnchanged: JSON.stringify(storageAfter) === JSON.stringify(storageBefore)
+    };
+    assert.deepEqual(assessReviewExternalStorageBoundary(observations), []);
+    assert.equal(externalStorageBoundary.storageUnchanged, true, `${spec.variant} external-storage call changed review files`);
     const notices = Array.isArray(bootstrap.notices) ? bootstrap.notices : [];
     assert.equal(notices.includes(FALLBACK_NOTICE), false, `${spec.variant} used fallback stage texts`);
     processes = processTree(pid);
@@ -339,7 +456,7 @@ async function runOne(spec: typeof specs[number], exePath: string, outputRoot: s
   const unexpectedFiles = listing.filter((name) => name !== path.basename(exePath));
   const finalViolations = assessRuntimeObservation({ expectedVariant: spec.variant, expectedRole: spec.role, expectedSession: spec.session, bootstrap, notices: bootstrap?.notices, cleanExit, residualProcessCount: processTree(pid).length, unexpectedFiles });
   if (finalViolations.length && !error) error = finalViolations.join(",");
-  return { variant: spec.variant, role: spec.role, session: spec.session, pid, title: spec.title, bootstrap: bootstrap ? { variant: bootstrap.variant, reviewContext: bootstrap.reviewContext, notices: bootstrap.notices } : null, storageValidation: storageValidation?.data ?? null, processSnapshot: processes.map(({ ProcessId, ParentProcessId, Name, MainWindowTitle }) => ({ ProcessId, ParentProcessId, Name, MainWindowTitle })), flow, cleanExit, forcedCleanup, residualProcessCount: processTree(pid).length, executableFolderListing: listing, error, verdict: error ? "FAIL" : "PASS" };
+  return { variant: spec.variant, role: spec.role, session: spec.session, pid, title: spec.title, bootstrap: bootstrap ? { variant: bootstrap.variant, reviewContext: bootstrap.reviewContext, notices: bootstrap.notices } : null, storageValidation: storageValidation?.data ?? null, externalStorageBoundary, processSnapshot: processes.map(({ ProcessId, ParentProcessId, Name, MainWindowTitle }) => ({ ProcessId, ParentProcessId, Name, MainWindowTitle })), flow, cleanExit, forcedCleanup, residualProcessCount: processTree(pid).length, executableFolderListing: listing, error, verdict: error ? "FAIL" : "PASS" };
 }
 
 function parseArgs(argv: string[]): { outputRoot: string; inputs: Map<Variant, string> } {

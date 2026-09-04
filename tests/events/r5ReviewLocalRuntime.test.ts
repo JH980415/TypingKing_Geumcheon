@@ -6,7 +6,7 @@ import path from "node:path";
 import test from "node:test";
 import { createActiveAttemptStore, type ActiveAttemptEncryption } from "../../electron/activeAttemptStore";
 import { createGeumcheonRecordRuntime } from "../../electron/geumcheonRecordRuntime";
-import type { RecordRow } from "../../shared/types";
+import type { RecordRow, ReviewRuntimeContext } from "../../shared/types";
 
 const REVIEW_MARKER = "geumcheon-2026-review";
 
@@ -55,6 +55,19 @@ function session(kind: "official" | "practice") {
     : { kind, sessionId: "review-practice" };
 }
 
+function reviewContext(role: "player" | "leaderboard", sessionKind: "official" | "practice" = "official"): ReviewRuntimeContext {
+  return {
+    environment: "review",
+    profileId: "geumcheon-2026",
+    eventId: "geumcheon-science-festival-2026-review",
+    buildId: "R2.0.4-R5",
+    deviceId: `review-${sessionKind}-${role}`,
+    role,
+    sessionKind,
+    storageKind: "local"
+  };
+}
+
 function reviewId(): string {
   return `review-r5-record-${crypto.randomUUID()}`;
 }
@@ -78,9 +91,9 @@ test("shares an official session between game and leaderboard while keeping prac
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r5-review-local-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const { createReviewLocalRuntime } = await loadRuntime();
-  const game = createReviewLocalRuntime({ rootDir: root, role: "player", session: session("official") });
-  const leaderboard = createReviewLocalRuntime({ rootDir: root, role: "leaderboard", session: session("official") });
-  const practice = createReviewLocalRuntime({ rootDir: root, role: "player", session: session("practice") });
+  const game = createReviewLocalRuntime({ rootDir: root, role: "player", session: session("official"), reviewContext: reviewContext("player") });
+  const leaderboard = createReviewLocalRuntime({ rootDir: root, role: "leaderboard", session: session("official"), reviewContext: reviewContext("leaderboard") });
+  const practice = createReviewLocalRuntime({ rootDir: root, role: "player", session: session("practice"), reviewContext: reviewContext("player", "practice") });
 
   const row = reviewRecord(reviewId());
   await game.save(row);
@@ -89,6 +102,22 @@ test("shares an official session between game and leaderboard while keeping prac
   assert.deepEqual(await practice.list(), []);
   assert.equal(fs.existsSync(path.join(root, "official", "review-official-1", "records", `${row.record_id}.json`)), true);
   assert.equal(fs.existsSync(path.join(root, "practice", "review-practice", "records", `${row.record_id}.json`)), false);
+});
+
+test("leaderboard review runtime rejects record creation while retaining paired reads", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r5-review-authority-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const { createReviewLocalRuntime } = await loadRuntime();
+  const player = createReviewLocalRuntime({ rootDir: root, role: "player", session: session("official"), reviewContext: reviewContext("player") });
+  const leaderboard = createReviewLocalRuntime({ rootDir: root, role: "leaderboard", session: session("official"), reviewContext: reviewContext("leaderboard") });
+  const rejected = reviewRecord(reviewId());
+
+  await assert.rejects(leaderboard.save(rejected), { message: "REVIEW_RECORD_SAVE_PLAYER_ONLY" });
+  assert.equal(fs.existsSync(path.join(root, "official", "review-official-1", "records", `${rejected.record_id}.json`)), false);
+
+  const accepted = reviewRecord(reviewId());
+  await player.save(accepted);
+  assert.deepEqual((await leaderboard.list()).map((entry) => entry.record_id), [accepted.record_id]);
 });
 
 test("writes a validated atomic review envelope and ignores unfinished temporary files", async (t) => {
@@ -104,9 +133,54 @@ test("writes a validated atomic review envelope and ignores unfinished temporary
   fs.writeFileSync(path.join(recordDir, ".unfinished.tmp-review"), "{", "utf8");
 
   assert.deepEqual(envelope.reviewMarker, REVIEW_MARKER);
+  assert.deepEqual(envelope.reviewIdentity, {
+    environment: "review",
+    profileId: "geumcheon-2026",
+    eventId: "geumcheon-science-festival-2026-review",
+    buildId: "R2.0.4-R5",
+    storageKind: "local",
+    writerRole: "player"
+  });
   assert.deepEqual(envelope.row.record_id, row.record_id);
+  assert.equal(JSON.stringify(envelope).includes(root), false);
   assert.deepEqual(fs.readdirSync(recordDir).filter((name) => name.startsWith(`.${row.record_id}.tmp-`)), []);
   assert.deepEqual((await runtime.list()).map((entry) => entry.record_id), [row.record_id]);
+});
+
+test("rejects stale mismatched or non-player review envelope identity", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r5-review-envelope-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const { createReviewLocalRuntime } = await loadRuntime();
+  const player = createReviewLocalRuntime({ rootDir: root, role: "player", session: session("official"), reviewContext: reviewContext("player") });
+  const leaderboard = createReviewLocalRuntime({ rootDir: root, role: "leaderboard", session: session("official"), reviewContext: reviewContext("leaderboard") });
+  const row = reviewRecord(reviewId());
+  await player.save(row);
+  const target = path.join(root, "official", "review-official-1", "records", `${row.record_id}.json`);
+  const original = JSON.parse(fs.readFileSync(target, "utf8"));
+  assert.deepEqual(original.reviewIdentity, {
+    environment: "review",
+    profileId: "geumcheon-2026",
+    eventId: "geumcheon-science-festival-2026-review",
+    buildId: "R2.0.4-R5",
+    storageKind: "local",
+    writerRole: "player"
+  });
+  const mismatches = {
+    environment: "production",
+    profileId: "skillup-2026",
+    eventId: "stale-event",
+    buildId: "R2.0.4-R4",
+    storageKind: "onedrive",
+    writerRole: "leaderboard"
+  } as const;
+
+  for (const [field, value] of Object.entries(mismatches)) {
+    fs.writeFileSync(target, `${JSON.stringify({
+      ...original,
+      reviewIdentity: { ...original.reviewIdentity, [field]: value }
+    })}\n`, "utf8");
+    await assert.rejects(leaderboard.list(), { message: "REVIEW_RECORD_CORRUPT" }, field);
+  }
 });
 
 test("fails visibly with a safe code when a final review record is corrupt", async (t) => {
@@ -121,18 +195,41 @@ test("fails visibly with a safe code when a final review record is corrupt", asy
   await assert.rejects(runtime.list(), { message: "REVIEW_RECORD_CORRUPT" });
 });
 
+test("validates player and fresh-root leaderboard storage without leaving probe records", async (t) => {
+  const playerRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r5-review-player-ready-"));
+  const leaderboardRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r5-review-board-ready-"));
+  t.after(() => {
+    fs.rmSync(playerRoot, { recursive: true, force: true });
+    fs.rmSync(leaderboardRoot, { recursive: true, force: true });
+  });
+  const { createReviewLocalRuntime } = await loadRuntime();
+  const player = createReviewLocalRuntime({ rootDir: playerRoot, role: "player", session: session("official"), reviewContext: reviewContext("player") });
+  const leaderboard = createReviewLocalRuntime({ rootDir: leaderboardRoot, role: "leaderboard", session: session("official"), reviewContext: reviewContext("leaderboard") });
+
+  await player.validateStorage();
+  await leaderboard.validateStorage();
+
+  const playerRecords = path.join(playerRoot, "official", "review-official-1", "records");
+  const leaderboardRecords = path.join(leaderboardRoot, "official", "review-official-1", "records");
+  assert.deepEqual(fs.readdirSync(playerRecords), []);
+  assert.deepEqual(fs.readdirSync(leaderboardRecords), []);
+  await assert.rejects(leaderboard.save(reviewRecord(reviewId())), { message: "REVIEW_RECORD_SAVE_PLAYER_ONLY" });
+  assert.deepEqual(fs.readdirSync(leaderboardRecords), []);
+});
+
 test("keeps concurrent unique records lossless and makes a repeated record ID idempotent", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r5-review-local-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const { createReviewLocalRuntime } = await loadRuntime();
   const left = createReviewLocalRuntime({ rootDir: root, role: "player", session: session("official") });
-  const right = createReviewLocalRuntime({ rootDir: root, role: "leaderboard", session: session("official") });
+  const right = createReviewLocalRuntime({ rootDir: root, role: "player", session: session("official") });
+  const observer = createReviewLocalRuntime({ rootDir: root, role: "leaderboard", session: session("official") });
   const rows = Array.from({ length: 12 }, () => reviewRecord(reviewId()));
 
   await Promise.all(rows.map((row, index) => (index % 2 === 0 ? left : right).save(row)));
   const repeated = await Promise.all([left.save(rows[0]), right.save(rows[0])]);
 
-  assert.equal((await left.list()).length, rows.length);
+  assert.equal((await observer.list()).length, rows.length);
   assert.deepEqual(repeated.map((entry) => entry.record_id), [rows[0].record_id, rows[0].record_id]);
 });
 

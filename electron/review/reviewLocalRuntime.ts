@@ -3,13 +3,20 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import lockfile from "proper-lockfile";
 import { atomicWriteFile } from "../nas/atomicFile";
-import type { RecordRow } from "../../shared/types";
+import type { RecordRow, ReviewRuntimeContext } from "../../shared/types";
 import { compareRecords, sortRecords } from "../../shared/utils/ranking";
 
 const REVIEW_MARKER = "geumcheon-2026-review" as const;
 const REVIEW_RECORD_ID = /^review-r5-record-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const REVIEW_ATTEMPT_ID = /^review-r5-attempt-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+const REVIEW_IDENTITY_BASE = {
+  environment: "review",
+  profileId: "geumcheon-2026",
+  eventId: "geumcheon-science-festival-2026-review",
+  buildId: "R2.0.4-R5",
+  storageKind: "local"
+} as const;
 
 export type ReviewSession =
   | { kind: "official"; sessionId: string; dayNo: number; roundNo: number }
@@ -22,6 +29,7 @@ export type ReviewAttemptIdentityPolicy = {
 export type ReviewLocalRuntime = {
   save(row: RecordRow): Promise<RecordRow>;
   list(): Promise<RecordRow[]>;
+  validateStorage(): Promise<void>;
   best(): Promise<RecordRow[]>;
   edit(recordId: string, changes: Partial<RecordRow>): Promise<RecordRow>;
   hide(recordId: string): Promise<void>;
@@ -29,9 +37,14 @@ export type ReviewLocalRuntime = {
   participantKeyFor(identity: { participantName: string; phoneFull: string; birthdate: string }): Promise<string>;
 };
 
+type ReviewRecordIdentity = typeof REVIEW_IDENTITY_BASE & {
+  writerRole: "player";
+};
+
 type ReviewRecordEnvelope = {
   schemaVersion: 1;
   reviewMarker: typeof REVIEW_MARKER;
+  reviewIdentity: ReviewRecordIdentity;
   session: ReviewSession;
   hidden: boolean;
   row: RecordRow;
@@ -41,6 +54,7 @@ type ReviewLocalRuntimeOptions = {
   rootDir: string;
   role: "player" | "leaderboard";
   session: ReviewSession;
+  reviewContext?: ReviewRuntimeContext;
 };
 
 export const reviewAttemptIdentityPolicy: ReviewAttemptIdentityPolicy = {
@@ -59,6 +73,7 @@ export function createReviewAttemptIdentity(uuid = crypto.randomUUID()): { recor
 
 export function createReviewLocalRuntime(options: ReviewLocalRuntimeOptions): ReviewLocalRuntime {
   assertOptions(options);
+  const reviewIdentity = reviewIdentityFor(options.reviewContext);
   const sessionRoot = path.join(options.rootDir, options.session.kind, options.session.sessionId);
   const recordDir = path.join(sessionRoot, "records");
   const mutationLock = path.join(sessionRoot, ".review-mutation");
@@ -75,6 +90,7 @@ export function createReviewLocalRuntime(options: ReviewLocalRuntimeOptions): Re
   }
 
   async function save(row: RecordRow): Promise<RecordRow> {
+    if (options.role !== "player") throw new Error("REVIEW_RECORD_SAVE_PLAYER_ONLY");
     const storedRow = { ...row, participantKey: await participantKeyFor({
       participantName: row.participant_name,
       phoneFull: row.phone_full,
@@ -83,16 +99,59 @@ export function createReviewLocalRuntime(options: ReviewLocalRuntimeOptions): Re
     assertReviewRow(storedRow);
     return withLock(mutationLock, async () => {
       const target = recordPath(recordDir, storedRow.record_id);
-      const existing = await readEnvelopeIfPresent(target, options.session);
+      const existing = await readEnvelopeIfPresent(target, options.session, reviewIdentity);
       if (existing != null) return { ...existing.row };
-      await writeEnvelope(target, { schemaVersion: 1, reviewMarker: REVIEW_MARKER, session: options.session, hidden: false, row: storedRow });
+      await writeEnvelope(target, {
+        schemaVersion: 1,
+        reviewMarker: REVIEW_MARKER,
+        reviewIdentity,
+        session: options.session,
+        hidden: false,
+        row: storedRow
+      }, reviewIdentity);
       return { ...storedRow };
     });
   }
 
   async function list(): Promise<RecordRow[]> {
-    const envelopes = await readEnvelopes(recordDir, options.session);
+    const envelopes = await readEnvelopes(recordDir, options.session, reviewIdentity);
     return sortRecords(envelopes.filter((entry) => !entry.hidden).map((entry) => ({ ...entry.row })));
+  }
+
+  async function validateStorage(): Promise<void> {
+    try {
+      await fs.mkdir(recordDir, { recursive: true });
+    } catch {
+      throw new Error("REVIEW_STORAGE_ACCESS_FAILED");
+    }
+    if (options.role === "leaderboard") {
+      try {
+        await fs.readdir(recordDir);
+      } catch {
+        throw new Error("REVIEW_STORAGE_ACCESS_FAILED");
+      }
+      await list();
+      return;
+    }
+
+    const probePath = path.join(recordDir, `.review-readiness-${crypto.randomUUID()}.probe`);
+    const probe = crypto.randomBytes(32);
+    await withLock(mutationLock, async () => {
+      try {
+        await fs.writeFile(probePath, probe, { flag: "wx", mode: 0o600 });
+        if (!(await fs.readFile(probePath)).equals(probe)) throw new Error("REVIEW_STORAGE_PROBE_MISMATCH");
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("REVIEW_")) throw error;
+        throw new Error("REVIEW_STORAGE_WRITE_FAILED");
+      } finally {
+        try {
+          await fs.rm(probePath, { force: true });
+        } catch {
+          throw new Error("REVIEW_STORAGE_PROBE_CLEANUP_FAILED");
+        }
+      }
+    });
+    await list();
   }
 
   async function best(): Promise<RecordRow[]> {
@@ -113,7 +172,7 @@ export function createReviewLocalRuntime(options: ReviewLocalRuntimeOptions): Re
     if (changes.record_id != null && changes.record_id !== recordId) throw new Error("REVIEW_RECORD_INVALID");
     return withLock(mutationLock, async () => {
       const target = recordPath(recordDir, recordId);
-      const existing = await readRequiredEnvelope(target, options.session);
+      const existing = await readRequiredEnvelope(target, options.session, reviewIdentity);
       const row = { ...existing.row, ...changes, record_id: recordId, is_admin_edited: "true" };
       row.participantKey = await participantKeyFor({
         participantName: row.participant_name,
@@ -121,7 +180,7 @@ export function createReviewLocalRuntime(options: ReviewLocalRuntimeOptions): Re
         birthdate: row.birthdate,
       });
       assertReviewRow(row);
-      await writeEnvelope(target, { ...existing, row });
+      await writeEnvelope(target, { ...existing, row }, reviewIdentity);
       return { ...row };
     });
   }
@@ -130,20 +189,22 @@ export function createReviewLocalRuntime(options: ReviewLocalRuntimeOptions): Re
     assertReviewRecordId(recordId);
     await withLock(mutationLock, async () => {
       const target = recordPath(recordDir, recordId);
-      const existing = await readRequiredEnvelope(target, options.session);
-      await writeEnvelope(target, { ...existing, hidden: true });
+      const existing = await readRequiredEnvelope(target, options.session, reviewIdentity);
+      await writeEnvelope(target, { ...existing, hidden: true }, reviewIdentity);
     });
   }
 
   async function reset(): Promise<void> {
     await withLock(mutationLock, async () => {
-      for (const envelope of await readEnvelopes(recordDir, options.session)) {
-        if (!envelope.hidden) await writeEnvelope(recordPath(recordDir, envelope.row.record_id), { ...envelope, hidden: true });
+      for (const envelope of await readEnvelopes(recordDir, options.session, reviewIdentity)) {
+        if (!envelope.hidden) {
+          await writeEnvelope(recordPath(recordDir, envelope.row.record_id), { ...envelope, hidden: true }, reviewIdentity);
+        }
       }
     });
   }
 
-  return { save, list, best, edit, hide, reset, participantKeyFor };
+  return { save, list, validateStorage, best, edit, hide, reset, participantKeyFor };
 }
 
 async function withLock<T>(lockTarget: string, task: () => Promise<T>): Promise<T> {
@@ -185,7 +246,11 @@ async function readOrCreateSalt(saltPath: string, saltLock: string): Promise<str
   });
 }
 
-async function readEnvelopes(recordDir: string, session: ReviewSession): Promise<ReviewRecordEnvelope[]> {
+async function readEnvelopes(
+  recordDir: string,
+  session: ReviewSession,
+  reviewIdentity: ReviewRecordIdentity
+): Promise<ReviewRecordEnvelope[]> {
   let names: string[];
   try {
     names = await fs.readdir(recordDir);
@@ -196,34 +261,46 @@ async function readEnvelopes(recordDir: string, session: ReviewSession): Promise
   const envelopes: ReviewRecordEnvelope[] = [];
   for (const name of names) {
     if (!name.endsWith(".json")) continue;
-    envelopes.push(await readRequiredEnvelope(path.join(recordDir, name), session));
+    envelopes.push(await readRequiredEnvelope(path.join(recordDir, name), session, reviewIdentity));
   }
   return envelopes;
 }
 
-async function readEnvelopeIfPresent(filePath: string, session: ReviewSession): Promise<ReviewRecordEnvelope | null> {
+async function readEnvelopeIfPresent(
+  filePath: string,
+  session: ReviewSession,
+  reviewIdentity: ReviewRecordIdentity
+): Promise<ReviewRecordEnvelope | null> {
   try {
     await fs.access(filePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
-  return readRequiredEnvelope(filePath, session);
+  return readRequiredEnvelope(filePath, session, reviewIdentity);
 }
 
-async function readRequiredEnvelope(filePath: string, session: ReviewSession): Promise<ReviewRecordEnvelope> {
+async function readRequiredEnvelope(
+  filePath: string,
+  session: ReviewSession,
+  reviewIdentity: ReviewRecordIdentity
+): Promise<ReviewRecordEnvelope> {
   let value: unknown;
   try {
     value = JSON.parse(await fs.readFile(filePath, "utf8"));
   } catch {
     throw new Error("REVIEW_RECORD_CORRUPT");
   }
-  if (!isEnvelope(value, session)) throw new Error("REVIEW_RECORD_CORRUPT");
+  if (!isEnvelope(value, session, reviewIdentity)) throw new Error("REVIEW_RECORD_CORRUPT");
   return value;
 }
 
-async function writeEnvelope(filePath: string, envelope: ReviewRecordEnvelope): Promise<void> {
-  if (!isEnvelope(envelope, envelope.session)) throw new Error("REVIEW_RECORD_INVALID");
+async function writeEnvelope(
+  filePath: string,
+  envelope: ReviewRecordEnvelope,
+  reviewIdentity: ReviewRecordIdentity
+): Promise<void> {
+  if (!isEnvelope(envelope, envelope.session, reviewIdentity)) throw new Error("REVIEW_RECORD_INVALID");
   try {
     await atomicWriteFile(filePath, Buffer.from(`${JSON.stringify(envelope)}\n`, "utf8"));
   } catch {
@@ -236,9 +313,41 @@ function recordPath(recordDir: string, recordId: string): string {
   return path.join(recordDir, `${recordId}.json`);
 }
 
-function isEnvelope(value: unknown, session: ReviewSession): value is ReviewRecordEnvelope {
-  if (!isPlainObject(value) || !hasExactKeys(value, ["schemaVersion", "reviewMarker", "session", "hidden", "row"])) return false;
-  return value.schemaVersion === 1 && value.reviewMarker === REVIEW_MARKER && sameSession(value.session, session) && typeof value.hidden === "boolean" && isReviewRow(value.row);
+function isEnvelope(
+  value: unknown,
+  session: ReviewSession,
+  reviewIdentity: ReviewRecordIdentity
+): value is ReviewRecordEnvelope {
+  if (!isPlainObject(value) || !hasExactKeys(value, ["schemaVersion", "reviewMarker", "reviewIdentity", "session", "hidden", "row"])) return false;
+  return value.schemaVersion === 1
+    && value.reviewMarker === REVIEW_MARKER
+    && sameReviewIdentity(value.reviewIdentity, reviewIdentity)
+    && sameSession(value.session, session)
+    && typeof value.hidden === "boolean"
+    && isReviewRow(value.row);
+}
+
+function reviewIdentityFor(context?: ReviewRuntimeContext): ReviewRecordIdentity {
+  const source = context ?? REVIEW_IDENTITY_BASE;
+  return {
+    environment: source.environment,
+    profileId: source.profileId,
+    eventId: source.eventId,
+    buildId: source.buildId,
+    storageKind: source.storageKind,
+    writerRole: "player"
+  };
+}
+
+function sameReviewIdentity(value: unknown, expected: ReviewRecordIdentity): boolean {
+  return isPlainObject(value)
+    && hasExactKeys(value, ["environment", "profileId", "eventId", "buildId", "storageKind", "writerRole"])
+    && value.environment === expected.environment
+    && value.profileId === expected.profileId
+    && value.eventId === expected.eventId
+    && value.buildId === expected.buildId
+    && value.storageKind === expected.storageKind
+    && value.writerRole === "player";
 }
 
 function isReviewRow(value: unknown): value is RecordRow {
@@ -265,7 +374,21 @@ function assertReviewRecordId(value: unknown): asserts value is string {
 }
 
 function assertOptions(options: ReviewLocalRuntimeOptions): void {
-  if (!options.rootDir || (options.role !== "player" && options.role !== "leaderboard") || !isSession(options.session)) {
+  const context = options.reviewContext;
+  if (
+    !options.rootDir
+    || (options.role !== "player" && options.role !== "leaderboard")
+    || !isSession(options.session)
+    || (context != null && (
+      context.environment !== REVIEW_IDENTITY_BASE.environment
+      || context.profileId !== REVIEW_IDENTITY_BASE.profileId
+      || context.eventId !== REVIEW_IDENTITY_BASE.eventId
+      || context.buildId !== REVIEW_IDENTITY_BASE.buildId
+      || context.storageKind !== REVIEW_IDENTITY_BASE.storageKind
+      || context.role !== options.role
+      || context.sessionKind !== options.session.kind
+    ))
+  ) {
     throw new Error("REVIEW_RUNTIME_OPTIONS_INVALID");
   }
 }
