@@ -111,6 +111,8 @@ const countdownScreenshots: string[] = [];
 const uiDetailScreenshots: string[] = [];
 const syntheticAdminPassword = "typingking-approved-ui-admin-r5";
 const leaderboardsOnly = process.env.TYPINGKING_E2E_LEADERBOARDS_ONLY === "1";
+const defaultWindowOnly = process.env.TYPINGKING_E2E_DEFAULT_WINDOW_ONLY === "1";
+const defaultWindowSize = { width: 1424, height: 861 };
 const sizes = [
   { width: 1280, height: 720 },
   { width: 1920, height: 1080 }
@@ -839,6 +841,47 @@ async function pageMetrics(page: Page, panelSelector: string): Promise<{
   };
 }
 
+async function assertDefaultWindowHeroGuideContainment(page: Page): Promise<void> {
+  const geometry = await page.evaluate(() => {
+    const heroPanel = document.querySelector<HTMLElement>(".hero-panel");
+    const guideCard = heroPanel?.querySelector<HTMLElement>(".hero-guide-card");
+    const guideItems = guideCard
+      ? Array.from(guideCard.querySelectorAll<HTMLElement>(".hero-guide-list li"))
+      : [];
+    const finalGuideItem = guideItems.at(-1);
+    if (!heroPanel || !guideCard || !finalGuideItem) return null;
+
+    const heroRect = heroPanel.getBoundingClientRect();
+    const guideCardRect = guideCard.getBoundingClientRect();
+    const finalGuideItemRect = finalGuideItem.getBoundingClientRect();
+    return {
+      heroBottom: heroRect.bottom,
+      guideCardBottom: guideCardRect.bottom,
+      finalGuideItemBottom: finalGuideItemRect.bottom,
+      guideItemCount: guideItems.length
+    };
+  });
+
+  assert.ok(geometry, "default window must render the hero guide card and its final list item");
+  assert.equal(geometry.guideItemCount, 5, "default window must render all five guide lines");
+  assert.deepEqual(
+    {
+      guideCardContained: geometry.guideCardBottom <= geometry.heroBottom + 1,
+      finalGuideItemContained: geometry.finalGuideItemBottom <= geometry.heroBottom + 1
+    },
+    {
+      guideCardContained: true,
+      finalGuideItemContained: true
+    },
+    "default window guide card and final guide line must stay inside hero panel; cardBottom="
+      + geometry.guideCardBottom
+      + ", itemBottom="
+      + geometry.finalGuideItemBottom
+      + ", heroBottom="
+      + geometry.heroBottom
+  );
+}
+
 async function captureAndAssert(
   running: RunningApp,
   screen: string,
@@ -1255,7 +1298,8 @@ async function runGame(
   height: number,
   nasServer: LocalNasServer,
   temporaryRoot: string,
-  options: ApprovedUiRunOptions
+  options: ApprovedUiRunOptions,
+  mainScreenOnly = false
 ): Promise<void> {
   const scenarioRoot = path.join(temporaryRoot, `${variant}_${width}x${height}`);
   ensureDir(scenarioRoot);
@@ -1299,6 +1343,10 @@ async function runGame(
       ".hero-panel, .entry-panel",
       0.75
     );
+    if (width === defaultWindowSize.width && height === defaultWindowSize.height) {
+      await assertDefaultWindowHeroGuideContainment(page);
+    }
+    if (mainScreenOnly) return;
     await fillEntryForm(page, variant, width);
     await assertGeumcheonFocusStyles(page);
     await assertGeumcheonStartLayout(page, width);
@@ -1790,7 +1838,18 @@ async function main(): Promise<void> {
     if (options.mode === "interactive") {
       await runInteractiveReview(options, nasServer, temporaryRoot);
     } else {
-      for (const size of sizes) {
+      if (!leaderboardsOnly) {
+        await runGame(
+          "ai",
+          defaultWindowSize.width,
+          defaultWindowSize.height,
+          nasServer,
+          temporaryRoot,
+          options,
+          true
+        );
+      }
+      for (const size of defaultWindowOnly ? [] : sizes) {
         if (!leaderboardsOnly) {
           await runGame("ai", size.width, size.height, nasServer, temporaryRoot, options);
         }
@@ -1800,8 +1859,10 @@ async function main(): Promise<void> {
         }
         await runLeaderboard("practice-leaderboard", size.width, size.height, nasServer, temporaryRoot, options);
       }
-      assertLeaderboardResolutionParity();
-      if (!leaderboardsOnly) {
+      if (!defaultWindowOnly) {
+        assertLeaderboardResolutionParity();
+      }
+      if (!leaderboardsOnly && !defaultWindowOnly) {
         assert.deepEqual(
           rows
             .map((row) => row.screen)

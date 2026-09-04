@@ -851,10 +851,11 @@ export function aiLeaderboardParticipantKey(record: RecordRow): string {
   const canonicalKey = record.participantKey?.trim();
   if (canonicalKey) return canonicalKey;
 
+  const participantName = record.participant_name.normalize("NFC").trim().toLowerCase();
   const phone = digitsOnly(record.phone_full || `${record.phone_part1}${record.phone_part2}${record.phone_part3}`);
   const birthdate = digitsOnly(record.birthdate || `${record.birth_year}${record.birth_month}${record.birth_day}`);
   const identity = phone && birthdate
-    ? `phone-birth\u0000${phone}\u0000${birthdate}`
+    ? `name-phone-birth\u0000${participantName}\u0000${phone}\u0000${birthdate}`
     : `record-id\u0000${record.record_id}`;
   return `legacy-sha256:${sha256Hex(`${fallbackKeySalt()}\u0000${identity}`)}`;
 }

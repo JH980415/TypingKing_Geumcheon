@@ -486,6 +486,35 @@ test("Geumcheon AI fallback participant key normalizes phone and birthdate witho
   assert.doesNotMatch(compact ?? "", /01012345678|20140101/);
 });
 
+test("Geumcheon AI best mode keeps distinct names sharing the same phone and birthdate", () => {
+  const entries = [
+    entry(canonicalRecord("same-contact-kim", {
+      participantAverageCpmRaw: 500
+    }, {
+      participant_name: " 김과학 ",
+      participantKey: undefined,
+      phone_full: "010-1234-5678",
+      birthdate: "2014-01-01"
+    })),
+    entry(canonicalRecord("same-contact-lee", {
+      participantAverageCpmRaw: 400
+    }, {
+      participant_name: "이과학",
+      participantKey: undefined,
+      phone_full: "010-1234-5678",
+      birthdate: "2014-01-01"
+    }))
+  ];
+
+  const best = selectGeumcheonAiLeaderboardEntriesForMode(entries, {
+    isGeumcheonOfficialBoard: true,
+    isGeumcheonPracticeBoard: false,
+    viewMode: "best"
+  });
+
+  assert.deepEqual(best.map(({ record }) => record.record_id), ["same-contact-kim", "same-contact-lee"]);
+});
+
 test("Geumcheon AI best mode separates namesakes by birthdate and keeps only the best retry", () => {
   const entries = [
     entry(canonicalRecord("same-person-slower", {
