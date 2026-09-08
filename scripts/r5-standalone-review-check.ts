@@ -5,11 +5,14 @@ import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { chromium, type Browser, type Page } from "playwright-core";
 import { REVIEW_LOCAL_ADMIN_PASSWORD } from "../electron/adminAccessSession";
+import { buildRecordRow } from "../shared/csv/fileStore";
 import { parseStageTextCatalog } from "../shared/events/stageTextCatalog";
-import type { SaveRecordInput } from "../shared/types";
+import type { RecordRow, SaveRecordInput } from "../shared/types";
+import { canonicalAiContradictionCodes, isCanonicalAiAttemptV1 } from "../shared/utils/geumcheonAiAttempt";
+import { countConvertedTypingUnits } from "../shared/utils/typing";
 
 type Variant = "ai" | "ai-leaderboard" | "practice" | "practice-leaderboard";
 type Role = "player" | "leaderboard";
@@ -27,7 +30,7 @@ type RuntimeObservation = {
   credentialPopupCount?: number;
   commandWindowCount?: number;
   cleanExit?: boolean;
-  residualProcessCount?: number;
+  residualProcessCount?: number | null;
   unexpectedFiles?: string[];
 };
 
@@ -56,7 +59,7 @@ export function assessConcurrentEvidence(input: {
   officialRefreshes?: number;
   practiceRefreshes?: number;
   crossLeakCount?: number;
-  residualProcessCount?: number;
+  residualProcessCount?: number | null;
 }): string[] {
   const violations: string[] = [];
   const expected = ["ai", "ai-leaderboard", "practice", "practice-leaderboard"];
@@ -67,6 +70,7 @@ export function assessConcurrentEvidence(input: {
   if (!input.practiceRefreshes) violations.push("PRACTICE_SHARE_NOT_OBSERVED");
   else if (input.practiceRefreshes > 2) violations.push("PRACTICE_SHARE_EXCEEDED_TWO_REFRESHES");
   if ((input.crossLeakCount ?? 0) > 0) violations.push(`CROSS_SESSION_LEAK:${input.crossLeakCount}`);
+  if (input.residualProcessCount === null) violations.push("PROCESS_OBSERVATION_UNKNOWN");
   if ((input.residualProcessCount ?? 0) > 0) violations.push(`RESIDUAL_PROCESS:${input.residualProcessCount}`);
   return violations;
 }
@@ -94,6 +98,72 @@ export function assessResetEvidence(input: {
   return violations;
 }
 
+type LeaderboardTableObservation = {
+  bodyCount: number;
+  rowCount: number;
+  adminModalCount: number;
+  modalBackdropCount: number;
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  bodyRect: RectObservation | null;
+  lastRowRect: RectObservation | null;
+  lastRowVisible: boolean;
+};
+
+export function assessLeaderboardTableCapture(expectedRowCount: number, observation: Partial<LeaderboardTableObservation> | null | undefined): string[] {
+  const violations: string[] = [];
+  if (observation?.bodyCount !== 1) violations.push("LEADERBOARD_AI_BODY_NOT_UNIQUE");
+  if (!Number.isInteger(expectedRowCount) || expectedRowCount < 0 || observation?.rowCount !== expectedRowCount) violations.push("LEADERBOARD_CAPTURE_ROW_COUNT_MISMATCH");
+  if (observation?.adminModalCount !== 0 || observation?.modalBackdropCount !== 0) violations.push("LEADERBOARD_CAPTURE_OBSCURED_BY_MODAL");
+  return violations;
+}
+
+export function assessLeaderboardScrollEvidence(input: { before: Partial<LeaderboardTableObservation>; after: Partial<LeaderboardTableObservation> }): string[] {
+  const { before, after } = input;
+  const violations = [...assessLeaderboardTableCapture(before.rowCount ?? -1, before), ...assessLeaderboardTableCapture(before.rowCount ?? -1, after)];
+  if (before.scrollTop !== 0) violations.push("LEADERBOARD_SCROLL_DID_NOT_START_AT_TOP");
+  if (!Number.isFinite(after.scrollTop) || !(after.scrollTop! > 0)) violations.push("LEADERBOARD_SCROLL_DID_NOT_MOVE");
+  if (!Number.isFinite(after.scrollHeight) || !Number.isFinite(after.clientHeight) || !(after.clientHeight! > 0) || !(after.scrollHeight! > after.clientHeight!) || Math.abs(after.scrollHeight! - after.clientHeight! - after.scrollTop!) > 1) violations.push("LEADERBOARD_SCROLL_DID_NOT_REACH_BOTTOM");
+  if (after.lastRowVisible !== true) violations.push("LEADERBOARD_LAST_ROW_NOT_VISIBLE");
+  return violations;
+}
+
+export function assessLeaderboardResolutionComparison(input: { allRowCount: number; bestRowCount: number; all: Array<Record<string, any>>; best: Array<Record<string, any>> }): string[] {
+  const violations: string[] = [];
+  if (!(input.allRowCount > input.bestRowCount && input.bestRowCount > 0)) violations.push("LEADERBOARD_RESOLUTION_ROWS_DID_NOT_REDUCE");
+  for (const [mode, entries, expectedCount] of [["all", input.all, input.allRowCount], ["best", input.best, input.bestRowCount]] as const) {
+    if (entries.length !== 2) violations.push(`LEADERBOARD_RESOLUTION_COUNT:${mode}`);
+    for (const [width, height] of [[1280, 720], [1920, 1080]]) {
+      const matches = entries.filter((entry) => entry.requestedViewport?.width === width && entry.requestedViewport?.height === height);
+      if (matches.length !== 1) violations.push(`LEADERBOARD_RESOLUTION_MISSING_OR_DUPLICATED:${mode}:${width}x${height}`);
+      else violations.push(...assessLeaderboardTableCapture(expectedCount, matches[0].leaderboardTable));
+    }
+  }
+  return violations;
+}
+
+function readLeaderboardTableObservation(): LeaderboardTableObservation {
+  const bodies = document.querySelectorAll<HTMLElement>(".ai-ranking .ranking-body");
+  const body = bodies.item(0);
+  const rows = body?.querySelectorAll<HTMLElement>(".ranking-row");
+  const lastRow = rows?.item(rows.length - 1);
+  const bodyRect = body?.getBoundingClientRect();
+  const lastRowRect = lastRow?.getBoundingClientRect();
+  const lastRowVisible = Boolean(lastRow && lastRowRect && bodyRect
+    && lastRowRect.width > 0 && lastRowRect.height > 0
+    && lastRowRect.top >= Math.max(0, bodyRect.top) - 1 && lastRowRect.bottom <= Math.min(window.innerHeight, bodyRect.bottom) + 1
+    && lastRowRect.left >= Math.max(0, bodyRect.left) - 1 && lastRowRect.right <= Math.min(window.innerWidth, bodyRect.right) + 1
+    && document.elementFromPoint(lastRowRect.left + lastRowRect.width / 2, lastRowRect.top + lastRowRect.height / 2)?.closest(".ranking-row") === lastRow);
+  return {
+    bodyCount: bodies.length, rowCount: rows?.length ?? 0,
+    adminModalCount: document.querySelectorAll(".admin-modal").length,
+    modalBackdropCount: document.querySelectorAll(".modal-backdrop").length,
+    scrollTop: body?.scrollTop ?? 0, scrollHeight: body?.scrollHeight ?? 0, clientHeight: body?.clientHeight ?? 0,
+    bodyRect: bodyRect?.toJSON() ?? null, lastRowRect: lastRowRect?.toJSON() ?? null, lastRowVisible
+  };
+}
+
 export function assessStandaloneReviewVerdict(input: {
   concurrentViolations?: string[];
   results?: Array<{ variant?: string; verdict?: string; cleanExit?: boolean; forcedCleanup?: boolean }>;
@@ -119,6 +189,7 @@ export function reviewHarnessLaunchEvidence(): Record<string, unknown> {
     method: "PowerShell Start-Process (ShellExecute)",
     extraArguments: ["--remote-debugging-port=<ephemeral>", "--user-data-dir=<variant-isolated>"],
     environmentOverrides: ["LOCALAPPDATA", "APPDATA", "TEMP", "TMP"],
+    viewportMethod: "Playwright CDP renderer viewport emulation on actual packaged EXE",
     ordinaryNoArgumentLaunch: false,
     defaultUserDirectories: false
   };
@@ -289,6 +360,383 @@ function sha256(filePath: string): string {
   return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex").toUpperCase();
 }
 
+export function assessMaskedSearchEvidence(input: {
+  expectedCount: number;
+  expectedMaskedName: string;
+  phoneSuffix: string;
+  rawParticipantNames: string[];
+  rawPhoneNumbers: string[];
+  rows: Array<{ name: string; phone: string; text: string }>;
+}): string[] {
+  const violations: string[] = [];
+  if (!Number.isSafeInteger(input.expectedCount) || input.expectedCount < 2 || input.rows.length !== input.expectedCount) {
+    violations.push("SEARCH_ATTEMPT_COUNT_MISMATCH");
+  }
+  const expectedPhone = `010-****-${input.phoneSuffix}`;
+  const rawValues = [...input.rawParticipantNames, ...input.rawPhoneNumbers].filter(Boolean);
+  for (const [index, row] of input.rows.entries()) {
+    if (row.name !== input.expectedMaskedName || row.phone !== expectedPhone || !/^\d{4}$/.test(input.phoneSuffix)) {
+      violations.push(`SEARCH_MASKED_IDENTITY_MISMATCH:${index}`);
+    }
+    if (rawValues.some((value) => row.text.includes(value)) || /010[-\s]?\d{4}[-\s]?\d{4}/.test(row.text)) {
+      violations.push(`SEARCH_RAW_IDENTITY_EXPOSED:${index}`);
+    }
+  }
+  return violations;
+}
+
+export async function observeInitializedReviewStorageBoundary(input: {
+  variant: Variant;
+  initializedVariants: Set<Variant>;
+  snapshot: () => string[];
+  observe: () => Promise<Array<{ method: string; rejected: boolean }>>;
+  timeoutMs?: number;
+}) {
+  input.initializedVariants.add(input.variant);
+  await waitUntil(
+    "all four portable variants initialized before storage boundary",
+    () => specs.every((spec) => input.initializedVariants.has(spec.variant)),
+    input.timeoutMs ?? 90_000
+  );
+  const storageBefore = input.snapshot();
+  const observations = await input.observe();
+  const storageAfter = input.snapshot();
+  const beforeEntries = new Set(storageBefore);
+  const afterEntries = new Set(storageAfter);
+  return {
+    initializedVariants: [...input.initializedVariants].sort(),
+    observations,
+    storageBefore,
+    storageAfter,
+    storageDifference: {
+      beforeOnly: storageBefore.filter((entry) => !afterEntries.has(entry)),
+      afterOnly: storageAfter.filter((entry) => !beforeEntries.has(entry))
+    },
+    storageUnchanged: JSON.stringify(storageAfter) === JSON.stringify(storageBefore)
+  };
+}
+
+export function parseObservedCpm(text: string): number | null {
+  const match = text.match(/(\d+(?:\.\d+)?)\s*(?:CPM|타\/분)/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function optionalFiniteNumber(value: unknown): number | null {
+  if (value == null || String(value).trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function buildSyntheticAiFixtureInput(
+  row: RecordRow,
+  identity: { name: string; phone2: string; phone3: string }
+): SaveRecordInput {
+  const asResult = (value: unknown): "" | "USER_WIN" | "AI_WIN" =>
+    value === "USER_WIN" || value === "AI_WIN" ? value : "";
+  const input: SaveRecordInput = {
+    participant_name: identity.name,
+    phone_part1: "010",
+    phone_part2: identity.phone2,
+    phone_part3: identity.phone3,
+    birth_year: row.birth_year,
+    birth_month: row.birth_month,
+    birth_day: row.birth_day,
+    privacy_agreed: true,
+    privacy_agreed_at: row.privacy_agreed_at,
+    stageTexts: [row.stage1_text, row.stage2_text, row.stage3_text],
+    stageTimesMs: [row.stage1_time_ms, row.stage2_time_ms, row.stage3_time_ms]
+      .map((value) => optionalFiniteNumber(value) ?? 0) as [number, number, number],
+    game_mode: "ai_challenge",
+    final_accuracy: optionalFiniteNumber(row.final_accuracy) ?? 100,
+    ai: {
+      status: row.ai_challenge_status === "FAILED" ? "FAILED" : "SUCCESS",
+      failedStage: row.ai_failed_stage,
+      stageCpms: [row.ai_stage1_cpm, row.ai_stage2_cpm, row.ai_stage3_cpm].map(optionalFiniteNumber) as [number | null, number | null, number | null],
+      stageTimesMs: [row.ai_stage1_time_ms, row.ai_stage2_time_ms, row.ai_stage3_time_ms].map(optionalFiniteNumber) as [number | null, number | null, number | null],
+      stageResults: [row.stage1_vs_ai_result, row.stage2_vs_ai_result, row.stage3_vs_ai_result].map(asResult) as ["" | "USER_WIN" | "AI_WIN", "" | "USER_WIN" | "AI_WIN", "" | "USER_WIN" | "AI_WIN"],
+      finalResult: asResult(row.final_vs_ai_result),
+      stageDiffsMs: [row.stage1_time_diff_ms, row.stage2_time_diff_ms, row.stage3_time_diff_ms].map(optionalFiniteNumber) as [number | null, number | null, number | null],
+      finalDiffMs: optionalFiniteNumber(row.final_time_diff_ms),
+      display: {
+        participantResultTimeMs: optionalFiniteNumber(row.participant_result_time_ms),
+        aiResultTimeMs: optionalFiniteNumber(row.ai_result_time_ms),
+        participantAvgCpm: optionalFiniteNumber(row.participant_avg_cpm),
+        aiAvgCpm: optionalFiniteNumber(row.ai_avg_cpm),
+        resultLabel: row.challenge_result_label,
+        participantProgressPercent: optionalFiniteNumber(row.participant_progress_percent),
+        aiProgressPercent: optionalFiniteNumber(row.ai_progress_percent),
+        duelTimeMs: optionalFiniteNumber(row.duel_time_ms),
+        resultStage: optionalFiniteNumber(row.result_stage)
+      }
+    }
+  };
+  buildRecordRow(input);
+  return input;
+}
+
+export function assessCapturedCanonicalInput(input: Partial<SaveRecordInput> | null | undefined): string[] {
+  const violations: string[] = [];
+  const attempt = input?.canonicalAttempt;
+  if (!isCanonicalAiAttemptV1(attempt)) return ["CANONICAL_CAPTURE_MISSING"];
+  if (attempt.result !== "PARTICIPANT_WIN") violations.push("CANONICAL_CAPTURE_RESULT");
+  if (attempt.contradictionCodes.length > 0 || canonicalAiContradictionCodes(attempt).length > 0) violations.push("CANONICAL_CAPTURE_CONTRADICTION");
+  if (attempt.stageReached !== 3 || attempt.stages.length !== 3) violations.push("CANONICAL_CAPTURE_STAGE");
+  const texts = input?.stageTexts ?? [];
+  const selections = input?.stageTextSelections ?? [];
+  const times = input?.stageTimesMs ?? [];
+  if (texts.length !== 3 || selections.length !== 3 || times.length !== 3 || attempt.stages.some((stage, index) =>
+    !stage.entered
+    || stage.stageNumber !== index + 1
+    || typeof texts[index] !== "string" || !texts[index].trim()
+    || stage.assignedInputUnits !== countConvertedTypingUnits(texts[index])
+    || !Number.isFinite(times[index]) || times[index] <= 0
+    || selections[index]?.text !== texts[index]
+    || stage.participantActiveTypingTimeMs !== times[index]
+  )) violations.push("CANONICAL_CAPTURE_ALIGNMENT");
+  return violations;
+}
+
+export function assessCapturedStoredRow(input: SaveRecordInput, row: RecordRow | undefined): string[] {
+  const violations = assessCapturedCanonicalInput(input);
+  if (!row?.record_id) return [...violations, "CAPTURED_STORED_ROW_MISSING"];
+  if (input.game_mode !== "ai_challenge" || input.ai?.finalResult !== "USER_WIN" || row.final_vs_ai_result !== "USER_WIN") {
+    violations.push("CAPTURED_STORED_WIN_MISMATCH");
+  }
+  const expected = buildRecordRow(input);
+  for (const key of Object.keys(expected) as Array<keyof typeof expected>) {
+    // These timestamps are assigned during persistence, not in SaveRecordInput.
+    if (key === "created_at" || key === "completed_at") continue;
+    if (JSON.stringify(row[key]) !== JSON.stringify(expected[key])) violations.push(`CAPTURED_STORED_ROW_MISMATCH:${key}`);
+  }
+  return violations;
+}
+
+export function copyCapturedSyntheticInput(
+  captured: SaveRecordInput,
+  identity?: { name: string; phone2: string; phone3: string }
+): SaveRecordInput {
+  assert.deepEqual(assessCapturedCanonicalInput(captured), [], "Synthetic API seed requires validated actual renderer canonical evidence");
+  assert.equal(captured.phone_part1, "010");
+  assert.equal(captured.game_mode, "ai_challenge");
+  const input = structuredClone(captured);
+  if (identity) {
+    input.participant_name = identity.name;
+    input.phone_part2 = identity.phone2;
+    input.phone_part3 = identity.phone3;
+  }
+  buildRecordRow(input);
+  return input;
+}
+
+export function assessSyntheticSeedEvidence(input: {
+  beforeIds: string[]; afterIds: string[]; returnedIds: Array<string | undefined>; repeatBefore: number; repeatAfter: number;
+}): string[] {
+  const violations: string[] = [];
+  const before = new Set(input.beforeIds);
+  const returned = new Set(input.returnedIds);
+  const after = new Set(input.afterIds);
+  if (input.returnedIds.length !== 10 || returned.size !== 10 || input.returnedIds.some((id) =>
+    typeof id !== "string" || !/^review-r5-record-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id) || before.has(id)
+  )) violations.push("SYNTHETIC_SEED_IDS_NOT_TEN_FRESH");
+  if (after.size !== input.afterIds.length || input.afterIds.length !== input.beforeIds.length + 10
+    || input.beforeIds.some((id) => !after.has(id)) || input.returnedIds.some((id) => !after.has(id!))
+    || input.afterIds.some((id) => !before.has(id) && !returned.has(id))) violations.push("SYNTHETIC_SEED_PERSISTED_DELTA");
+  if (input.repeatAfter !== input.repeatBefore + 1) violations.push("SYNTHETIC_REPEAT_INCREMENT");
+  return violations;
+}
+
+type CapturedSaveInput = {
+  input: SaveRecordInput;
+  observedAt: string;
+  sourceUrl: string;
+  sourceSha256: string;
+  argumentName: string;
+  breakpointLocation: { scriptId: string; lineNumber: number; columnNumber?: number };
+  inputSha256: string;
+  resumedImmediately: boolean;
+  pauseDurationMs: number;
+};
+
+export async function captureRendererSaveInputs(page: Page): Promise<{
+  inputs: CapturedSaveInput[]; errors: string[]; stop: () => Promise<void>;
+}> {
+  const cdp = await page.context().newCDPSession(page);
+  const inputs: CapturedSaveInput[] = [];
+  const errors: string[] = [];
+  const scripts = new Map<string, string>();
+  const breakpoints = new Map<string, Omit<CapturedSaveInput, "input" | "observedAt" | "inputSha256" | "resumedImmediately" | "pauseDurationMs">>();
+  const onScript = (event: { scriptId: string; url: string }) => {
+    if (/dist-renderer\/assets\/index-[^/]+\.js$/.test(event.url)) scripts.set(event.scriptId, event.url);
+  };
+  let pending = Promise.resolve();
+  let stopPromise: Promise<void> | undefined;
+  const onPaused = (event: { hitBreakpoints?: string[]; callFrames: Array<{ callFrameId: string; location: { scriptId: string } }> }) => {
+    pending = (async () => {
+      const startedAt = Date.now();
+      let captured: CapturedSaveInput | undefined;
+      try {
+        const source = event.hitBreakpoints?.map((id) => breakpoints.get(id)).find((entry) => entry !== undefined);
+        const frame = event.callFrames?.[0];
+        assert.ok(source && frame?.location?.scriptId === source.breakpointLocation.scriptId, "Unexpected renderer debugger pause");
+        const evaluated = await cdp.send("Debugger.evaluateOnCallFrame", {
+          callFrameId: frame.callFrameId,
+          expression: `JSON.stringify(${source.argumentName})`,
+          returnByValue: true,
+          throwOnSideEffect: true
+        });
+        assert.equal(evaluated.exceptionDetails, undefined, "Renderer save input read raised an exception");
+        assert.equal(typeof evaluated.result.value, "string", "Renderer save input was not serializable");
+        const input = JSON.parse(evaluated.result.value) as SaveRecordInput;
+        assert.ok(input && typeof input === "object", "Renderer save input missing");
+        captured = {
+          ...source, input, observedAt: new Date().toISOString(),
+          inputSha256: crypto.createHash("sha256").update(evaluated.result.value).digest("hex").toUpperCase(),
+          resumedImmediately: false, pauseDurationMs: 0
+        };
+        inputs.push(captured);
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      } finally {
+        try {
+          await cdp.send("Debugger.resume");
+          if (captured) captured.resumedImmediately = true;
+        } catch (error) {
+          errors.push(`DEBUGGER_RESUME_FAILED:${String(error)}`);
+        }
+        if (captured) captured.pauseDurationMs = Date.now() - startedAt;
+      }
+    })();
+  };
+  const stop = (): Promise<void> => stopPromise ??= (async () => {
+    await pending;
+    try {
+      for (const breakpointId of breakpoints.keys()) {
+        try { await cdp.send("Debugger.removeBreakpoint", { breakpointId }); }
+        catch (error) { errors.push(`DEBUGGER_REMOVE_FAILED:${String(error)}`); }
+      }
+    } finally {
+      cdp.off("Debugger.paused", onPaused);
+      cdp.off("Debugger.scriptParsed", onScript);
+      try { await cdp.detach(); }
+      catch (error) { errors.push(`DEBUGGER_DETACH_FAILED:${String(error)}`); }
+    }
+  })();
+  cdp.on("Debugger.scriptParsed", onScript);
+  cdp.on("Debugger.paused", onPaused);
+  try {
+    await cdp.send("Debugger.enable");
+    await waitUntil("packaged renderer source for actual save input capture", () => scripts.size > 0, 5_000);
+    for (const [scriptId, sourceUrl] of scripts) {
+      const { scriptSource } = await cdp.send("Debugger.getScriptSource", { scriptId });
+      const sourceSha256 = crypto.createHash("sha256").update(scriptSource).digest("hex").toUpperCase();
+      for (const match of scriptSource.matchAll(/window\.typingKing\.saveRecord\(\s*([A-Za-z_$][\w$]*)\s*\)/g)) {
+        const lines = scriptSource.slice(0, match.index).split("\n");
+        const { breakpointId, actualLocation } = await cdp.send("Debugger.setBreakpoint", {
+          location: { scriptId, lineNumber: lines.length - 1, columnNumber: lines.at(-1)!.length }
+        });
+        breakpoints.set(breakpointId, { sourceUrl, sourceSha256, argumentName: match[1], breakpointLocation: actualLocation });
+      }
+    }
+    assert.ok(breakpoints.size > 0, "Packaged renderer saveRecord source breakpoint missing");
+    return { inputs, errors, stop };
+  } catch (error) {
+    await stop();
+    throw error;
+  }
+}
+
+const visibleAssetHashCache = new Map<string, string>();
+
+type MappedImageExpectation = { selector: string; fileName: string };
+type ImageReadinessObservation = {
+  observedAt: string;
+  innerWidth: number;
+  innerHeight: number;
+  images: Array<{ src: string; currentSrc: string; alt: string; complete: boolean; naturalWidth: number; naturalHeight: number; bounds: RectObservation }>;
+};
+
+export function expectedMappedImageForScreen(screen: string): MappedImageExpectation | null {
+  const stage = /^stage-([123])$/.exec(screen)?.[1];
+  if (stage) return { selector: ".challenge-modal .challenge-modal-art", fileName: `금나래패배_스테이지${stage}.png` };
+  if (screen === "result") return { selector: ".challenge-result-panel .challenge-result-art", fileName: "금나래패배_스테이지3.png" };
+  if (screen === "ai-win-stage-1") return { selector: ".challenge-modal .challenge-modal-art", fileName: "금나래 승리.png" };
+  return null;
+}
+
+export function assessMappedImageReadiness(expected: MappedImageExpectation, observation: ImageReadinessObservation, viewport: { width: number; height: number }): string[] {
+  const violations: string[] = [];
+  if (observation.innerWidth !== viewport.width || observation.innerHeight !== viewport.height) violations.push("IMAGE_VIEWPORT_NOT_READY");
+  if (observation.images.length !== 1) return [...violations, "EXPECTED_IMAGE_MISSING_OR_DUPLICATED"];
+  const image = observation.images[0];
+  const fileName = (src: string) => {
+    try {
+      const url = new URL(src);
+      return url.protocol === "file:" ? path.basename(fileURLToPath(url)) : null;
+    } catch { return null; }
+  };
+  if (fileName(image.src) !== expected.fileName) violations.push("EXPECTED_IMAGE_SRC_MISMATCH");
+  if (fileName(image.currentSrc) !== expected.fileName) violations.push("EXPECTED_IMAGE_CURRENT_SRC_MISMATCH");
+  if (image.complete !== true || !Number.isFinite(image.naturalWidth) || !Number.isFinite(image.naturalHeight) || image.naturalWidth <= 0 || image.naturalHeight <= 0) violations.push("EXPECTED_IMAGE_NOT_LOADED");
+  if (!Number.isFinite(image.bounds?.width) || !Number.isFinite(image.bounds?.height) || image.bounds.width <= 0 || image.bounds.height <= 0) violations.push("EXPECTED_IMAGE_HAS_NO_RENDERED_BOX");
+  return violations;
+}
+
+export function observeMappedImageReadiness(selector: string): ImageReadinessObservation {
+  return {
+    observedAt: new Date().toISOString(), innerWidth: window.innerWidth, innerHeight: window.innerHeight,
+    images: [...document.querySelectorAll<HTMLImageElement>(selector)].map((image) => ({
+      src: image.src ?? "", currentSrc: image.currentSrc ?? "", alt: image.alt ?? "", complete: image.complete === true,
+      naturalWidth: image.naturalWidth ?? 0, naturalHeight: image.naturalHeight ?? 0, bounds: image.getBoundingClientRect().toJSON()
+    }))
+  };
+}
+
+export function hashVisibleMappedImages(
+  images: Array<{ src: string; currentSrc?: string; alt: string; naturalWidth: number; naturalHeight: number }>,
+  approvedHashes: Record<string, string>
+): { images: Array<Record<string, unknown>>; violations: string[] } {
+  const violations: string[] = [];
+  const enriched = images.map((image) => {
+    let filePath: string | null = null;
+    let fileName: string | null = null;
+    let hash: string | null = null;
+    let readError: string | null = null;
+    try {
+      const url = new URL(image.currentSrc || image.src);
+      if (url.protocol !== "file:") throw new Error(`unsupported protocol ${url.protocol}`);
+      url.search = "";
+      url.hash = "";
+      filePath = fileURLToPath(url);
+      fileName = path.basename(filePath);
+      hash = visibleAssetHashCache.get(filePath) ?? sha256(filePath);
+      visibleAssetHashCache.set(filePath, hash);
+    } catch (error) {
+      readError = error instanceof Error ? error.message : String(error);
+    }
+    const expectedSha256 = fileName ? approvedHashes[fileName] ?? null : null;
+    const mappedApprovedAsset = expectedSha256 != null;
+    const approvedBytesMatch = mappedApprovedAsset && hash === expectedSha256;
+    if (mappedApprovedAsset && readError) violations.push(`VISIBLE_ASSET_READ_FAILED:${fileName}`);
+    else if (mappedApprovedAsset && !approvedBytesMatch) violations.push(`VISIBLE_ASSET_HASH_MISMATCH:${fileName}`);
+    return { ...image, fileName, sha256: hash, expectedSha256, mappedApprovedAsset, approvedBytesMatch, readStatus: readError ? "VISIBLE_ASSET_READ_FAILED" : "PASS" };
+  });
+  return { images: enriched, violations };
+}
+
+function approvedMappedAssetHashes(): Record<string, string> {
+  const assetRoot = path.resolve("events", "geumcheon-2026", "assets");
+  return Object.fromEntries([
+    "금나래 승리.png",
+    "금나래패배_스테이지1.png",
+    "금나래패배_스테이지2.png",
+    "금나래패배_스테이지3.png"
+  ].map((fileName) => [fileName, sha256(path.join(assetRoot, fileName))]));
+}
+
+const APPROVED_MAPPED_ASSET_HASHES = approvedMappedAssetHashes();
+
 function snapshotDirectory(root: string): string[] {
   if (!fs.existsSync(root)) return [];
   const snapshot: string[] = [];
@@ -435,6 +883,7 @@ export function assessRuntimeObservation(input: RuntimeObservation): string[] {
   if ((input.credentialPopupCount ?? 0) > 0) violations.push("CREDENTIAL_POPUP");
   if ((input.commandWindowCount ?? 0) > 0) violations.push("COMMAND_WINDOW");
   if (input.cleanExit === false) violations.push("UNCLEAN_EXIT");
+  if (input.residualProcessCount === null) violations.push("PROCESS_OBSERVATION_UNKNOWN");
   if ((input.residualProcessCount ?? 0) > 0) violations.push("RESIDUAL_PROCESS");
   if ((input.unexpectedFiles ?? []).length) violations.push("UNEXPECTED_RUNTIME_FILE");
   return violations;
@@ -485,18 +934,36 @@ function sanitizedEnvironment(overrides: Record<string, string>): NodeJS.Process
   return { ...env, ...overrides };
 }
 
-async function captureResolutionEvidence(page: Page, variant: Variant, screen: string, outputRoot: string): Promise<Array<Record<string, unknown>>> {
+export async function captureResolutionEvidence(page: Page, variant: Variant, screen: string, outputRoot: string): Promise<Array<Record<string, unknown>>> {
   const evidence: Array<Record<string, unknown>> = [];
   for (const [width, height] of [[1280, 720], [1920, 1080]] as const) {
-    await page.evaluate(({ width, height }) => {
-      window.resizeTo(width + window.outerWidth - window.innerWidth, height + window.outerHeight - window.innerHeight);
-    }, { width, height });
+    const expectedImage = expectedMappedImageForScreen(screen);
+    const imageObservationPath = expectedImage ? path.join(outputRoot, "image-observations", `${variant}-${screen}-${width}x${height}.json`) : null;
+    const imageObservation: Record<string, any> | null = expectedImage ? {
+      schemaVersion: 1, variant, screen, requestedViewport: { width, height }, expectedImage,
+      readyTimeoutMs: 2_000, status: "PENDING", readinessSamples: [], beforeCapture: null, afterCapture: null,
+      geometry: null, byteObservations: null, screenshot: null, error: null
+    } : null;
+    try {
+    await page.setViewportSize({ width, height });
     await waitUntil(`${variant} ${screen} viewport ${width}x${height}`, () => page.evaluate(({ width, height }) => window.innerWidth === width && window.innerHeight === height, { width, height }), 10_000);
+    if (expectedImage && imageObservation) {
+      await waitUntil(`${variant} ${screen} exact image ready at ${width}x${height}`, async () => {
+        const observation = await page.evaluate(observeMappedImageReadiness, expectedImage.selector);
+        const violations = assessMappedImageReadiness(expectedImage, observation, { width, height });
+        imageObservation.readinessSamples.push({ ...observation, violations });
+        assert.deepEqual(violations, [], `Expected ${expectedImage.fileName}: ${JSON.stringify(observation)}`);
+        return true;
+      }, imageObservation.readyTimeoutMs);
+    }
     const geometry = await page.evaluate(() => {
-      const rect = (selector: string) => {
-        const bounds = document.querySelector(selector)?.getBoundingClientRect();
-        return bounds ? { left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom, width: bounds.width, height: bounds.height } : null;
-      };
+      const titleBox = document.querySelector(".left-title-group")?.getBoundingClientRect().toJSON() ?? null;
+      const titleArtwork = document.querySelector(".geumcheon-main-title-image")?.getBoundingClientRect().toJSON() ?? null;
+      const secondGuide = document.querySelector(".hero-copy")?.getBoundingClientRect().toJSON() ?? null;
+      const heroPanel = document.querySelector(".hero-panel")?.getBoundingClientRect().toJSON() ?? null;
+      const heroGuideCard = document.querySelector(".hero-guide-card")?.getBoundingClientRect().toJSON() ?? null;
+      const heroGuideLines = document.querySelectorAll(".hero-guide-list > li");
+      const fifthGuideLine = heroGuideLines.item(4)?.getBoundingClientRect().toJSON() ?? null;
       const slogan = document.querySelector(".entry-event-copy span");
       const sloganRect = slogan?.getBoundingClientRect();
       const app = document.querySelector<HTMLElement>(".leaderboard-app");
@@ -507,23 +974,29 @@ async function captureResolutionEvidence(page: Page, variant: Variant, screen: s
       const boardRect = leaderboardBoard?.getBoundingClientRect();
       const boardTitleRect = leaderboardTitle?.getBoundingClientRect();
       const boardTitleContainerRect = leaderboardTitleContainer?.getBoundingClientRect();
+      const visibleMappedImages: Array<{ src: string; currentSrc: string; alt: string; complete: boolean; naturalWidth: number; naturalHeight: number; bounds: any }> = [];
+      for (const element of document.querySelectorAll(".ai-boss-typing, .challenge-modal-art, .challenge-result-art")) {
+        const image = element as HTMLImageElement;
+        const bounds = image.getBoundingClientRect();
+        if (bounds.width > 0 && bounds.height > 0) {
+          visibleMappedImages.push({ src: image.src, currentSrc: image.currentSrc, alt: image.alt, complete: image.complete, naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight, bounds: bounds.toJSON() });
+        }
+      }
       return {
         innerWidth: window.innerWidth, innerHeight: window.innerHeight,
         outerWidth: window.outerWidth, outerHeight: window.outerHeight,
-        titleBox: rect(".left-title-group"), titleArtwork: rect(".geumcheon-main-title-image"), secondGuide: rect(".hero-copy"),
+        titleBox, titleArtwork, secondGuide, heroPanel, heroGuideCard, fifthGuideLine, guideLineCount: heroGuideLines.length,
         slogan: sloganRect ? { left: sloganRect.left, top: sloganRect.top, right: sloganRect.right, bottom: sloganRect.bottom, width: sloganRect.width, height: sloganRect.height } : null,
         sloganCenterVisible: Boolean(slogan && sloganRect && document.elementFromPoint(sloganRect.left + sloganRect.width / 2, sloganRect.top + sloganRect.height / 2)?.closest(".entry-event-copy")),
-        visibleMappedImages: Array.from(document.querySelectorAll<HTMLImageElement>(".ai-boss-typing, .challenge-modal-art, .challenge-result-art"))
-          .filter((image) => image.getBoundingClientRect().width > 0 && image.getBoundingClientRect().height > 0)
-          .map((image) => ({ src: image.src, alt: image.alt, naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight })),
-        leaderboard: app && boardRect && boardTitleRect && boardTitleContainerRect ? {
+        visibleMappedImages,
+        leaderboard: app && leaderboardTitle && boardRect && boardTitleRect && boardTitleContainerRect ? {
           backgroundImage: appStyle?.backgroundImage ?? "",
           backgroundPosition: appStyle?.backgroundPosition ?? "",
           backgroundSize: appStyle?.backgroundSize ?? "",
           backgroundRepeat: appStyle?.backgroundRepeat ?? "",
-          board: rect(".ranking-table.ai-ranking"),
-          titleContainer: rect(".ranking-table.ai-ranking .leaderboard-mode-title"),
-          title: rect(".ranking-table.ai-ranking .leaderboard-ai-title-img"),
+          board: boardRect.toJSON(),
+          titleContainer: boardTitleContainerRect.toJSON(),
+          title: boardTitleRect.toJSON(),
           titleSrc: leaderboardTitle.currentSrc || leaderboardTitle.src,
           titleNaturalWidth: leaderboardTitle.naturalWidth,
           titleNaturalHeight: leaderboardTitle.naturalHeight,
@@ -535,7 +1008,18 @@ async function captureResolutionEvidence(page: Page, variant: Variant, screen: s
       };
     });
     const screenshot = path.join(outputRoot, "screenshots", `${variant}-${screen}-${width}x${height}.png`);
+    const leaderboardTable = screen.startsWith("leaderboard-") ? await page.evaluate(readLeaderboardTableObservation) : null;
+    if (expectedImage && imageObservation) {
+      imageObservation.geometry = geometry;
+      imageObservation.beforeCapture = await page.evaluate(observeMappedImageReadiness, expectedImage.selector);
+      assert.deepEqual(assessMappedImageReadiness(expectedImage, imageObservation.beforeCapture, { width, height }), [], `${variant} ${screen} image changed before capture`);
+    }
     await page.screenshot({ path: screenshot });
+    if (expectedImage && imageObservation) {
+      imageObservation.screenshot = screenshot;
+      imageObservation.afterCapture = await page.evaluate(observeMappedImageReadiness, expectedImage.selector);
+      assert.deepEqual(assessMappedImageReadiness(expectedImage, imageObservation.afterCapture, { width, height }), [], `${variant} ${screen} image changed during capture`);
+    }
     assert.equal(geometry.innerWidth, width);
     assert.equal(geometry.innerHeight, height);
     const group = geometry.titleBox;
@@ -554,18 +1038,48 @@ async function captureResolutionEvidence(page: Page, variant: Variant, screen: s
     const alignmentStatus = alignment
       ? (alignment.titleContained && alignment.secondGuideContained && alignment.titleCenterOffsetPx <= centerTolerancePx && alignment.secondGuideCenterOffsetPx <= centerTolerancePx ? "PASS" : "PARTIAL")
       : "NOT_APPLICABLE";
-    evidence.push({ requestedViewport: { width, height }, resizeMethod: "window.resizeTo with measured outer-inner chrome compensation", ...geometry, alignment, alignmentStatus, screenshot });
+    const raw = { requestedViewport: { width, height }, viewportMethod: "Playwright CDP renderer viewport emulation on actual packaged EXE", nativeWindowOuter: { width: geometry.outerWidth, height: geometry.outerHeight }, ...geometry, leaderboardTable, alignment, alignmentStatus, screenshot, imageObservationPath };
+    const mappedImages = hashVisibleMappedImages(raw.visibleMappedImages, APPROVED_MAPPED_ASSET_HASHES);
+    if (imageObservation) imageObservation.byteObservations = mappedImages;
+    assert.deepEqual(mappedImages.violations, [], `${variant} ${screen} visible mapped asset bytes mismatch`);
+    if (/^(?:stage-[123]|result|ai-win-stage-1)$/.test(screen)) {
+      assert.ok(mappedImages.images.some((image) => image.mappedApprovedAsset === true && image.approvedBytesMatch === true), `${variant} ${screen} has no byte-verified approved mapped image`);
+    }
+    if (expectedImage) {
+      assert.ok(mappedImages.images.some((image) => image.fileName === expectedImage.fileName && image.approvedBytesMatch === true), `${variant} ${screen} expected byte-verified image ${expectedImage.fileName} missing`);
+    }
+    if (screen === "main") {
+      const { width, height } = raw.requestedViewport;
+      assert.equal(raw.guideLineCount, 5, `${variant} ${width}x${height} guide count`);
+      assert.equal(containsRect(raw.heroPanel, raw.heroGuideCard), true, `${variant} ${width}x${height} guide card clipped`);
+      assert.equal(containsRect(raw.heroGuideCard, raw.fifthGuideLine), true, `${variant} ${width}x${height} fifth guide clipped by guide card`);
+      assert.equal(containsRect(raw.heroPanel, raw.fifthGuideLine), true, `${variant} ${width}x${height} fifth guide clipped by hero panel`);
+    }
+    evidence.push({ ...raw, visibleMappedImages: mappedImages.images });
+    if (imageObservation) imageObservation.status = "PASS";
+    } catch (error) {
+      if (imageObservation) {
+        imageObservation.status = "FAIL";
+        imageObservation.error = error instanceof Error ? error.stack ?? error.message : String(error);
+      }
+      throw error;
+    } finally {
+      if (imageObservation && imageObservationPath) {
+        fs.mkdirSync(path.dirname(imageObservationPath), { recursive: true });
+        fs.writeFileSync(imageObservationPath, `${JSON.stringify(imageObservation, null, 2)}\n`);
+      }
+    }
   }
   return evidence;
 }
 
 async function openAdminAndValidate(page: Page, variant: Variant, outputRoot: string): Promise<string> {
-  await page.getByRole("button", { name: "관리자", exact: true }).click();
+  await page.getByRole("button", { name: "관리자 모드", exact: true }).click();
   await page.locator(".admin-modal").waitFor({ state: "visible" });
-  const inputs = page.locator(".admin-login-grid input");
+  const inputs = page.locator(".admin-modal input");
   await inputs.nth(0).fill("synthetic-review-admin");
   await inputs.nth(1).fill(REVIEW_LOCAL_ADMIN_PASSWORD);
-  await page.getByRole("button", { name: "진입", exact: true }).click();
+  await page.getByRole("button", { name: "비밀번호 확인", exact: true }).click();
   await page.locator(".admin-modal.wide").waitFor({ state: "visible" });
   await page.getByRole("button", { name: "로컬 저장소 검증" }).click();
   const tuple = page.locator(".geumcheon-nas-status-panel .notice-text");
@@ -577,6 +1091,7 @@ async function openAdminAndValidate(page: Page, variant: Variant, outputRoot: st
 }
 
 function launchViaShellExecute(exePath: string, cwd: string, port: number, userDataDir: string, env: NodeJS.ProcessEnv): number {
+  const launchedAfterMs = Date.now() - 2_000;
   const script = [
     "$ErrorActionPreference='Stop'",
     "$p=Start-Process -FilePath $env:TK_R5_EXE -WorkingDirectory $env:TK_R5_CWD -ArgumentList @('--remote-debugging-port=' + $env:TK_R5_PORT, '--user-data-dir=' + $env:TK_R5_USER_DATA) -PassThru",
@@ -586,22 +1101,129 @@ function launchViaShellExecute(exePath: string, cwd: string, port: number, userD
     encoding: "utf8", windowsHide: true, env: { ...env, TK_R5_EXE: exePath, TK_R5_CWD: cwd, TK_R5_PORT: String(port), TK_R5_USER_DATA: userDataDir }
   });
   if (result.status !== 0 || !/^\d+$/.test(result.stdout.trim())) throw new Error(`SHELLEXECUTE_FAILED:${result.stderr.trim()}`);
-  return Number(result.stdout.trim());
+  const pid = Number(result.stdout.trim());
+  processRootExpectations.set(pid, { executablePath: path.resolve(exePath), notBeforeMs: launchedAfterMs });
+  return pid;
 }
 
-type ProcessInfo = { ProcessId: number; ParentProcessId: number; Name: string; CommandLine?: string; MainWindowTitle?: string };
-function processTree(rootPid: number): ProcessInfo[] {
-  const script = "$p=@(Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine);$ids=[Collections.Generic.HashSet[int]]::new();[void]$ids.Add([int]$env:TK_R5_PID);do{$n=0;foreach($x in $p){if($ids.Contains([int]$x.ParentProcessId)-and $ids.Add([int]$x.ProcessId)){$n++}}}while($n);$p|?{$ids.Contains([int]$_.ProcessId)}|%{$q=Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue;[pscustomobject]@{ProcessId=$_.ProcessId;ParentProcessId=$_.ParentProcessId;Name=$_.Name;CommandLine=$_.CommandLine;MainWindowTitle=$q.MainWindowTitle}}|ConvertTo-Json -Compress";
-  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], { encoding: "utf8", windowsHide: true, env: { ...process.env, TK_R5_PID: String(rootPid) } });
-  if (result.status !== 0 || !result.stdout.trim()) return [];
-  const value = JSON.parse(result.stdout);
-  return (Array.isArray(value) ? value : [value]) as ProcessInfo[];
+type ProcessInfo = { ProcessId: number; ParentProcessId: number; Name: string; MainWindowTitle: string; ExecutablePath: string; CreatedAtUtc: string };
+type ProcessRootExpectation = { executablePath: string; notBeforeMs: number };
+const processRootExpectations = new Map<number, ProcessRootExpectation>();
+
+export function parseNativeProcessSnapshot(
+  result: { status: number | null; stdout: string; stderr?: string; error?: { code?: string; message?: string } },
+  rootPid: number,
+  expected?: ProcessRootExpectation
+): ProcessInfo[] {
+  assert.ok(Number.isSafeInteger(rootPid) && rootPid > 0, "PROCESS_TREE_INVALID_ROOT_PID");
+  if (result.error?.code === "ETIMEDOUT") throw new Error("PROCESS_TREE_ENUMERATION_TIMEOUT");
+  if (result.error || result.status !== 0) throw new Error(`PROCESS_TREE_ENUMERATION_FAILED:${result.error?.code ?? result.status}:${result.stderr ?? ""}`);
+  let value: any;
+  try { value = JSON.parse(result.stdout); }
+  catch { throw new Error("PROCESS_TREE_INVALID_JSON"); }
+  assert.ok(value?.method === "Toolhelp32Snapshot + Get-Process" && value.snapshotComplete === true
+    && Number.isSafeInteger(value.snapshotProcessCount) && value.snapshotProcessCount > 0
+    && value.rootPid === rootPid && typeof value.rootPresent === "boolean" && Array.isArray(value.processes), "PROCESS_TREE_INCOMPLETE_SNAPSHOT");
+  const rows = value.processes as ProcessInfo[];
+  assert.ok(rows.every((row) => row && Number.isSafeInteger(row.ProcessId) && row.ProcessId > 0
+    && Number.isSafeInteger(row.ParentProcessId) && row.ParentProcessId >= 0
+    && typeof row.Name === "string" && row.Name.length > 0 && typeof row.MainWindowTitle === "string"
+    && typeof row.ExecutablePath === "string" && row.ExecutablePath.length > 0
+    && typeof row.CreatedAtUtc === "string" && Number.isFinite(Date.parse(row.CreatedAtUtc))), "PROCESS_TREE_INVALID_PROCESS_METADATA");
+  assert.equal(new Set(rows.map((row) => row.ProcessId)).size, rows.length, "PROCESS_TREE_DUPLICATE_PID");
+  assert.equal(value.rootPresent, rows.some((row) => row.ProcessId === rootPid), "PROCESS_TREE_ROOT_PRESENCE_MISMATCH");
+  const reachable = new Set([rootPid]);
+  for (let previous = -1; previous !== reachable.size;) {
+    previous = reachable.size;
+    for (const row of rows) if (reachable.has(row.ParentProcessId)) reachable.add(row.ProcessId);
+  }
+  assert.ok(rows.every((row) => reachable.has(row.ProcessId)), "PROCESS_TREE_UNRELATED_PROCESS");
+  if (expected) {
+    for (const row of rows) {
+      assert.ok(Date.parse(row.CreatedAtUtc) >= expected.notBeforeMs, "PROCESS_TREE_ROOT_IDENTITY:creation time predates launch");
+      if (row.ProcessId === rootPid) assert.equal(path.resolve(row.ExecutablePath).toLowerCase(), path.resolve(expected.executablePath).toLowerCase(), "PROCESS_TREE_ROOT_IDENTITY:executable path changed");
+    }
+  }
+  return rows;
 }
 
-async function playerFlow(page: Page, variant: Variant, outputRoot: string): Promise<{ recordId: string; participantName: string; searchNeedle: string; stageTexts: string[]; repeatParticipantAttempts: number; resolutionEvidence: Array<Record<string, unknown>> }> {
+const nativeProcessTreeScript = String.raw`
+$ErrorActionPreference='Stop'
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+public static class R6ProcessSnapshot {
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+  public struct Entry {
+    public uint dwSize, cntUsage, th32ProcessID;
+    public UIntPtr th32DefaultHeapID;
+    public uint th32ModuleID, cntThreads, th32ParentProcessID;
+    public int pcPriClassBase;
+    public uint dwFlags;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst=260)] public string szExeFile;
+  }
+  [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool Process32FirstW(IntPtr snapshot, ref Entry entry);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool Process32NextW(IntPtr snapshot, ref Entry entry);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool CloseHandle(IntPtr handle);
+  public static Entry[] Read() {
+    var handle = CreateToolhelp32Snapshot(2, 0);
+    if (handle == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    try {
+      var rows = new List<Entry>(); var entry = new Entry();
+      entry.dwSize = (uint)Marshal.SizeOf(typeof(Entry));
+      if (!Process32FirstW(handle, ref entry)) throw new Win32Exception(Marshal.GetLastWin32Error());
+      do { rows.Add(entry); entry.dwSize = (uint)Marshal.SizeOf(typeof(Entry)); } while (Process32NextW(handle, ref entry));
+      var error = Marshal.GetLastWin32Error();
+      if (error != 18) throw new Win32Exception(error);
+      return rows.ToArray();
+    } finally { CloseHandle(handle); }
+  }
+}
+'@
+$rootProcessId=[uint32]$env:TK_R5_PID
+for($attempt=0;$attempt -lt 3;$attempt++) {
+  $entries=@([R6ProcessSnapshot]::Read())
+  $ids=[Collections.Generic.HashSet[uint32]]::new()
+  [void]$ids.Add($rootProcessId)
+  do {$added=0;foreach($entry in $entries){if($ids.Contains($entry.th32ParentProcessID)-and $ids.Add($entry.th32ProcessID)){$added++}}}while($added)
+  $selected=@($entries|Where-Object {$ids.Contains($_.th32ProcessID)})
+  $rows=@();$retry=$false
+  foreach($entry in $selected) {
+    try { $process=Get-Process -Id $entry.th32ProcessID -ErrorAction Stop }
+    catch {
+      if($_.FullyQualifiedErrorId -like 'NoProcessFoundForGivenId*'){$retry=$true;break}
+      throw
+    }
+    $process.Refresh()
+    $rows += [pscustomobject]@{ProcessId=$entry.th32ProcessID;ParentProcessId=$entry.th32ParentProcessID;Name=$entry.szExeFile;MainWindowTitle=$process.MainWindowTitle;ExecutablePath=$process.Path;CreatedAtUtc=$process.StartTime.ToUniversalTime().ToString('o')}
+  }
+  if($retry){continue}
+  [pscustomobject]@{method='Toolhelp32Snapshot + Get-Process';snapshotComplete=$true;snapshotProcessCount=$entries.Count;rootPid=$rootProcessId;rootPresent=[bool]($entries|Where-Object {$_.th32ProcessID -eq $rootProcessId});processes=@($rows)}|ConvertTo-Json -Depth 5 -Compress
+  exit 0
+}
+throw 'PROCESS_TREE_UNSTABLE_SNAPSHOT'
+`;
+
+export function processTree(rootPid: number): ProcessInfo[] {
+  assert.ok(Number.isSafeInteger(rootPid) && rootPid > 0, "PROCESS_TREE_INVALID_ROOT_PID");
+  const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", nativeProcessTreeScript], {
+    encoding: "utf8", windowsHide: true, timeout: 10_000, maxBuffer: 4 * 1024 * 1024,
+    env: { ...process.env, TK_R5_PID: String(rootPid) }
+  });
+  return parseNativeProcessSnapshot(result, rootPid, processRootExpectations.get(rootPid));
+}
+
+async function playerFlow(page: Page, variant: Variant, outputRoot: string): Promise<{ recordId: string; participantName: string; searchNeedle: string; stageTexts: string[]; repeatParticipantAttempts: number; uniqueParticipantCount: number; resolutionEvidence: Array<Record<string, unknown>>; controlPauseEvidence: Array<Record<string, unknown>>; canonicalCaptureEvidence: Record<string, unknown>; syntheticSeedEvidence: Record<string, unknown> }> {
   const participantName = variant === "ai" ? "합성공식검증" : "합성연습검증";
   const searchNeedle = expectedMaskedPhoneSearchNeedle(variant);
   const resolutionEvidence: Array<Record<string, unknown>> = [];
+  const controlPauseEvidence: Array<Record<string, unknown>> = [];
+  const saveCapture = await captureRendererSaveInputs(page);
+  try {
   await openAdminAndValidate(page, variant, outputRoot);
   resolutionEvidence.push(...await captureResolutionEvidence(page, variant, "main", outputRoot));
   await page.locator(".entry-form-group input").first().fill(participantName);
@@ -631,13 +1253,32 @@ async function playerFlow(page: Page, variant: Variant, outputRoot: string): Pro
       await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-focus-challenge.png`) });
       const aiPanel = page.locator(".duel-panel").nth(1);
       const beforeControl = await aiPanel.innerText();
+      const targetBeforeControl = await page.locator(".duel-target").first().innerText();
+      const stageBeforeControl = await page.locator(".challenge-stage-center").innerText();
       await page.getByRole("button", { name: "다시하기", exact: true }).click();
       await page.locator(".game-confirm-modal").waitFor({ state: "visible" });
       await page.getByRole("button", { name: "취소", exact: true }).click();
       await page.locator(".game-confirm-modal").waitFor({ state: "hidden" });
       const afterControl = await aiPanel.innerText();
-      const readCpm = (text: string) => text.match(/(\d+)\s*(?:CPM|타\/분)/)?.[1];
-      assert.equal(readCpm(afterControl), readCpm(beforeControl), `${variant} AI CPM changed across pause/resume control`);
+      const targetAfterControl = await page.locator(".duel-target").first().innerText();
+      const stageAfterControl = await page.locator(".challenge-stage-center").innerText();
+      const observedCpmBefore = parseObservedCpm(beforeControl);
+      const observedCpmAfter = parseObservedCpm(afterControl);
+      assert.ok(observedCpmBefore != null && Number.isFinite(observedCpmBefore), `${variant} pre-control observed CPM missing`);
+      assert.ok(observedCpmAfter != null && Number.isFinite(observedCpmAfter), `${variant} post-control observed CPM missing`);
+      assert.equal(targetAfterControl, targetBeforeControl, `${variant} target changed across pause/cancel`);
+      assert.equal(stageAfterControl, stageBeforeControl, `${variant} stage changed across pause/cancel`);
+      assert.equal(await input.isEnabled(), true, `${variant} input did not resume after control cancel`);
+      controlPauseEvidence.push({
+        stage: 1,
+        targetPreserved: true,
+        stagePreserved: true,
+        inputResumed: true,
+        observedCpmBefore,
+        observedCpmAfter,
+        observedRateMeaning: "informational live rate; not the fixed drawn stage target",
+        fixedDrawProtectionEvidence: "covered by existing AI-plan/domain regression tests, not inferred from live rate equality"
+      });
     }
     const target = (await page.locator(".duel-target").first().innerText()).replace(/\u00a0/g, " ").trim();
     assert.equal(canonicalStageTexts.get(stage)?.has(target), true, `${variant} stage ${stage} did not draw from canonical catalog: ${target}`);
@@ -650,12 +1291,24 @@ async function playerFlow(page: Page, variant: Variant, outputRoot: string): Pro
     await modal.locator(".primary-button").click();
   }
   await page.locator(".challenge-result-panel").waitFor({ state: "visible", timeout: 20_000 });
+  await waitUntil("actual participant-win renderer save input", () => saveCapture.errors.length > 0 || saveCapture.inputs.some((entry) =>
+    entry.input.participant_name === participantName && entry.input.canonicalAttempt?.result === "PARTICIPANT_WIN"
+  ), 10_000);
+  await saveCapture.stop();
+  assert.deepEqual(saveCapture.errors, [], `${variant} actual renderer capture failed`);
+  const wins = saveCapture.inputs.filter((entry) => entry.input.participant_name === participantName && entry.input.canonicalAttempt?.result === "PARTICIPANT_WIN");
+  assert.equal(wins.length, 1, `${variant} actual renderer winning input missing or ambiguous`);
+  const capturedWin = wins[0];
+  assert.equal(capturedWin.resumedImmediately, true, `${variant} renderer was not resumed`);
+  assert.deepEqual(assessCapturedCanonicalInput(capturedWin.input), [], `${variant} captured canonical input invalid`);
+  assert.deepEqual(capturedWin.input.stageTexts, stageTexts, `${variant} captured texts differ from actual UI draw`);
   resolutionEvidence.push(...await captureResolutionEvidence(page, variant, "result", outputRoot));
   await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-result.png`) });
-  await page.locator(".challenge-result-panel").getByRole("button", { name: "다시하기", exact: true }).click();
+  await page.locator(".challenge-result-panel").getByRole("button", { name: "다시 도전하기", exact: true }).click();
+  await page.locator(".challenge-screen").waitFor({ state: "visible", timeout: 20_000 });
   await waitUntil("AI-win replay stage input", () => page.locator("textarea.typing-input").isEnabled(), 20_000);
   const aiWinModal = page.locator(".challenge-modal");
-  await aiWinModal.waitFor({ state: "visible", timeout: 45_000 });
+  await aiWinModal.waitFor({ state: "visible", timeout: 90_000 });
   const aiWinImage = aiWinModal.locator(".challenge-modal-art");
   const aiWinSrc = decodeURIComponent(await aiWinImage.getAttribute("src") ?? "");
   assert.match(aiWinSrc, /금나래 승리\.png$/, `${variant} AI-win modal did not use approved Geumnarae victory asset`);
@@ -666,45 +1319,93 @@ async function playerFlow(page: Page, variant: Variant, outputRoot: string): Pro
     return value?.data?.filter((candidate: any) => candidate.participant_name === participantName).length >= 2;
   }, 20_000);
   const listed = await page.evaluate(async () => (window as any).typingKing.listRecords());
-  const row = listed?.data?.find((candidate: any) => candidate.participant_name === participantName);
+  const row = listed?.data?.find((candidate: any) => candidate.participant_name === participantName && candidate.final_vs_ai_result === "USER_WIN");
   assert.ok(row?.record_id, `${variant} result record missing`);
-  const repeated = await page.evaluate(async (input) => (window as any).typingKing.saveRecord(input), {
-    participant_name: participantName,
-    phone_part1: variant === "ai" ? "5101" : "5201",
-    phone_part2: searchNeedle,
-    phone_part3: "6301",
-    birth_year: "2012",
-    birth_month: "01",
-    birth_day: "02",
-    privacy_agreed: true,
-    privacy_agreed_at: "2026-09-08T00:00:00.000Z",
-    stageTexts,
-    stageTimesMs: [1100, 1200, 1300]
-  } satisfies SaveRecordInput);
+  assert.deepEqual(assessCapturedStoredRow(capturedWin.input, row), [], `${variant} captured winning input does not match stored flat row`);
+  const canonicalCaptureEvidence = {
+    method: "CDP source-location breakpoint on actual packaged renderer window.typingKing.saveRecord argument",
+    observationBoundary: "renderer SaveRecordInput before protected saveRecord IPC; not persisted canonical data",
+    debuggerTimingIntervention: "Renderer paused for read-only argument serialization and immediately resumed in finally; elapsed pause is instrumented timing",
+    ...capturedWin,
+    canonicalValidationViolations: assessCapturedCanonicalInput(capturedWin.input),
+    storedFlatRecordId: row.record_id,
+    storedFlatCorrelationViolations: assessCapturedStoredRow(capturedWin.input, row),
+    persistedRowHasCanonicalAttempt: row.canonicalAttempt != null,
+    breakpointCleanupComplete: saveCapture.errors.length === 0
+  };
+  const repeated = await page.evaluate(async (input) => (window as any).typingKing.saveRecord(input), copyCapturedSyntheticInput(capturedWin.input));
   assert.equal(repeated?.ok, true, `${variant} repeat participant attempt save failed`);
+  const beforeSeedIds: string[] = listed.data.map((candidate: RecordRow) => candidate.record_id);
+  const repeatBeforeSeeds = listed.data.filter((candidate: RecordRow) => candidate.participant_name === participantName).length;
+  const returnedSeedIds: Array<string | undefined> = [repeated?.data?.record_id];
   for (let index = 1; index <= 9; index += 1) {
     const suffix = String(index).padStart(2, "0");
-    const seeded = await page.evaluate(async (input) => (window as any).typingKing.saveRecord(input), {
-      participant_name: `${variant === "ai" ? "합성공식" : "합성연습"}${suffix}`,
-      phone_part1: variant === "ai" ? "7101" : "7201",
-      phone_part2: `${index}`.padStart(4, "0"),
-      phone_part3: `${index + 100}`.padStart(4, "0"),
-      birth_year: "2012", birth_month: "01", birth_day: "02",
-      privacy_agreed: true, privacy_agreed_at: "2026-09-08T00:00:00.000Z",
-      stageTexts, stageTimesMs: [1400 + index, 1500 + index, 1600 + index]
-    } satisfies SaveRecordInput);
+    const seeded = await page.evaluate(async (input) => (window as any).typingKing.saveRecord(input), copyCapturedSyntheticInput(capturedWin.input, {
+      name: `${variant === "ai" ? "합성공식" : "합성연습"}${suffix}`,
+      phone2: `${index}`.padStart(4, "0"),
+      phone3: `${index + 100}`.padStart(4, "0")
+    }));
     assert.equal(seeded?.ok, true, `${variant} synthetic participant ${suffix} save failed`);
+    returnedSeedIds.push(seeded?.data?.record_id);
   }
   const repeatedRows = await page.evaluate(async () => (window as any).typingKing.listRecords());
+  assert.equal(repeatedRows?.ok, true, `${variant} seeded record listing failed`);
   const repeatParticipantAttempts = repeatedRows.data.filter((candidate: any) => candidate.participant_name === participantName).length;
+  const afterSeedIds: string[] = repeatedRows.data.map((candidate: RecordRow) => candidate.record_id);
+  const seedViolations = assessSyntheticSeedEvidence({ beforeIds: beforeSeedIds, afterIds: afterSeedIds, returnedIds: returnedSeedIds, repeatBefore: repeatBeforeSeeds, repeatAfter: repeatParticipantAttempts });
+  assert.deepEqual(seedViolations, [], `${variant} synthetic API saves did not create the expected new records`);
   const uniqueParticipantCount = new Set(repeatedRows.data.map((candidate: any) => candidate.participantKey)).size;
   assert.ok(repeatParticipantAttempts >= 2, `${variant} repeat participant attempts missing`);
   assert.ok(uniqueParticipantCount >= 10, `${variant} synthetic ten-participant fixture missing`);
-  return { recordId: row.record_id, participantName, searchNeedle, stageTexts, repeatParticipantAttempts, uniqueParticipantCount, resolutionEvidence };
+  const syntheticSeedEvidence = {
+    method: "Protected saveRecord IPC with copies of the full validated actual renderer SaveRecordInput",
+    actualUiGames: { participantWins: 1, aiWinReplays: 1 },
+    syntheticApiSeedRecords: afterSeedIds.length - beforeSeedIds.length,
+    syntheticRepeatedParticipantRecords: repeatParticipantAttempts - repeatBeforeSeeds,
+    syntheticAdditionalParticipants: new Set(repeatedRows.data.filter((candidate: RecordRow) => returnedSeedIds.includes(candidate.record_id) && candidate.participant_name !== participantName).map((candidate: RecordRow) => candidate.participantKey)).size,
+    returnedRecordIdCount: returnedSeedIds.length,
+    freshDistinctRecordIdCount: new Set(returnedSeedIds).size,
+    returnedRecordIdsSha256: crypto.createHash("sha256").update([...returnedSeedIds].sort().join("\n")).digest("hex").toUpperCase(),
+    validationViolations: seedViolations,
+    copiedSourceInputSha256: capturedWin.inputSha256,
+    preservedFields: "All captured gameplay fields, including game_mode, selections, fairness and canonicalAttempt; only additional participant identity changed",
+    identityAssignment: "Protected saveRecord IPC assigns fresh record/attempt IDs and review storage computes participant keys",
+    syntheticSeedsAreActualUiGames: false
+  };
+  return { recordId: row.record_id, participantName, searchNeedle, stageTexts, repeatParticipantAttempts, uniqueParticipantCount, resolutionEvidence, controlPauseEvidence, canonicalCaptureEvidence, syntheticSeedEvidence };
+  } finally {
+    await saveCapture.stop();
+    assert.deepEqual(saveCapture.errors, [], `${variant} renderer capture or cleanup failed`);
+  }
 }
 
-async function leaderboardFlow(page: Page, expected: { recordId: string; participantName: string; searchNeedle: string; repeatParticipantAttempts: number }, forbiddenId: string, outputRoot: string, variant: Variant, reviewStorageRoot: string): Promise<{ refreshes: number; crossLeak: number; allRowCount: number; bestRowCount: number; repeatParticipantAttempts: number; reset: Record<string, number>; resolutionEvidence: Array<Record<string, unknown>> }> {
+async function openLeaderboardAdmin(page: Page, focusScreenshot?: string): Promise<void> {
+  await page.getByRole("button", { name: "관리자", exact: true }).click();
+  await page.locator(".admin-modal").waitFor({ state: "visible" });
+  const loginInputs = page.locator(".admin-login-grid input");
+  await loginInputs.nth(0).waitFor({ state: "visible" });
+  assert.equal(await loginInputs.count(), 2, "leaderboard admin must require UI reauthentication");
+  await loginInputs.nth(0).fill("synthetic-review-admin");
+  await loginInputs.nth(1).fill(REVIEW_LOCAL_ADMIN_PASSWORD);
+  if (focusScreenshot) {
+    await loginInputs.nth(0).focus();
+    await page.screenshot({ path: focusScreenshot });
+  }
+  await page.getByRole("button", { name: "진입", exact: true }).click();
+  await page.locator(".admin-toolbar").waitFor({ state: "visible", timeout: 10_000 });
+}
+
+async function closeLeaderboardAdmin(page: Page): Promise<void> {
+  await page.locator(".admin-modal").getByRole("button", { name: "닫기", exact: true }).click();
+  await page.locator(".admin-modal").waitFor({ state: "detached" });
+  assert.equal(await page.locator(".modal-backdrop").count(), 0, "leaderboard is still obscured by the admin backdrop");
+  assert.equal(await page.locator(".admin-toolbar").count(), 0, "closed admin controls must be removed");
+}
+
+async function leaderboardFlow(page: Page, expected: { recordId: string; participantName: string; searchNeedle: string; repeatParticipantAttempts: number }, forbiddenId: string, outputRoot: string, variant: Variant, reviewStorageRoot: string): Promise<{ refreshes: number; crossLeak: number; allRowCount: number; bestRowCount: number; repeatParticipantAttempts: number; reset: Record<string, number>; resolutionEvidence: Array<Record<string, unknown>>; searchEvidence: Record<string, unknown>; scrollEvidence: Record<string, unknown>; viewComparisonEvidence: Array<Record<string, unknown>> }> {
   const resolutionEvidence: Array<Record<string, unknown>> = [];
+  const rankingBody = page.locator(".ai-ranking .ranking-body");
+  const rankingRows = rankingBody.locator(".ranking-row");
   let rows: any[] = [];
   let refreshes = 0;
   while (refreshes < 2) {
@@ -747,62 +1448,105 @@ async function leaderboardFlow(page: Page, expected: { recordId: string; partici
   const search = page.locator(".search-input");
   await search.fill(expected.searchNeedle);
   await search.focus();
-  await waitUntil("searched leaderboard row", () => page.locator(".ranking-row").count().then((count) => count === 1), 10_000);
-  const searchedText = await page.locator(".ranking-row").first().innerText();
-  assert.match(searchedText, new RegExp(expected.searchNeedle));
-  assert.equal(searchedText.includes(expected.participantName), false, `${variant} exposed raw participant name before admin authorization`);
+  const expectedSearchCount = rows.filter((candidate: RecordRow) => candidate.participant_name === expected.participantName).length;
+  assert.equal(expectedSearchCount, expected.repeatParticipantAttempts, `${variant} shared fixture attempt count changed before search`);
+  await waitUntil("all searched fixture attempts", () => rankingRows.count().then((count) => count === expectedSearchCount), 10_000);
+  const searchedRows = await rankingRows.evaluateAll((elements) => elements.map((element) => {
+    const cells = element.querySelectorAll(":scope > span");
+    return { name: cells[1]?.textContent?.trim() ?? "", phone: cells[2]?.textContent?.trim() ?? "", text: (element as HTMLElement).innerText };
+  }));
+  const searchViolations = assessMaskedSearchEvidence({
+    expectedCount: expectedSearchCount,
+    expectedMaskedName: "합****증",
+    phoneSuffix: expected.searchNeedle,
+    rawParticipantNames: rows.map((candidate: RecordRow) => candidate.participant_name),
+    rawPhoneNumbers: rows.map((candidate: RecordRow) => candidate.phone_full),
+    rows: searchedRows
+  });
+  assert.deepEqual(searchViolations, [], `${variant} search rows violated fixture membership or masking`);
+  const searchEvidence = { view: "all records", expectedAttemptCount: expectedSearchCount, observedRowCount: searchedRows.length, phoneSuffix: expected.searchNeedle, rows: searchedRows, violations: searchViolations };
   await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-search.png`) });
   await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-focus-search.png`) });
   await search.fill("");
-  await page.getByRole("button", { name: "관리자", exact: true }).click();
-  await page.locator(".admin-modal").waitFor({ state: "visible" });
-  const loginInputs = page.locator(".admin-login-grid input");
-  await loginInputs.nth(0).fill("synthetic-review-admin");
-  await loginInputs.nth(1).fill(REVIEW_LOCAL_ADMIN_PASSWORD);
-  await loginInputs.nth(0).focus();
-  await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-focus-admin.png`) });
-  await page.getByRole("button", { name: "진입", exact: true }).click();
-  await page.locator(".admin-toolbar").waitFor({ state: "visible", timeout: 10_000 });
+  await openLeaderboardAdmin(page, path.join(outputRoot, "screenshots", `${variant}-focus-admin.png`));
   await page.getByRole("button", { name: "로컬 저장소 검증" }).click();
   const validationTuple = page.locator(".geumcheon-nas-status-panel .notice-text");
   await waitUntil("leaderboard visible completed storage tuple", () => validationTuple.innerText().then((text) => text.includes("정상")), 10_000);
   await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-admin-validation-complete.png`) });
   await page.getByRole("button", { name: "전체기록 보기" }).click();
-  await waitUntil("all records rows", () => page.locator(".ranking-row").count().then((count) => count >= 2), 10_000);
-  const allRowCount = await page.locator(".ranking-row").count();
+  await waitUntil("all records mode selected", () => page.getByRole("button", { name: "전체기록 보기" }).getAttribute("aria-pressed").then((pressed) => pressed === "true"), 10_000);
+  await closeLeaderboardAdmin(page);
+  assert.equal(rows.length, 12, `${variant} complete shared fixture must contain twelve attempts`);
+  const uniqueFixtureParticipants = new Set(rows.map((row: RecordRow) => row.participantKey)).size;
+  assert.equal(uniqueFixtureParticipants, 10, `${variant} complete shared fixture must contain ten distinct participants`);
+  await waitUntil("all records rows", () => rankingRows.count().then((count) => count === rows.length), 10_000);
+  const allRowCount = await rankingRows.count();
   assert.ok(allRowCount >= 10, `${variant} all-record view must show at least ten synthetic participants/attempts`);
+  assert.equal(allRowCount, 12);
+  await rankingBody.evaluate((element) => { element.scrollTop = 0; });
   const allRecordsResolutionEvidence = await captureResolutionEvidence(page, variant, "leaderboard-all-records", outputRoot);
   assert.equal(allRecordsResolutionEvidence.length, 2);
   resolutionEvidence.push(...allRecordsResolutionEvidence);
   await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-all-records.png`) });
-  await page.locator(".ranking-list").evaluate((element) => { element.scrollTop = element.scrollHeight; });
-  await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-all-records-scrolled.png`) });
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await waitUntil("leaderboard scroll viewport 1280x720", () => page.evaluate(() => window.innerWidth === 1280 && window.innerHeight === 720), 10_000);
+  await rankingBody.evaluate((element) => { element.scrollTop = 0; });
+  const scrollBefore = await page.evaluate(readLeaderboardTableObservation);
+  let scrollAfter = scrollBefore;
+  await waitUntil("leaderboard reaches bottom with last row visible", async () => {
+    await rankingBody.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    scrollAfter = await page.evaluate(readLeaderboardTableObservation);
+    assert.deepEqual(assessLeaderboardScrollEvidence({ before: scrollBefore, after: scrollAfter }), [], `${variant} scroll observation: ${JSON.stringify({ before: scrollBefore, after: scrollAfter })}`);
+    return true;
+  }, 10_000);
+  const scrollScreenshot = path.join(outputRoot, "screenshots", `${variant}-all-records-scrolled.png`);
+  await page.screenshot({ path: scrollScreenshot });
+  const scrollEvidence = { selector: ".ai-ranking .ranking-body", requestedViewport: { width: 1280, height: 720 }, before: scrollBefore, after: scrollAfter, screenshot: scrollScreenshot };
+  assert.deepEqual(assessLeaderboardScrollEvidence(scrollEvidence), []);
+  await openLeaderboardAdmin(page);
   await page.getByRole("button", { name: "최고기록만 보기" }).click();
-  await waitUntil("best records reduce rows", () => page.locator(".ranking-row").count().then((count) => count < allRowCount), 10_000);
-  const bestRowCount = await page.locator(".ranking-row").count();
+  await waitUntil("best records mode selected", () => page.getByRole("button", { name: "최고기록만 보기" }).getAttribute("aria-pressed").then((pressed) => pressed === "true"), 10_000);
+  await closeLeaderboardAdmin(page);
+  await waitUntil("best records reduce rows", () => rankingRows.count().then((count) => count === uniqueFixtureParticipants), 10_000);
+  const bestRowCount = await rankingRows.count();
+  assert.equal(bestRowCount, 10);
   assert.deepEqual(assessLeaderboardViewDifference({ allRowCount, bestRowCount, repeatParticipantAttempts: expected.repeatParticipantAttempts }), []);
+  await rankingBody.evaluate((element) => { element.scrollTop = 0; });
+  const bestRecordsResolutionEvidence = await captureResolutionEvidence(page, variant, "leaderboard-best-records", outputRoot);
+  resolutionEvidence.push(...bestRecordsResolutionEvidence);
+  assert.deepEqual(assessLeaderboardResolutionComparison({ allRowCount, bestRowCount, all: allRecordsResolutionEvidence, best: bestRecordsResolutionEvidence }), []);
+  const viewComparisonEvidence = allRecordsResolutionEvidence.map((all, index) => ({
+    requestedViewport: all.requestedViewport, expectedAllCount: rows.length, expectedBestCount: uniqueFixtureParticipants,
+    all: { observation: all.leaderboardTable, screenshot: all.screenshot },
+    best: { observation: bestRecordsResolutionEvidence[index].leaderboardTable, screenshot: bestRecordsResolutionEvidence[index].screenshot }
+  }));
   await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-best-records.png`) });
+  await openLeaderboardAdmin(page);
   const picker = page.locator(".admin-record-picker button").first();
   await picker.click();
+  await page.locator(".edit-grid").waitFor({ state: "visible" });
   assert.match((await picker.getAttribute("class")) ?? "", /selected/);
   await picker.click();
+  await page.locator(".edit-grid").waitFor({ state: "detached" });
   assert.doesNotMatch((await picker.getAttribute("class")) ?? "", /selected/);
   await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-admin.png`) });
-  const rowsBefore = await page.locator(".ranking-row").count();
+  const rowsBefore = await rankingRows.count();
   const countSourceRecords = () => snapshotDirectory(reviewStorageRoot).filter((entry) => entry.includes("/records/") && /\.json:\d+:/.test(entry)).length;
   const sourceRecordsBefore = countSourceRecords();
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "현재 회차 표시 초기화" }).click();
-  await waitUntil("leaderboard visible reset", () => page.locator(".ranking-row").count().then((count) => count === 0), 10_000);
-  const rowsAfter = await page.locator(".ranking-row").count();
+  await waitUntil("leaderboard visible reset", () => rankingRows.count().then((count) => count === 0), 10_000);
+  await closeLeaderboardAdmin(page);
+  const rowsAfter = await rankingRows.count();
   const sourceRecordsAfter = countSourceRecords();
   const reset = { rowsBefore, rowsAfter, sourceRecordsBefore, sourceRecordsAfter };
   assert.deepEqual(assessResetEvidence(reset), []);
+  assert.deepEqual(assessLeaderboardTableCapture(0, await page.evaluate(readLeaderboardTableObservation)), []);
   await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-reset-complete.png`) });
-  return { refreshes, crossLeak, allRowCount, bestRowCount, repeatParticipantAttempts: expected.repeatParticipantAttempts, reset, resolutionEvidence };
+  return { refreshes, crossLeak, allRowCount, bestRowCount, repeatParticipantAttempts: expected.repeatParticipantAttempts, reset, resolutionEvidence, searchEvidence, scrollEvidence, viewComparisonEvidence };
 }
 
-async function runOne(spec: typeof specs[number], exePath: string, outputRoot: string, localAppData: string, paired: Map<Session, { recordId: string; participantName: string; searchNeedle: string; stageTexts: string[]; repeatParticipantAttempts: number }>, simultaneouslyReady: Set<Variant>): Promise<any> {
+async function runOne(spec: typeof specs[number], exePath: string, outputRoot: string, localAppData: string, paired: Map<Session, { recordId: string; participantName: string; searchNeedle: string; stageTexts: string[]; repeatParticipantAttempts: number }>, initializedVariants: Set<Variant>, simultaneouslyReady: Set<Variant>, failedPlayerSessions: Set<Session>): Promise<any> {
   const port = await reservePort();
   const runtimeDirectories = concurrentRuntimeDirectories(outputRoot, spec.variant);
   assert.equal(runtimeDirectories.LOCALAPPDATA, localAppData);
@@ -823,6 +1567,8 @@ async function runOne(spec: typeof specs[number], exePath: string, outputRoot: s
   let externalStorageBoundary: any;
   let playerWindowLayout: PlayerWindowLayoutObservation | null = null;
   let processes: ProcessInfo[] = [];
+  let finalProcessSnapshot: ProcessInfo[] | null = null;
+  const processObservationErrors: string[] = [];
   try {
     let ws: string | undefined;
     await waitUntil("portable CDP endpoint", async () => Boolean(ws = await readCdp(port)), 90_000);
@@ -858,14 +1604,13 @@ async function runOne(spec: typeof specs[number], exePath: string, outputRoot: s
       "Review",
       spec.session
     );
-    const storageBefore = snapshotDirectory(reviewStorageRoot);
-    const observations = await observeExternalStorageBoundary(page);
-    const storageAfter = snapshotDirectory(reviewStorageRoot);
-    externalStorageBoundary = {
-      observations,
-      storageUnchanged: JSON.stringify(storageAfter) === JSON.stringify(storageBefore)
-    };
-    assert.deepEqual(assessReviewExternalStorageBoundary(observations), []);
+    externalStorageBoundary = await observeInitializedReviewStorageBoundary({
+      variant: spec.variant,
+      initializedVariants,
+      snapshot: () => snapshotDirectory(reviewStorageRoot),
+      observe: () => observeExternalStorageBoundary(page!)
+    });
+    assert.deepEqual(assessReviewExternalStorageBoundary(externalStorageBoundary.observations), []);
     assert.equal(externalStorageBoundary.storageUnchanged, true, `${spec.variant} external-storage call changed review files`);
     const notices = Array.isArray(bootstrap.notices) ? bootstrap.notices : [];
     assert.equal(notices.includes(FALLBACK_NOTICE), false, `${spec.variant} used fallback stage texts`);
@@ -880,8 +1625,11 @@ async function runOne(spec: typeof specs[number], exePath: string, outputRoot: s
       flow = await playerFlow(page, spec.variant, outputRoot);
       paired.set(spec.session, flow);
     } else {
-      await waitUntil(`${spec.session} player record`, () => paired.has(spec.session), 120_000);
-      await waitUntil("opposite-session player record", () => paired.has(spec.session === "official" ? "practice" : "official"), 120_000);
+      await waitUntil(`${spec.session} player completion`, () => paired.has(spec.session) || failedPlayerSessions.has(spec.session), 120_000);
+      assert.ok(paired.has(spec.session), `${spec.session} player flow failed before record sharing`);
+      const otherSession = spec.session === "official" ? "practice" : "official";
+      await waitUntil("opposite-session player completion", () => paired.has(otherSession) || failedPlayerSessions.has(otherSession), 120_000);
+      assert.ok(paired.has(otherSession), `${otherSession} player flow failed before isolation check`);
       const expected = paired.get(spec.session)!;
       const other = paired.get(spec.session === "official" ? "practice" : "official")!;
       flow = await leaderboardFlow(page, expected, other.recordId, outputRoot, spec.variant, reviewStorageRoot);
@@ -890,23 +1638,39 @@ async function runOne(spec: typeof specs[number], exePath: string, outputRoot: s
     assert.deepEqual(runtimeViolations, []);
   } catch (caught) {
     error = caught instanceof Error ? caught.stack ?? caught.message : String(caught);
+    if (spec.role === "player") failedPlayerSessions.add(spec.session);
     if (page && !page.isClosed()) await page.screenshot({ path: path.join(outputRoot, "screenshots", `${spec.variant}-failure.png`) }).catch(() => undefined);
   } finally {
     if (page && !page.isClosed()) await page.close({ runBeforeUnload: true }).catch(() => undefined);
     if (browser?.isConnected()) await browser.close().catch(() => undefined);
-    await waitUntil("portable process tree exit", () => processTree(pid).length === 0, 8_000).catch(() => undefined);
-    if (processTree(pid).length) {
+    const observeExit = () => {
+      try {
+        finalProcessSnapshot = processTree(pid);
+        return finalProcessSnapshot.length === 0;
+      } catch (caught) {
+        finalProcessSnapshot = null;
+        const message = caught instanceof Error ? caught.message : String(caught);
+        if (!processObservationErrors.includes(message)) processObservationErrors.push(message);
+        throw caught;
+      }
+    };
+    await waitUntil("portable process tree exit", observeExit, 8_000).catch(() => undefined);
+    // Unknown or reused process identity cannot authorize a PID-based forced cleanup.
+    if (finalProcessSnapshot != null && (finalProcessSnapshot as ProcessInfo[]).length > 0 && processObservationErrors.length === 0) {
       forcedCleanup = true;
-      spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, encoding: "utf8" });
+      const killed = spawnSync("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, encoding: "utf8", timeout: 10_000 });
+      if (killed.error || killed.status !== 0) processObservationErrors.push(`PROCESS_CLEANUP_FAILED:${killed.error?.message ?? killed.stderr}`);
+      await waitUntil("forced portable process tree exit", observeExit, 10_000).catch(() => undefined);
     }
-    await waitUntil("forced portable process tree exit", () => processTree(pid).length === 0, 10_000).catch(() => undefined);
-    cleanExit = !forcedCleanup && processTree(pid).length === 0;
+    cleanExit = !forcedCleanup && finalProcessSnapshot != null && (finalProcessSnapshot as ProcessInfo[]).length === 0 && processObservationErrors.length === 0;
   }
+  const residualProcessCount = finalProcessSnapshot == null ? null : (finalProcessSnapshot as ProcessInfo[]).length;
+  if (processObservationErrors.length) error = [error, ...processObservationErrors].filter(Boolean).join("\n");
   const listing = fs.readdirSync(path.dirname(exePath)).sort();
   const unexpectedFiles = listing.filter((name) => name !== path.basename(exePath));
-  const finalViolations = assessRuntimeObservation({ expectedVariant: spec.variant, expectedRole: spec.role, expectedSession: spec.session, bootstrap, notices: bootstrap?.notices, cleanExit, residualProcessCount: processTree(pid).length, unexpectedFiles });
+  const finalViolations = assessRuntimeObservation({ expectedVariant: spec.variant, expectedRole: spec.role, expectedSession: spec.session, bootstrap, notices: bootstrap?.notices, cleanExit, residualProcessCount, unexpectedFiles });
   if (finalViolations.length && !error) error = finalViolations.join(",");
-  return { variant: spec.variant, role: spec.role, session: spec.session, pid, title: spec.title, bootstrap: bootstrap ? { variant: bootstrap.variant, reviewContext: bootstrap.reviewContext, notices: bootstrap.notices } : null, storageValidation: storageValidation?.data ?? null, playerWindowLayout, externalStorageBoundary, processSnapshot: processes.map(({ ProcessId, ParentProcessId, Name, MainWindowTitle }) => ({ ProcessId, ParentProcessId, Name, MainWindowTitle })), flow, cleanExit, forcedCleanup, residualProcessCount: processTree(pid).length, executableFolderListing: listing, error, verdict: error ? "FAIL" : "PASS" };
+  return { variant: spec.variant, role: spec.role, session: spec.session, pid, title: spec.title, bootstrap: bootstrap ? { variant: bootstrap.variant, reviewContext: bootstrap.reviewContext, notices: bootstrap.notices } : null, storageValidation: storageValidation?.data ?? null, playerWindowLayout, externalStorageBoundary, processSnapshot: processes, processObservation: { method: "Toolhelp32Snapshot + Get-Process", commandLineCollected: false, timeoutMs: 10_000, errors: processObservationErrors, finalSnapshot: finalProcessSnapshot }, flow, cleanExit, forcedCleanup, residualProcessCount, executableFolderListing: listing, error, verdict: error ? "FAIL" : "PASS" };
 }
 
 function parseArgs(argv: string[]): { outputRoot: string; inputs: Map<Variant, string> } {
@@ -946,14 +1710,18 @@ async function main(): Promise<void> {
   const preflight = inspectReviewArtifacts(staged);
   assert.deepEqual(preflight.violations, [], preflight.violations.join("\n"));
   const paired = new Map<Session, { recordId: string; participantName: string; searchNeedle: string; stageTexts: string[]; repeatParticipantAttempts: number }>();
+  const initializedVariants = new Set<Variant>();
   const simultaneouslyReady = new Set<Variant>();
+  const failedPlayerSessions = new Set<Session>();
   const results = await Promise.all(specs.map((spec) => runOne(
     spec,
     staged.find((item) => item.variant === spec.variant)!.exePath,
     outputRoot,
     path.join(outputRoot, "runtime", "LocalAppData"),
     paired,
-    simultaneouslyReady
+    initializedVariants,
+    simultaneouslyReady,
+    failedPlayerSessions
   )));
   const stageSourceHash = sha256(path.resolve("events/geumcheon-2026/stage_texts.csv"));
   const stageSeeds = (["official", "practice"] as const).map((session) => {
@@ -976,15 +1744,16 @@ async function main(): Promise<void> {
   });
   const crossLeakCount = results.filter((entry) => entry.role === "leaderboard").reduce((sum, entry) => sum + (entry.flow?.crossLeak ?? 0), 0);
   const concurrentEvidence = {
+    initializedVariants: [...initializedVariants].sort(),
     simultaneouslyReadyVariants: [...simultaneouslyReady].sort(),
     officialRefreshes: results.find((entry) => entry.variant === "ai-leaderboard")?.flow?.refreshes ?? 0,
     practiceRefreshes: results.find((entry) => entry.variant === "practice-leaderboard")?.flow?.refreshes ?? 0,
     crossLeakCount,
-    residualProcessCount: results.reduce((sum, entry) => sum + entry.residualProcessCount, 0)
+    residualProcessCount: results.some((entry) => entry.residualProcessCount == null) ? null : results.reduce((sum, entry) => sum + entry.residualProcessCount, 0)
   };
   const concurrentViolations = assessConcurrentEvidence(concurrentEvidence);
   const standaloneViolations = assessStandaloneReviewVerdict({ concurrentViolations, results, stageSeeds });
-  const summary = { schemaVersion: 2, generatedAt: new Date().toISOString(), launch: reviewHarnessLaunchEvidence(), actualNasUsed: false, operationalCredentialsUsed: false, offlineSingleExeTest: "HOLD", hostInstrumentedStandaloneExe4: standaloneViolations.length ? "HOLD" : "PASS", standaloneExe4: "HOLD", offlineReason: "No proven network-disabled Windows Sandbox or VM was available on this host. Ordinary no-argument startup with default user directories remains NOT_RUN.", preflight, stageSeeds, concurrentEvidence, concurrentViolations, standaloneViolations, results, officialRecordShare: results.find((entry) => entry.variant === "ai-leaderboard")?.verdict === "PASS" ? "PASS" : "HOLD", practiceRecordShare: results.find((entry) => entry.variant === "practice-leaderboard")?.verdict === "PASS" ? "PASS" : "HOLD", crossLeakCount, passed: results.filter((entry) => entry.verdict === "PASS").length, failed: results.filter((entry) => entry.verdict === "FAIL").length };
+  const summary = { schemaVersion: 2, generatedAt: new Date().toISOString(), launch: reviewHarnessLaunchEvidence(), actualNasUsed: false, operationalCredentialsUsed: false, offlineSingleExeTest: "HOLD", hostInstrumentedStandaloneExe4: standaloneViolations.length ? "HOLD" : "PASS", standaloneExe4: "HOLD", offlineReason: "No proven network-disabled Windows Sandbox or VM was available on this host. This instrumented run does not test ordinary no-argument/default-directory startup; see separate ordinary lifecycle evidence.", preflight, stageSeeds, concurrentEvidence, concurrentViolations, standaloneViolations, results, officialRecordShare: results.find((entry) => entry.variant === "ai-leaderboard")?.verdict === "PASS" ? "PASS" : "HOLD", practiceRecordShare: results.find((entry) => entry.variant === "practice-leaderboard")?.verdict === "PASS" ? "PASS" : "HOLD", crossLeakCount, passed: results.filter((entry) => entry.verdict === "PASS").length, failed: results.filter((entry) => entry.verdict === "FAIL").length };
   fs.writeFileSync(path.join(outputRoot, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
   console.log(JSON.stringify({ outputRoot, passed: summary.passed, failed: summary.failed, offlineSingleExeTest: summary.offlineSingleExeTest }, null, 2));
   if (standaloneViolations.length) process.exitCode = 1;

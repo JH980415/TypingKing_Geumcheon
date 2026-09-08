@@ -50,6 +50,7 @@ test("prepares five fail-closed production profiles and a server bundle without 
     assert.doesNotMatch(allText, /"token"\s*:\s*"(?!__)[^"]+"/);
     assert.equal(fs.existsSync(path.join(outputRoot, "server", "services", "nas-record-api", "src", "cli.ts")), true);
     assert.equal(fs.existsSync(path.join(outputRoot, "server", "shared", "nas", "protocol.ts")), true);
+    assert.equal(fs.existsSync(path.join(outputRoot, "server", "config", "stage_texts.csv")), true);
     assert.equal(fs.existsSync(path.join(outputRoot, "server", "services", "nas-record-api", "package-lock.json")), true);
     const builtServer = path.join(outputRoot, "server", "services", "nas-record-api", "dist", "server.cjs");
     assert.equal(fs.existsSync(builtServer), true);
@@ -108,6 +109,8 @@ function fakeProject() {
   fs.cpSync(path.join(realRoot, "services", "nas-record-api", "src"), path.join(root, "services", "nas-record-api", "src"), { recursive: true });
   fs.cpSync(path.join(realRoot, "services", "nas-record-api", "dist"), path.join(root, "services", "nas-record-api", "dist"), { recursive: true });
   fs.cpSync(path.join(realRoot, "shared"), path.join(root, "shared"), { recursive: true });
+  fs.mkdirSync(path.join(root, "events", "geumcheon-2026"), { recursive: true });
+  fs.copyFileSync(path.join(realRoot, "events", "geumcheon-2026", "stage_texts.csv"), path.join(root, "events", "geumcheon-2026", "stage_texts.csv"));
   for (const name of ["package.json", "package-lock.json", "tsconfig.json"]) {
     fs.copyFileSync(path.join(realRoot, "services", "nas-record-api", name), path.join(root, "services", "nas-record-api", name));
   }

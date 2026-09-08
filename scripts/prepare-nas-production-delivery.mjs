@@ -37,6 +37,10 @@ export function prepareNasProductionDelivery({ projectRoot, outputRoot }) {
   fs.mkdirSync(output, { recursive: true });
   fs.cpSync(source, output, { recursive: true });
   fs.writeFileSync(path.join(output, DELIVERY_SENTINEL), DELIVERY_SENTINEL_CONTENT, { encoding: "utf8", flag: "wx" });
+  fs.copyFileSync(
+    path.join(root, "events", "geumcheon-2026", "stage_texts.csv"),
+    path.join(output, "server", "config", "stage_texts.csv"),
+  );
 
   const serverOutput = path.join(output, "server");
   const serviceOutput = path.join(serverOutput, "services", "nas-record-api");

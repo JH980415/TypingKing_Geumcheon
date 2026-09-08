@@ -3619,7 +3619,7 @@ html[data-event-profile="geumcheon-2026"] .leader-actions button {
 
   html[data-event-profile="geumcheon-2026"] .geumcheon-main-robot {
     width: min(100%, 360px);
-    height: min(28vh, clamp(215px, calc(100vh - 646px), 280px));
+    height: min(28vh, clamp(215px, calc(100vh - 646px), 240px));
     margin-top: 4px;
   }
 

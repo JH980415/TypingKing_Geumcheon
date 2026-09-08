@@ -162,3 +162,12 @@ test("uses the play background for every active or result game screen", () => {
     );
   }
 });
+
+test("reserves enough 1080p vertical space for all five guide lines", () => {
+  const styles = fs.readFileSync(path.resolve("apps/shell/src/styles.css"), "utf8");
+  const largeViewportRules = styles.split("@media (min-width: 1401px) and (min-height: 801px) {")[1];
+
+  assert.ok(largeViewportRules, "large viewport rules must exist");
+  assert.match(largeViewportRules, /geumcheon-main-robot/);
+  assert.equal(largeViewportRules.includes("calc(100vh - 646px), 240px"), true);
+});
