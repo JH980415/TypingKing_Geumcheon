@@ -39,6 +39,7 @@ import { compareLegacyAiRecords, compareRecords, isInterruptedRecord, rankCanoni
 import { isCanonicalAiAttemptPubliclyRankable, isCanonicalAiAttemptV1 } from "../utils/geumcheonAiAttempt";
 import { calculateFinalCpm, calculateTotalUserTimeMs, countConvertedTypingUnits, countTypeableChars } from "../utils/typing";
 import { parseStageTextCatalog } from "../events/stageTextCatalog";
+import type { EventProfile } from "../events/types";
 import { drawStageTextFromBag, stageTextBagKey, type StageTextShuffleState } from "../utils/stageTextShuffle";
 
 type RuntimePaths = {
@@ -63,6 +64,7 @@ export type RuntimeContext = {
   config: AppConfig;
   notices: string[];
   assetBaseUrl: string;
+  stageTextsReadOnly: boolean;
 };
 
 const BOM = "\uFEFF";
@@ -248,7 +250,15 @@ export function createRuntimePaths(root: string, assetRoot = root): RuntimePaths
   };
 }
 
-export function ensureRuntime(root: string, assetRoot = root): RuntimeContext {
+type RuntimeInitializationOptions = {
+  eventProfile?: Pick<EventProfile, "profileId" | "stageTextCatalogVersion">;
+};
+
+export function ensureRuntime(
+  root: string,
+  assetRoot = root,
+  options: RuntimeInitializationOptions = {}
+): RuntimeContext {
   const paths = createRuntimePaths(root, assetRoot);
   const notices: string[] = [];
   [
@@ -272,14 +282,25 @@ export function ensureRuntime(root: string, assetRoot = root): RuntimeContext {
 
   const config = loadConfig(paths.configFile, notices);
   ensureRecordsFile(paths.recordsFile, notices);
-  ensureStageTextsFile(paths.stageTextsFile, notices);
+  if (options.eventProfile?.profileId === "geumcheon-2026") {
+    if (!fs.existsSync(paths.stageTextsFile)) {
+      throw new Error("Geumcheon stage text catalog missing");
+    }
+    validateGeumcheonStageTextCatalog(
+      parseStageTextCatalog(fs.readFileSync(paths.stageTextsFile, "utf8")),
+      options.eventProfile.stageTextCatalogVersion
+    );
+  } else {
+    ensureStageTextsFile(paths.stageTextsFile, notices);
+  }
   ensureAuditFile(paths.auditFile);
 
   const ctx = {
     paths,
     config,
     notices,
-    assetBaseUrl: pathToFileURL(paths.assetsDir).toString()
+    assetBaseUrl: pathToFileURL(paths.assetsDir).toString(),
+    stageTextsReadOnly: options.eventProfile?.profileId === "geumcheon-2026"
   };
   writeOperationalLog(ctx, { action: "app_start", result: "ok" });
   return ctx;
@@ -416,6 +437,13 @@ const PRACTICE_SESSION_DIR_NAME = "연습회차";
 const PRACTICE_SESSION_NAME = "자유 연습회차";
 const PRACTICE_STAGE_TEXT_READONLY =
   "연습모드에서는 문구를 변경하거나 공유할 수 없습니다. 공식 실행기의 관리자 모드에서 변경해 주세요.";
+const IMMUTABLE_STAGE_TEXT_CATALOG =
+  "이 행사의 승인된 문구 카탈로그는 변경하거나 공유할 수 없습니다.";
+
+function assertStageTextsWritable(ctx: RuntimeContext): void {
+  if (practiceSessionMode) throw new Error(PRACTICE_STAGE_TEXT_READONLY);
+  if (ctx.stageTextsReadOnly) throw new Error(IMMUTABLE_STAGE_TEXT_CATALOG);
+}
 
 function withSessionPaths(config: AppConfig): AppConfig {
   const oneDriveRoot = String(config.oneDriveRoot ?? "").trim();
@@ -2149,12 +2177,12 @@ function syncStageTextsFromShared(ctx: RuntimeContext): void {
 }
 
 export function readStageTexts(ctx: RuntimeContext): StageText[] {
-  syncStageTextsFromShared(ctx);
+  if (!ctx.stageTextsReadOnly) syncStageTextsFromShared(ctx);
   return readCsv<StageText>(ctx.paths.stageTextsFile, STAGE_TEXT_HEADERS).map(normalizeStageTextRow);
 }
 
 export async function publishStageTextsToOneDrive(ctx: RuntimeContext): Promise<StageTextPublishResult> {
-  if (practiceSessionMode) throw new Error(PRACTICE_STAGE_TEXT_READONLY);
+  assertStageTextsWritable(ctx);
   const snapshotsDir = stageTextSnapshotsDir(ctx.config);
   if (!snapshotsDir) throw new Error("OneDrive 루트 폴더와 기록 기본 폴더명을 먼저 설정해 주세요.");
   return withFileLock(ctx.paths.stageTextsFile, () => {
@@ -3024,7 +3052,7 @@ export async function addStageText(
   text: string,
   gameMode = "normal"
 ): Promise<StageText> {
-  if (practiceSessionMode) throw new Error(PRACTICE_STAGE_TEXT_READONLY);
+  assertStageTextsWritable(ctx);
   return withFileLock(ctx.paths.stageTextsFile, () => {
     const normalized = text.trim();
     const normalizedMode = normalizeStageTextMode(gameMode);
@@ -3064,7 +3092,7 @@ export async function updateStageText(
   id: string,
   patch: Partial<StageText>
 ): Promise<StageText> {
-  if (practiceSessionMode) throw new Error(PRACTICE_STAGE_TEXT_READONLY);
+  assertStageTextsWritable(ctx);
   return withFileLock(ctx.paths.stageTextsFile, () => {
     const rows = readCsv<StageText>(ctx.paths.stageTextsFile, STAGE_TEXT_HEADERS, false).map(normalizeStageTextRow);
     const index = rows.findIndex((row) => row.id === id);
@@ -3099,7 +3127,7 @@ export async function softDeleteStageText(ctx: RuntimeContext, id: string): Prom
 }
 
 export async function hardDeleteStageText(ctx: RuntimeContext, id: string): Promise<void> {
-  if (practiceSessionMode) throw new Error(PRACTICE_STAGE_TEXT_READONLY);
+  assertStageTextsWritable(ctx);
   return withFileLock(ctx.paths.stageTextsFile, () => {
     const rows = readCsv<StageText>(ctx.paths.stageTextsFile, STAGE_TEXT_HEADERS, false).map(normalizeStageTextRow);
     const target = rows.find((row) => row.id === id);

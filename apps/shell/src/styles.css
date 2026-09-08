@@ -1598,6 +1598,21 @@ html[data-event-profile="geumcheon-2026"] .challenge-screen > .countdown-overlay
   font-weight: 900;
 }
 
+.system-notices {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 3;
+  display: grid;
+  gap: 8px;
+  max-width: min(440px, 42vw);
+  pointer-events: none;
+}
+
+.system-notices .system-notice {
+  position: static;
+}
+
 .stage-counts,
 .admin-toolbar {
   display: flex;
@@ -3577,13 +3592,15 @@ html[data-event-profile="geumcheon-2026"] .challenge-guide {
 }
 
 html[data-event-profile="geumcheon-2026"] .system-notice {
-  top: 14px;
-  right: 18px;
-  bottom: auto;
-  max-width: min(440px, 42vw);
   padding: 10px 14px;
   pointer-events: none;
   text-align: center;
+}
+
+html[data-event-profile="geumcheon-2026"] .system-notices {
+  top: 14px;
+  right: 18px;
+  bottom: auto;
 }
 
 html[data-event-profile="geumcheon-2026"] .leader-actions {

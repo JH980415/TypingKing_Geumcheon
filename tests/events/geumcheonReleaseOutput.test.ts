@@ -22,7 +22,11 @@ const publicResources = [
   "events/geumcheon-2026/assets/robot_03_speed_champion.png",
   "events/geumcheon-2026/assets/robot_04_science_lab.png",
   "events/geumcheon-2026/assets/robot_05_festival_victory.png",
-  "events/geumcheon-2026/assets/robot_defeat_01_geumnarae_typer.png",
+    "events/geumcheon-2026/assets/robot_defeat_01_geumnarae_typer.png",
+    "events/geumcheon-2026/assets/금나래 승리.png",
+    "events/geumcheon-2026/assets/금나래패배_스테이지1.png",
+    "events/geumcheon-2026/assets/금나래패배_스테이지2.png",
+    "events/geumcheon-2026/assets/금나래패배_스테이지3.png",
   "events/geumcheon-2026/assets/stage_01_03_science_classroom.png",
   "events/geumcheon-2026/assets/ai_타자왕_금나래의_도전.png",
   "events/geumcheon-2026/assets/vs_03_science_portal.png",
@@ -85,11 +89,23 @@ test("prepares an R2 release override without replacing release-geumcheon", () =
       fs.existsSync(path.join(fixtureRoot, outputRoot, ".typingking-geumcheon-client-release.json")),
       true
     );
+  assert.equal(
+    fs.existsSync(path.join(fixtureRoot, outputRoot, "G-Science AI 타자왕.exe")),
+    true
+  );
+  for (const fileName of [
+    "금나래 승리.png",
+    "금나래패배_스테이지1.png",
+    "금나래패배_스테이지2.png",
+    "금나래패배_스테이지3.png"
+  ]) {
     assert.equal(
-      fs.existsSync(path.join(fixtureRoot, outputRoot, "G-Science AI 타자왕.exe")),
-      true
+      fs.existsSync(path.join(fixtureRoot, outputRoot, "events", "geumcheon-2026", "assets", fileName)),
+      true,
+      `missing active Geumcheon result asset: ${fileName}`
     );
-  } finally {
+  }
+} finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true });
   }
 });

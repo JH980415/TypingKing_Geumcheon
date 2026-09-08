@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "environment": "production",
+  "eventProfileId": "geumcheon-2026",
+  "devices": [
+    { "pc": "리더보드 PC", "profileFile": "leaderboard_01.device-profile.json", "deviceId": "LEADERBOARD01", "role": "leaderboard", "variant": "ai-leaderboard", "environment": "production", "credentialRole": "leaderboard", "operatorCredentialRole": "operator" },
+    { "pc": "플레이어 PC 1", "profileFile": "player_01.device-profile.json", "deviceId": "PC01", "role": "player", "variant": "ai", "environment": "production", "credentialRole": "writer" },
+    { "pc": "플레이어 PC 2", "profileFile": "player_02.device-profile.json", "deviceId": "PC02", "role": "player", "variant": "ai", "environment": "production", "credentialRole": "writer" },
+    { "pc": "플레이어 PC 3", "profileFile": "player_03.device-profile.json", "deviceId": "PC03", "role": "player", "variant": "ai", "environment": "production", "credentialRole": "writer" },
+    { "pc": "플레이어 PC 4", "profileFile": "player_04.device-profile.json", "deviceId": "PC04", "role": "player", "variant": "ai", "environment": "production", "credentialRole": "writer" }
+  ]
+}

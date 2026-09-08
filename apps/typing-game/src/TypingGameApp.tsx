@@ -45,6 +45,20 @@ type Props = {
 };
 
 type GameMode = "normal" | "ai_challenge";
+export function shouldShowBrandHeader(profileId: string, screen: "start" | "game" | "ai" | "result"): boolean {
+  return profileId !== "geumcheon-2026" || (screen !== "start" && screen !== "ai" && screen !== "result");
+}
+
+const GEUMCHEON_ROUTINE_CREATION_NOTICES = new Set([
+  "설정 파일이 없어 기본 설정으로 생성합니다.",
+  "기록 파일이 없어 새로 생성합니다.",
+  "연습모드 설정을 공식 설정에서 복사해 생성했습니다. 폴더 생성 및 검증을 실행해 주세요."
+]);
+
+export function visibleBootstrapNotices(profileId: string, notices: readonly string[]): string[] {
+  if (profileId !== "geumcheon-2026") return [...notices];
+  return notices.filter((notice) => !GEUMCHEON_ROUTINE_CREATION_NOTICES.has(notice));
+}
 type DebugModeType = "" | "normal_typing_debug" | "ai_challenge_debug";
 type GameControlAction = "home" | "retry";
 
@@ -123,6 +137,7 @@ function sameGameConfig(a: BootstrapData["config"], b: BootstrapData["config"]):
 }
 
 export function TypingGameApp({ bootstrap }: Props) {
+  const visibleNotices = visibleBootstrapNotices(bootstrap.eventProfile.profileId, bootstrap.notices);
   const { assetBaseUrl } = bootstrap;
   const [config, setConfig] = useState(bootstrap.config);
   const isPracticeApp = bootstrap.variantPolicy.sessionKind === "practice";
@@ -719,7 +734,7 @@ export function TypingGameApp({ bootstrap }: Props) {
   if (screen === "result" && result) {
     return (
       <main className="app game-app" style={{ backgroundImage: `url("${screenBackground}")` }}>
-        <BrandHeader bootstrap={bootstrap} />
+        {shouldShowBrandHeader(bootstrap.eventProfile.profileId, "result") && <BrandHeader bootstrap={bootstrap} />}
         <ResultScreen
           result={result}
           assetBaseUrl={assetBaseUrl}
@@ -822,7 +837,7 @@ export function TypingGameApp({ bootstrap }: Props) {
     };
     return (
       <main className="app game-app" style={{ backgroundImage: `url("${screenBackground}")` }}>
-        <BrandHeader bootstrap={bootstrap} />
+        {shouldShowBrandHeader(bootstrap.eventProfile.profileId, "ai") && <BrandHeader bootstrap={bootstrap} />}
         <AIChallengeGame
           key={aiRunId}
           config={config}
@@ -1077,9 +1092,13 @@ export function TypingGameApp({ bootstrap }: Props) {
           sessionKind={bootstrap.variantPolicy.sessionKind}
         />
       )}
-      {bootstrap.notices.map((notice) => (
-        <div className="system-notice" key={notice}>{notice}</div>
-      ))}
+      {visibleNotices.length > 0 && (
+        <div className="system-notices" role="status" aria-live="polite">
+          {visibleNotices.map((notice) => (
+            <div className="system-notice" key={notice}>{notice}</div>
+          ))}
+        </div>
+      )}
     </main>
   );
 }

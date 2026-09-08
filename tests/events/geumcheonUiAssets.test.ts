@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { createElement } from "react";
@@ -9,6 +10,7 @@ import * as typingGameModule from "../../apps/typing-game/src/TypingGameApp";
 import { DEFAULT_CONFIG } from "../../shared/constants/defaults";
 import { createBootstrapData } from "../../shared/events/bootstrapData";
 import { loadEventProfile } from "../../shared/events/eventProfile";
+import { resolveAiBossResultAsset } from "../../shared/events/types";
 
 const geumcheonProfile = loadEventProfile(path.resolve("events/geumcheon-2026/event.config.json"));
 
@@ -68,6 +70,62 @@ test("uses the user-approved Geumcheon title and refreshed stage badges", () => 
     "assets/ai_challenge/stage_badge_2_r203.png",
     "assets/ai_challenge/stage_badge_3_r203.png"
   ]);
+});
+
+test("maps the approved Geumcheon result art by winner and stage", () => {
+  assert.equal(resolveAiBossResultAsset(geumcheonProfile, "AI_WIN", 1), "assets/금나래 승리.png");
+  assert.deepEqual(geumcheonProfile.assets.aiBossDefeats, [
+    "assets/금나래패배_스테이지1.png",
+    "assets/금나래패배_스테이지2.png",
+    "assets/금나래패배_스테이지3.png"
+  ]);
+  for (const stage of [1, 2, 3] as const) {
+    assert.equal(resolveAiBossResultAsset(geumcheonProfile, "USER_WIN", stage), `assets/금나래패배_스테이지${stage}.png`);
+  }
+});
+
+test("omits the duplicate brand header on Geumcheon AI and result screens", () => {
+  const shouldShowBrandHeader = (typingGameModule as typeof typingGameModule & {
+    shouldShowBrandHeader?: (profileId: string, screen: "start" | "game" | "ai" | "result") => boolean;
+  }).shouldShowBrandHeader;
+  assert.equal(typeof shouldShowBrandHeader, "function");
+  assert.equal(shouldShowBrandHeader?.("geumcheon-2026", "ai"), false);
+  assert.equal(shouldShowBrandHeader?.("geumcheon-2026", "result"), false);
+  assert.equal(shouldShowBrandHeader?.("skillup-2026", "ai"), true);
+});
+
+test("stacks multiple permanent system notices without dropping fallback errors", () => {
+  const html = renderToStaticMarkup(createElement(typingGameModule.TypingGameApp, {
+    bootstrap: createBootstrapData({ config: DEFAULT_CONFIG, assetBaseUrl: "file:///resources/assets", notices: ["기본 문구로 복구했습니다.", "기본 설정으로 복구했습니다."], mode: "game", variant: "ai", eventProfile: geumcheonProfile })
+  }));
+  assert.match(html, /class="system-notices"/);
+  assert.equal((html.match(/class="system-notice"/g) ?? []).length, 2);
+  assert.match(html, /기본 문구로 복구했습니다/);
+  assert.match(html, /기본 설정으로 복구했습니다/);
+});
+
+test("hides routine Geumcheon first-run creation notices but keeps real stage fallback errors", () => {
+  const html = renderToStaticMarkup(createElement(typingGameModule.TypingGameApp, {
+    bootstrap: createBootstrapData({ config: DEFAULT_CONFIG, assetBaseUrl: "file:///resources/assets", notices: [
+      "설정 파일이 없어 기본 설정으로 생성합니다.",
+      "기록 파일이 없어 새로 생성합니다.",
+      "문구 파일을 읽지 못해 기본 문구를 사용합니다."
+    ], mode: "game", variant: "ai", eventProfile: geumcheonProfile })
+  }));
+  assert.doesNotMatch(html, /설정 파일이 없어|기록 파일이 없어/);
+  assert.match(html, /문구 파일을 읽지 못해 기본 문구를 사용합니다/);
+});
+
+test("all eight Geumcheon builders include approved result art and R6 candidate metadata", () => {
+  const configs = fs.readdirSync(path.resolve()).filter((name) => /^electron-builder\.geumcheon.*\.yml$/.test(name));
+  assert.equal(configs.length, 8);
+  for (const config of configs) {
+    const source = fs.readFileSync(path.resolve(config), "utf8");
+    assert.match(source, /typingKingReleaseCandidate: R6-v2-20260908/, config);
+    for (const asset of ["금나래 승리.png", "금나래패배_스테이지1.png", "금나래패배_스테이지2.png", "금나래패배_스테이지3.png"]) {
+      assert.match(source, new RegExp(`assets/${asset.replace(".", "\\.")}`), `${config}: ${asset}`);
+    }
+  }
 });
 
 test("renders the approved Geumcheon leaderboard background", () => {

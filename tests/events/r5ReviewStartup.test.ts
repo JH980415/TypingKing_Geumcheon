@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { resolveLaunchPolicy, resolvePackagedMetadata, resolveStartupProfile } from "../../electron/startupProfile";
+import { formatStartupErrorForDisplay, resolveLaunchPolicy, resolvePackagedMetadata, resolveStartupProfile } from "../../electron/startupProfile";
 
 const reviewPackage = {
   typingKingEnvironment: "review",
@@ -68,4 +68,33 @@ test("keeps official and practice review storage shared only by matching game an
   assert.equal(paths[2].runtimeRoot, paths[3].runtimeRoot);
   assert.notEqual(paths[0].runtimeRoot, paths[2].runtimeRoot);
   assert.equal(new Set(paths.map((entry) => entry.userDataPath)).size, 4);
+});
+
+test("preserves an outdated review catalog and gives a safe update instruction instead of silently falling back", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r6-catalog-update-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const eventRoot = path.join(root, "events", "geumcheon-2026");
+  const localAppData = path.join(root, "LocalAppData");
+  fs.mkdirSync(eventRoot, { recursive: true });
+  for (const name of ["event.config.json", "stage_texts.csv"]) {
+    fs.copyFileSync(path.resolve("events/geumcheon-2026", name), path.join(eventRoot, name));
+  }
+  const target = path.join(localAppData, "ThePMD", "TypingKing", "Geumcheon2026", "Review", "official", "data", "stage_texts.csv");
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  const outdated = fs.readFileSync(path.join(eventRoot, "stage_texts.csv"), "utf8").replaceAll("geumcheon-r5-20260903-v1", "obsolete-test-catalog");
+  fs.writeFileSync(target, outdated);
+  const metadata = resolvePackagedMetadata(reviewPackage);
+  let caught: unknown;
+  try {
+    resolveStartupProfile({
+      isPackaged: true, projectRoot: root, executableDirectory: path.join(root, "portable"),
+      localAppData, packagedEventProfile: metadata.eventProfileId, reviewContext: metadata.reviewContext,
+    });
+  } catch (error) { caught = error; }
+  assert.ok(caught instanceof Error, "outdated catalog must block startup");
+  assert.equal(fs.readFileSync(target, "utf8"), outdated, "existing data must not be overwritten");
+  const message = formatStartupErrorForDisplay(caught);
+  assert.match(message, /문구 파일.*업데이트/);
+  assert.doesNotMatch(message, /obsolete-test-catalog|LocalAppData|typingking-r6-catalog-update/);
+  assert.doesNotMatch(formatStartupErrorForDisplay(new Error("unknown-private-detail")), /unknown-private-detail/);
 });

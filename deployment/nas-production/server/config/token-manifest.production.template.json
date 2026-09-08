@@ -1,0 +1,12 @@
+{
+  "manifestVersion": 1,
+  "eventId": "geumcheon-science-festival-2026",
+  "tokens": [
+    { "tokenId": "writer-pc01", "tokenHash": "__SHA256_OF_PC01_TOKEN__", "deviceId": "PC01", "role": "writer", "allowedSessions": ["official", "practice"], "expiresAt": "__TOKEN_EXPIRY_ISO8601__", "revokedAt": null },
+    { "tokenId": "writer-pc02", "tokenHash": "__SHA256_OF_PC02_TOKEN__", "deviceId": "PC02", "role": "writer", "allowedSessions": ["official", "practice"], "expiresAt": "__TOKEN_EXPIRY_ISO8601__", "revokedAt": null },
+    { "tokenId": "writer-pc03", "tokenHash": "__SHA256_OF_PC03_TOKEN__", "deviceId": "PC03", "role": "writer", "allowedSessions": ["official", "practice"], "expiresAt": "__TOKEN_EXPIRY_ISO8601__", "revokedAt": null },
+    { "tokenId": "writer-pc04", "tokenHash": "__SHA256_OF_PC04_TOKEN__", "deviceId": "PC04", "role": "writer", "allowedSessions": ["official", "practice"], "expiresAt": "__TOKEN_EXPIRY_ISO8601__", "revokedAt": null },
+    { "tokenId": "leaderboard-read", "tokenHash": "__SHA256_OF_LEADERBOARD_TOKEN__", "deviceId": "LEADERBOARD01", "role": "leaderboard", "allowedSessions": ["official", "practice"], "expiresAt": "__TOKEN_EXPIRY_ISO8601__", "revokedAt": null },
+    { "tokenId": "leaderboard-operator", "tokenHash": "__SHA256_OF_OPERATOR_TOKEN__", "deviceId": "LEADERBOARD01", "role": "operator", "allowedSessions": ["official", "practice"], "expiresAt": "__TOKEN_EXPIRY_ISO8601__", "revokedAt": null }
+  ]
+}

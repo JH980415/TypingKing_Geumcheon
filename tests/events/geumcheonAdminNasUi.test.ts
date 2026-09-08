@@ -11,6 +11,19 @@ import {
   validateStorageAccessForRole
 } from "../../apps/shell/src/OneDriveSettingsPanel";
 import { formatStageTextPublishSuccess } from "../../apps/typing-game/src/StageTextAdmin";
+import * as stageTextAdminUi from "../../apps/typing-game/src/StageTextAdmin";
+
+test("approved Geumcheon catalog editing is unavailable while SkillUp official editing remains available", () => {
+  const allowed = (stageTextAdminUi as typeof stageTextAdminUi & {
+    stageTextEditingAllowed?: (profileId: "geumcheon-2026" | "skillup-2026" | undefined, practice: boolean) => boolean;
+  }).stageTextEditingAllowed;
+  assert.equal(typeof allowed, "function");
+  assert.equal(allowed?.("geumcheon-2026", false), false);
+  assert.equal(allowed?.("geumcheon-2026", true), false);
+  assert.equal(allowed?.("skillup-2026", false), true);
+  assert.equal(allowed?.(undefined, false), true);
+  assert.equal(allowed?.("skillup-2026", true), false);
+});
 import * as leaderboardModule from "../../apps/leaderboard/src/LeaderboardApp";
 import { formatGameStartReadinessFailure } from "../../apps/typing-game/src/TypingGameApp";
 

@@ -496,7 +496,7 @@ async function registerIpc(
   const migratedFileCount = portableRuntimeMigrationAllowed(eventProfile.profileId)
     ? migratePortableRuntime(resolveRoot(), runtimeRoot)
     : 0;
-  const ctx = ensureRuntime(runtimeRoot, applicationResources.resourceRoot);
+  const ctx = ensureRuntime(runtimeRoot, applicationResources.resourceRoot, { eventProfile });
   if (migratedFileCount > 0) {
     ctx.notices.push(`기존 실행 폴더의 설정과 누락 기록 ${migratedFileCount}개를 이 PC의 로컬 저장소로 복사했습니다.`);
   }

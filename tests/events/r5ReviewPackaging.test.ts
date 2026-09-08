@@ -75,7 +75,8 @@ test("four review configs stamp isolated portable artifacts with the strict revi
       typingKingEventProfile: "geumcheon-2026",
       typingKingVariant: spec.variant,
       typingKingEnvironment: "review",
-      typingKingBuildId: "R2.0.4-R5"
+        typingKingBuildId: "R2.0.4-R5",
+        typingKingReleaseCandidate: "R6-v2-20260908"
     });
     assert.equal(config.directories?.output, spec.output);
     assert.deepEqual(config.files, ["dist-renderer/**", "dist-electron/**", "package.json"]);

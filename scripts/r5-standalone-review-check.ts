@@ -51,6 +51,88 @@ type PlayerWindowLayoutObservation = {
   guideLineCount: number;
 };
 
+export function assessConcurrentEvidence(input: {
+  simultaneouslyReadyVariants?: string[];
+  officialRefreshes?: number;
+  practiceRefreshes?: number;
+  crossLeakCount?: number;
+  residualProcessCount?: number;
+}): string[] {
+  const violations: string[] = [];
+  const expected = ["ai", "ai-leaderboard", "practice", "practice-leaderboard"];
+  const ready = new Set(input.simultaneouslyReadyVariants ?? []);
+  if (expected.some((variant) => !ready.has(variant))) violations.push("FOUR_VARIANTS_NOT_SIMULTANEOUS");
+  if (!input.officialRefreshes) violations.push("OFFICIAL_SHARE_NOT_OBSERVED");
+  else if (input.officialRefreshes > 2) violations.push("OFFICIAL_SHARE_EXCEEDED_TWO_REFRESHES");
+  if (!input.practiceRefreshes) violations.push("PRACTICE_SHARE_NOT_OBSERVED");
+  else if (input.practiceRefreshes > 2) violations.push("PRACTICE_SHARE_EXCEEDED_TWO_REFRESHES");
+  if ((input.crossLeakCount ?? 0) > 0) violations.push(`CROSS_SESSION_LEAK:${input.crossLeakCount}`);
+  if ((input.residualProcessCount ?? 0) > 0) violations.push(`RESIDUAL_PROCESS:${input.residualProcessCount}`);
+  return violations;
+}
+
+export function assessLeaderboardViewDifference(input: {
+  allRowCount?: number;
+  bestRowCount?: number;
+  repeatParticipantAttempts?: number;
+}): string[] {
+  const violations: string[] = [];
+  if ((input.repeatParticipantAttempts ?? 0) < 2) violations.push("REPEAT_PARTICIPANT_ATTEMPTS_MISSING");
+  if ((input.bestRowCount ?? 0) >= (input.allRowCount ?? 0)) violations.push("BEST_VIEW_DID_NOT_REDUCE_ROWS");
+  return violations;
+}
+
+export function assessResetEvidence(input: {
+  rowsBefore?: number;
+  rowsAfter?: number;
+  sourceRecordsBefore?: number;
+  sourceRecordsAfter?: number;
+}): string[] {
+  const violations: string[] = [];
+  if ((input.rowsBefore ?? 0) < 1 || (input.rowsAfter ?? -1) !== 0) violations.push("RESET_DID_NOT_CLEAR_VISIBLE_ROWS");
+  if (input.sourceRecordsAfter !== input.sourceRecordsBefore) violations.push("RESET_DELETED_SOURCE_RECORDS");
+  return violations;
+}
+
+export function assessStandaloneReviewVerdict(input: {
+  concurrentViolations?: string[];
+  results?: Array<{ variant?: string; verdict?: string; cleanExit?: boolean; forcedCleanup?: boolean }>;
+  stageSeeds?: Array<{ session?: string; exists?: boolean; seededBeforeInitialization?: boolean; canonicalDrawObserved?: boolean }>;
+}): string[] {
+  const violations = [...(input.concurrentViolations ?? [])];
+  for (const result of input.results ?? []) {
+    const variant = result.variant ?? "unknown";
+    if (result.verdict !== "PASS") violations.push(`VARIANT_NOT_PASS:${variant}`);
+    if (result.cleanExit !== true) violations.push(`VARIANT_UNCLEAN_EXIT:${variant}`);
+    if (result.forcedCleanup === true) violations.push(`VARIANT_FORCED_CLEANUP:${variant}`);
+  }
+  for (const seed of input.stageSeeds ?? []) {
+    if (!seed.exists || !seed.seededBeforeInitialization || !seed.canonicalDrawObserved) {
+      violations.push(`STAGE_SEED_INVALID:${seed.session ?? "unknown"}`);
+    }
+  }
+  return violations;
+}
+
+export function reviewHarnessLaunchEvidence(): Record<string, unknown> {
+  return {
+    method: "PowerShell Start-Process (ShellExecute)",
+    extraArguments: ["--remote-debugging-port=<ephemeral>", "--user-data-dir=<variant-isolated>"],
+    environmentOverrides: ["LOCALAPPDATA", "APPDATA", "TEMP", "TMP"],
+    ordinaryNoArgumentLaunch: false,
+    defaultUserDirectories: false
+  };
+}
+
+export function concurrentRuntimeDirectories(root: string, variant: string): Record<string, string> {
+  return {
+    LOCALAPPDATA: path.join(root, "runtime", "LocalAppData"),
+    APPDATA: path.join(root, "runtime", "AppData", variant),
+    TEMP: path.join(root, "runtime", "Temp", variant),
+    TMP: path.join(root, "runtime", "Temp", variant)
+  };
+}
+
 export const REVIEW_EXTERNAL_STORAGE_API_METHODS = [
   "publishStageTextsToOneDrive",
   "getOneDriveSettings",
@@ -403,14 +485,105 @@ function sanitizedEnvironment(overrides: Record<string, string>): NodeJS.Process
   return { ...env, ...overrides };
 }
 
-function launchViaShellExecute(exePath: string, cwd: string, port: number, env: NodeJS.ProcessEnv): number {
+async function captureResolutionEvidence(page: Page, variant: Variant, screen: string, outputRoot: string): Promise<Array<Record<string, unknown>>> {
+  const evidence: Array<Record<string, unknown>> = [];
+  for (const [width, height] of [[1280, 720], [1920, 1080]] as const) {
+    await page.evaluate(({ width, height }) => {
+      window.resizeTo(width + window.outerWidth - window.innerWidth, height + window.outerHeight - window.innerHeight);
+    }, { width, height });
+    await waitUntil(`${variant} ${screen} viewport ${width}x${height}`, () => page.evaluate(({ width, height }) => window.innerWidth === width && window.innerHeight === height, { width, height }), 10_000);
+    const geometry = await page.evaluate(() => {
+      const rect = (selector: string) => {
+        const bounds = document.querySelector(selector)?.getBoundingClientRect();
+        return bounds ? { left: bounds.left, top: bounds.top, right: bounds.right, bottom: bounds.bottom, width: bounds.width, height: bounds.height } : null;
+      };
+      const slogan = document.querySelector(".entry-event-copy span");
+      const sloganRect = slogan?.getBoundingClientRect();
+      const app = document.querySelector<HTMLElement>(".leaderboard-app");
+      const leaderboardBoard = document.querySelector<HTMLElement>(".ranking-table.ai-ranking");
+      const leaderboardTitle = leaderboardBoard?.querySelector<HTMLImageElement>(".leaderboard-ai-title-img") ?? null;
+      const leaderboardTitleContainer = leaderboardTitle?.closest<HTMLElement>(".leaderboard-mode-title") ?? null;
+      const appStyle = app ? getComputedStyle(app) : null;
+      const boardRect = leaderboardBoard?.getBoundingClientRect();
+      const boardTitleRect = leaderboardTitle?.getBoundingClientRect();
+      const boardTitleContainerRect = leaderboardTitleContainer?.getBoundingClientRect();
+      return {
+        innerWidth: window.innerWidth, innerHeight: window.innerHeight,
+        outerWidth: window.outerWidth, outerHeight: window.outerHeight,
+        titleBox: rect(".left-title-group"), titleArtwork: rect(".geumcheon-main-title-image"), secondGuide: rect(".hero-copy"),
+        slogan: sloganRect ? { left: sloganRect.left, top: sloganRect.top, right: sloganRect.right, bottom: sloganRect.bottom, width: sloganRect.width, height: sloganRect.height } : null,
+        sloganCenterVisible: Boolean(slogan && sloganRect && document.elementFromPoint(sloganRect.left + sloganRect.width / 2, sloganRect.top + sloganRect.height / 2)?.closest(".entry-event-copy")),
+        visibleMappedImages: Array.from(document.querySelectorAll<HTMLImageElement>(".ai-boss-typing, .challenge-modal-art, .challenge-result-art"))
+          .filter((image) => image.getBoundingClientRect().width > 0 && image.getBoundingClientRect().height > 0)
+          .map((image) => ({ src: image.src, alt: image.alt, naturalWidth: image.naturalWidth, naturalHeight: image.naturalHeight })),
+        leaderboard: app && boardRect && boardTitleRect && boardTitleContainerRect ? {
+          backgroundImage: appStyle?.backgroundImage ?? "",
+          backgroundPosition: appStyle?.backgroundPosition ?? "",
+          backgroundSize: appStyle?.backgroundSize ?? "",
+          backgroundRepeat: appStyle?.backgroundRepeat ?? "",
+          board: rect(".ranking-table.ai-ranking"),
+          titleContainer: rect(".ranking-table.ai-ranking .leaderboard-mode-title"),
+          title: rect(".ranking-table.ai-ranking .leaderboard-ai-title-img"),
+          titleSrc: leaderboardTitle.currentSrc || leaderboardTitle.src,
+          titleNaturalWidth: leaderboardTitle.naturalWidth,
+          titleNaturalHeight: leaderboardTitle.naturalHeight,
+          titleCenterOffsetPx: Math.abs((boardTitleRect.left + boardTitleRect.width / 2) - (boardRect.left + boardRect.width / 2)),
+          titleContainerCenterOffsetPx: Math.abs((boardTitleContainerRect.left + boardTitleContainerRect.width / 2) - (boardRect.left + boardRect.width / 2)),
+          titleWithinContainer: boardTitleRect.left >= boardTitleContainerRect.left - 1 && boardTitleRect.right <= boardTitleContainerRect.right + 1 && boardTitleRect.top >= boardTitleContainerRect.top - 1 && boardTitleRect.bottom <= boardTitleContainerRect.bottom + 1,
+          titleContainerWithinBoard: boardTitleContainerRect.left >= boardRect.left - 1 && boardTitleContainerRect.right <= boardRect.right + 1 && boardTitleContainerRect.top >= boardRect.top - 1 && boardTitleContainerRect.bottom <= boardRect.bottom + 1
+        } : null
+      };
+    });
+    const screenshot = path.join(outputRoot, "screenshots", `${variant}-${screen}-${width}x${height}.png`);
+    await page.screenshot({ path: screenshot });
+    assert.equal(geometry.innerWidth, width);
+    assert.equal(geometry.innerHeight, height);
+    const group = geometry.titleBox;
+    const title = geometry.titleArtwork;
+    const guide = geometry.secondGuide;
+    const alignment = screen === "main" && group && title && guide ? {
+      titleWidthPx: title.width,
+      secondGuideWidthPx: guide.width,
+      widthDifferencePx: Math.abs(title.width - guide.width),
+      titleCenterOffsetPx: Math.abs((title.left + title.width / 2) - (group.left + group.width / 2)),
+      secondGuideCenterOffsetPx: Math.abs((guide.left + guide.width / 2) - (group.left + group.width / 2)),
+      titleContained: title.left >= group.left - 1 && title.right <= group.right + 1,
+      secondGuideContained: guide.left >= group.left - 1 && guide.right <= group.right + 1
+    } : null;
+    const centerTolerancePx = width <= 1366 ? 3 : 2;
+    const alignmentStatus = alignment
+      ? (alignment.titleContained && alignment.secondGuideContained && alignment.titleCenterOffsetPx <= centerTolerancePx && alignment.secondGuideCenterOffsetPx <= centerTolerancePx ? "PASS" : "PARTIAL")
+      : "NOT_APPLICABLE";
+    evidence.push({ requestedViewport: { width, height }, resizeMethod: "window.resizeTo with measured outer-inner chrome compensation", ...geometry, alignment, alignmentStatus, screenshot });
+  }
+  return evidence;
+}
+
+async function openAdminAndValidate(page: Page, variant: Variant, outputRoot: string): Promise<string> {
+  await page.getByRole("button", { name: "관리자", exact: true }).click();
+  await page.locator(".admin-modal").waitFor({ state: "visible" });
+  const inputs = page.locator(".admin-login-grid input");
+  await inputs.nth(0).fill("synthetic-review-admin");
+  await inputs.nth(1).fill(REVIEW_LOCAL_ADMIN_PASSWORD);
+  await page.getByRole("button", { name: "진입", exact: true }).click();
+  await page.locator(".admin-modal.wide").waitFor({ state: "visible" });
+  await page.getByRole("button", { name: "로컬 저장소 검증" }).click();
+  const tuple = page.locator(".geumcheon-nas-status-panel .notice-text");
+  await waitUntil("visible completed storage tuple", () => tuple.innerText().then((text) => text.includes("정상")), 10_000);
+  const message = await tuple.innerText();
+  await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-admin-validation-complete.png`) });
+  await page.getByRole("button", { name: "닫기", exact: true }).click();
+  return message;
+}
+
+function launchViaShellExecute(exePath: string, cwd: string, port: number, userDataDir: string, env: NodeJS.ProcessEnv): number {
   const script = [
     "$ErrorActionPreference='Stop'",
-    "$p=Start-Process -FilePath $env:TK_R5_EXE -WorkingDirectory $env:TK_R5_CWD -ArgumentList @('--remote-debugging-port=' + $env:TK_R5_PORT) -PassThru",
+    "$p=Start-Process -FilePath $env:TK_R5_EXE -WorkingDirectory $env:TK_R5_CWD -ArgumentList @('--remote-debugging-port=' + $env:TK_R5_PORT, '--user-data-dir=' + $env:TK_R5_USER_DATA) -PassThru",
     "[Console]::Out.Write($p.Id)"
   ].join(";");
   const result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
-    encoding: "utf8", windowsHide: true, env: { ...env, TK_R5_EXE: exePath, TK_R5_CWD: cwd, TK_R5_PORT: String(port) }
+    encoding: "utf8", windowsHide: true, env: { ...env, TK_R5_EXE: exePath, TK_R5_CWD: cwd, TK_R5_PORT: String(port), TK_R5_USER_DATA: userDataDir }
   });
   if (result.status !== 0 || !/^\d+$/.test(result.stdout.trim())) throw new Error(`SHELLEXECUTE_FAILED:${result.stderr.trim()}`);
   return Number(result.stdout.trim());
@@ -425,9 +598,12 @@ function processTree(rootPid: number): ProcessInfo[] {
   return (Array.isArray(value) ? value : [value]) as ProcessInfo[];
 }
 
-async function playerFlow(page: Page, variant: Variant, outputRoot: string): Promise<{ recordId: string; participantName: string; searchNeedle: string; stageTexts: string[] }> {
+async function playerFlow(page: Page, variant: Variant, outputRoot: string): Promise<{ recordId: string; participantName: string; searchNeedle: string; stageTexts: string[]; repeatParticipantAttempts: number; resolutionEvidence: Array<Record<string, unknown>> }> {
   const participantName = variant === "ai" ? "합성공식검증" : "합성연습검증";
   const searchNeedle = expectedMaskedPhoneSearchNeedle(variant);
+  const resolutionEvidence: Array<Record<string, unknown>> = [];
+  await openAdminAndValidate(page, variant, outputRoot);
+  resolutionEvidence.push(...await captureResolutionEvidence(page, variant, "main", outputRoot));
   await page.locator(".entry-form-group input").first().fill(participantName);
   const phone = page.locator(".phone-row input");
   await phone.nth(0).fill(variant === "ai" ? "5101" : "5201");
@@ -437,6 +613,12 @@ async function playerFlow(page: Page, variant: Variant, outputRoot: string): Pro
   await birth.nth(1).selectOption("1");
   await birth.nth(2).selectOption("2");
   await page.locator('.entry-form-group input[type="checkbox"]').check();
+  await page.locator(".entry-form-group input").first().focus();
+  await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-focus-input.png`) });
+  await birth.nth(0).focus();
+  await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-focus-select.png`) });
+  await page.locator('.entry-form-group input[type="checkbox"]').focus();
+  await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-focus-checkbox.png`) });
   await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-main.png`) });
   await page.locator(".entry-panel .button-row .primary-button").click();
   await page.locator(".challenge-screen").waitFor({ state: "visible", timeout: 30_000 });
@@ -444,24 +626,85 @@ async function playerFlow(page: Page, variant: Variant, outputRoot: string): Pro
   for (let stage = 1; stage <= 3; stage += 1) {
     const input = page.locator("textarea.typing-input");
     await waitUntil(`stage ${stage} input enabled`, () => input.isEnabled(), 15_000);
+    if (stage === 1) {
+      await input.focus();
+      await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-focus-challenge.png`) });
+      const aiPanel = page.locator(".duel-panel").nth(1);
+      const beforeControl = await aiPanel.innerText();
+      await page.getByRole("button", { name: "다시하기", exact: true }).click();
+      await page.locator(".game-confirm-modal").waitFor({ state: "visible" });
+      await page.getByRole("button", { name: "취소", exact: true }).click();
+      await page.locator(".game-confirm-modal").waitFor({ state: "hidden" });
+      const afterControl = await aiPanel.innerText();
+      const readCpm = (text: string) => text.match(/(\d+)\s*(?:CPM|타\/분)/)?.[1];
+      assert.equal(readCpm(afterControl), readCpm(beforeControl), `${variant} AI CPM changed across pause/resume control`);
+    }
     const target = (await page.locator(".duel-target").first().innerText()).replace(/\u00a0/g, " ").trim();
     assert.equal(canonicalStageTexts.get(stage)?.has(target), true, `${variant} stage ${stage} did not draw from canonical catalog: ${target}`);
     stageTexts.push(target);
     await input.fill(target);
     const modal = page.locator(".challenge-modal");
     await modal.waitFor({ state: "visible", timeout: 20_000 });
+    resolutionEvidence.push(...await captureResolutionEvidence(page, variant, `stage-${stage}`, outputRoot));
     await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-stage-${stage}.png`) });
     await modal.locator(".primary-button").click();
   }
   await page.locator(".challenge-result-panel").waitFor({ state: "visible", timeout: 20_000 });
+  resolutionEvidence.push(...await captureResolutionEvidence(page, variant, "result", outputRoot));
   await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-result.png`) });
+  await page.locator(".challenge-result-panel").getByRole("button", { name: "다시하기", exact: true }).click();
+  await waitUntil("AI-win replay stage input", () => page.locator("textarea.typing-input").isEnabled(), 20_000);
+  const aiWinModal = page.locator(".challenge-modal");
+  await aiWinModal.waitFor({ state: "visible", timeout: 45_000 });
+  const aiWinImage = aiWinModal.locator(".challenge-modal-art");
+  const aiWinSrc = decodeURIComponent(await aiWinImage.getAttribute("src") ?? "");
+  assert.match(aiWinSrc, /금나래 승리\.png$/, `${variant} AI-win modal did not use approved Geumnarae victory asset`);
+  resolutionEvidence.push(...await captureResolutionEvidence(page, variant, "ai-win-stage-1", outputRoot));
+  await aiWinModal.getByRole("button", { name: "다시 도전하기", exact: true }).click();
+  await waitUntil("AI-win loss record persisted", async () => {
+    const value = await page.evaluate(async () => (window as any).typingKing.listRecords());
+    return value?.data?.filter((candidate: any) => candidate.participant_name === participantName).length >= 2;
+  }, 20_000);
   const listed = await page.evaluate(async () => (window as any).typingKing.listRecords());
   const row = listed?.data?.find((candidate: any) => candidate.participant_name === participantName);
   assert.ok(row?.record_id, `${variant} result record missing`);
-  return { recordId: row.record_id, participantName, searchNeedle, stageTexts };
+  const repeated = await page.evaluate(async (input) => (window as any).typingKing.saveRecord(input), {
+    participant_name: participantName,
+    phone_part1: variant === "ai" ? "5101" : "5201",
+    phone_part2: searchNeedle,
+    phone_part3: "6301",
+    birth_year: "2012",
+    birth_month: "01",
+    birth_day: "02",
+    privacy_agreed: true,
+    privacy_agreed_at: "2026-09-08T00:00:00.000Z",
+    stageTexts,
+    stageTimesMs: [1100, 1200, 1300]
+  } satisfies SaveRecordInput);
+  assert.equal(repeated?.ok, true, `${variant} repeat participant attempt save failed`);
+  for (let index = 1; index <= 9; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    const seeded = await page.evaluate(async (input) => (window as any).typingKing.saveRecord(input), {
+      participant_name: `${variant === "ai" ? "합성공식" : "합성연습"}${suffix}`,
+      phone_part1: variant === "ai" ? "7101" : "7201",
+      phone_part2: `${index}`.padStart(4, "0"),
+      phone_part3: `${index + 100}`.padStart(4, "0"),
+      birth_year: "2012", birth_month: "01", birth_day: "02",
+      privacy_agreed: true, privacy_agreed_at: "2026-09-08T00:00:00.000Z",
+      stageTexts, stageTimesMs: [1400 + index, 1500 + index, 1600 + index]
+    } satisfies SaveRecordInput);
+    assert.equal(seeded?.ok, true, `${variant} synthetic participant ${suffix} save failed`);
+  }
+  const repeatedRows = await page.evaluate(async () => (window as any).typingKing.listRecords());
+  const repeatParticipantAttempts = repeatedRows.data.filter((candidate: any) => candidate.participant_name === participantName).length;
+  const uniqueParticipantCount = new Set(repeatedRows.data.map((candidate: any) => candidate.participantKey)).size;
+  assert.ok(repeatParticipantAttempts >= 2, `${variant} repeat participant attempts missing`);
+  assert.ok(uniqueParticipantCount >= 10, `${variant} synthetic ten-participant fixture missing`);
+  return { recordId: row.record_id, participantName, searchNeedle, stageTexts, repeatParticipantAttempts, uniqueParticipantCount, resolutionEvidence };
 }
 
-async function leaderboardFlow(page: Page, expected: { recordId: string; participantName: string; searchNeedle: string }, forbiddenId: string, outputRoot: string, variant: Variant): Promise<{ refreshes: number; crossLeak: number }> {
+async function leaderboardFlow(page: Page, expected: { recordId: string; participantName: string; searchNeedle: string; repeatParticipantAttempts: number }, forbiddenId: string, outputRoot: string, variant: Variant, reviewStorageRoot: string): Promise<{ refreshes: number; crossLeak: number; allRowCount: number; bestRowCount: number; repeatParticipantAttempts: number; reset: Record<string, number>; resolutionEvidence: Array<Record<string, unknown>> }> {
+  const resolutionEvidence: Array<Record<string, unknown>> = [];
   let rows: any[] = [];
   let refreshes = 0;
   while (refreshes < 2) {
@@ -476,6 +719,18 @@ async function leaderboardFlow(page: Page, expected: { recordId: string; partici
   assert.ok(rows.some((row) => row.record_id === expected.recordId), `${variant} pair record not shared within two refreshes`);
   const crossLeak = rows.filter((row) => row.record_id === forbiddenId).length;
   assert.equal(crossLeak, 0, `${variant} cross namespace leak`);
+  const initialLeaderboardEvidence = await captureResolutionEvidence(page, variant, "leaderboard-initial", outputRoot);
+  for (const entry of initialLeaderboardEvidence) {
+    const structure = entry.leaderboard as any;
+    assert.ok(structure, `${variant} leaderboard structure missing`);
+    assert.match(structure.backgroundImage, /stage_01_03_science_classroom\.png/);
+    assert.match(decodeURIComponent(structure.titleSrc), /ai_타자왕_금나래의_도전\.png$/);
+    assert.equal(structure.titleWithinContainer, true);
+    assert.equal(structure.titleContainerWithinBoard, true);
+    assert.ok(structure.titleCenterOffsetPx <= 2, `${variant} central title offset ${structure.titleCenterOffsetPx}`);
+    assert.ok(structure.titleContainerCenterOffsetPx <= 2, `${variant} title container offset ${structure.titleContainerCenterOffsetPx}`);
+  }
+  resolutionEvidence.push(...initialLeaderboardEvidence);
   const recordIdsBeforeRejectedSave = rows.map((row) => row.record_id).sort();
   const rejectedSave = await page.evaluate(
     async (input) => (window as any).typingKing.saveRecord(input),
@@ -491,34 +746,72 @@ async function leaderboardFlow(page: Page, expected: { recordId: string; partici
   );
   const search = page.locator(".search-input");
   await search.fill(expected.searchNeedle);
+  await search.focus();
   await waitUntil("searched leaderboard row", () => page.locator(".ranking-row").count().then((count) => count === 1), 10_000);
   const searchedText = await page.locator(".ranking-row").first().innerText();
   assert.match(searchedText, new RegExp(expected.searchNeedle));
   assert.equal(searchedText.includes(expected.participantName), false, `${variant} exposed raw participant name before admin authorization`);
   await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-search.png`) });
+  await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-focus-search.png`) });
   await search.fill("");
   await page.getByRole("button", { name: "관리자", exact: true }).click();
   await page.locator(".admin-modal").waitFor({ state: "visible" });
   const loginInputs = page.locator(".admin-login-grid input");
   await loginInputs.nth(0).fill("synthetic-review-admin");
   await loginInputs.nth(1).fill(REVIEW_LOCAL_ADMIN_PASSWORD);
+  await loginInputs.nth(0).focus();
+  await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-focus-admin.png`) });
   await page.getByRole("button", { name: "진입", exact: true }).click();
   await page.locator(".admin-toolbar").waitFor({ state: "visible", timeout: 10_000 });
+  await page.getByRole("button", { name: "로컬 저장소 검증" }).click();
+  const validationTuple = page.locator(".geumcheon-nas-status-panel .notice-text");
+  await waitUntil("leaderboard visible completed storage tuple", () => validationTuple.innerText().then((text) => text.includes("정상")), 10_000);
+  await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-admin-validation-complete.png`) });
   await page.getByRole("button", { name: "전체기록 보기" }).click();
+  await waitUntil("all records rows", () => page.locator(".ranking-row").count().then((count) => count >= 2), 10_000);
+  const allRowCount = await page.locator(".ranking-row").count();
+  assert.ok(allRowCount >= 10, `${variant} all-record view must show at least ten synthetic participants/attempts`);
+  const allRecordsResolutionEvidence = await captureResolutionEvidence(page, variant, "leaderboard-all-records", outputRoot);
+  assert.equal(allRecordsResolutionEvidence.length, 2);
+  resolutionEvidence.push(...allRecordsResolutionEvidence);
+  await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-all-records.png`) });
+  await page.locator(".ranking-list").evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-all-records-scrolled.png`) });
   await page.getByRole("button", { name: "최고기록만 보기" }).click();
+  await waitUntil("best records reduce rows", () => page.locator(".ranking-row").count().then((count) => count < allRowCount), 10_000);
+  const bestRowCount = await page.locator(".ranking-row").count();
+  assert.deepEqual(assessLeaderboardViewDifference({ allRowCount, bestRowCount, repeatParticipantAttempts: expected.repeatParticipantAttempts }), []);
+  await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-best-records.png`) });
   const picker = page.locator(".admin-record-picker button").first();
   await picker.click();
   assert.match((await picker.getAttribute("class")) ?? "", /selected/);
   await picker.click();
   assert.doesNotMatch((await picker.getAttribute("class")) ?? "", /selected/);
   await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-admin.png`) });
-  return { refreshes, crossLeak };
+  const rowsBefore = await page.locator(".ranking-row").count();
+  const countSourceRecords = () => snapshotDirectory(reviewStorageRoot).filter((entry) => entry.includes("/records/") && /\.json:\d+:/.test(entry)).length;
+  const sourceRecordsBefore = countSourceRecords();
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "현재 회차 표시 초기화" }).click();
+  await waitUntil("leaderboard visible reset", () => page.locator(".ranking-row").count().then((count) => count === 0), 10_000);
+  const rowsAfter = await page.locator(".ranking-row").count();
+  const sourceRecordsAfter = countSourceRecords();
+  const reset = { rowsBefore, rowsAfter, sourceRecordsBefore, sourceRecordsAfter };
+  assert.deepEqual(assessResetEvidence(reset), []);
+  await page.screenshot({ path: path.join(outputRoot, "screenshots", `${variant}-reset-complete.png`) });
+  return { refreshes, crossLeak, allRowCount, bestRowCount, repeatParticipantAttempts: expected.repeatParticipantAttempts, reset, resolutionEvidence };
 }
 
-async function runOne(spec: typeof specs[number], exePath: string, outputRoot: string, localAppData: string, paired: Map<Session, { recordId: string; participantName: string }>): Promise<any> {
+async function runOne(spec: typeof specs[number], exePath: string, outputRoot: string, localAppData: string, paired: Map<Session, { recordId: string; participantName: string; searchNeedle: string; stageTexts: string[]; repeatParticipantAttempts: number }>, simultaneouslyReady: Set<Variant>): Promise<any> {
   const port = await reservePort();
-  const env = sanitizedEnvironment({ LOCALAPPDATA: localAppData, APPDATA: path.join(outputRoot, "runtime", "AppData"), TEMP: path.join(outputRoot, "runtime", "Temp"), TMP: path.join(outputRoot, "runtime", "Temp") });
-  const pid = launchViaShellExecute(exePath, path.dirname(exePath), port, env);
+  const runtimeDirectories = concurrentRuntimeDirectories(outputRoot, spec.variant);
+  assert.equal(runtimeDirectories.LOCALAPPDATA, localAppData);
+  fs.mkdirSync(runtimeDirectories.APPDATA, { recursive: true });
+  fs.mkdirSync(runtimeDirectories.TEMP, { recursive: true });
+  const env = sanitizedEnvironment(runtimeDirectories);
+  const userDataDir = path.join(outputRoot, "runtime", "UserData", spec.variant);
+  fs.mkdirSync(userDataDir, { recursive: true });
+  const pid = launchViaShellExecute(exePath, path.dirname(exePath), port, userDataDir, env);
   let browser: Browser | undefined;
   let page: Page | undefined;
   let error: string | undefined;
@@ -581,13 +874,17 @@ async function runOne(spec: typeof specs[number], exePath: string, outputRoot: s
     const titled = processes.filter((entry) => entry.MainWindowTitle?.trim());
     const credentialPopupCount = titled.filter((entry) => /credential|자격 증명|접속정보/i.test(entry.MainWindowTitle!)).length;
     const commandWindowCount = titled.filter((entry) => /^(?:cmd|powershell|pwsh)\.exe$/i.test(entry.Name)).length;
+    simultaneouslyReady.add(spec.variant);
+    await waitUntil("all four portable variants ready concurrently", () => simultaneouslyReady.size === specs.length, 90_000);
     if (spec.role === "player") {
       flow = await playerFlow(page, spec.variant, outputRoot);
       paired.set(spec.session, flow);
     } else {
+      await waitUntil(`${spec.session} player record`, () => paired.has(spec.session), 120_000);
+      await waitUntil("opposite-session player record", () => paired.has(spec.session === "official" ? "practice" : "official"), 120_000);
       const expected = paired.get(spec.session)!;
       const other = paired.get(spec.session === "official" ? "practice" : "official")!;
-      flow = await leaderboardFlow(page, expected, other.recordId, outputRoot, spec.variant);
+      flow = await leaderboardFlow(page, expected, other.recordId, outputRoot, spec.variant, reviewStorageRoot);
     }
     const runtimeViolations = assessRuntimeObservation({ expectedVariant: spec.variant, expectedRole: spec.role, expectedSession: spec.session, bootstrap, notices, observedHelperProcesses: helperNames, credentialPopupCount, commandWindowCount });
     assert.deepEqual(runtimeViolations, []);
@@ -648,11 +945,16 @@ async function main(): Promise<void> {
   }
   const preflight = inspectReviewArtifacts(staged);
   assert.deepEqual(preflight.violations, [], preflight.violations.join("\n"));
-  const paired = new Map<Session, { recordId: string; participantName: string; searchNeedle: string; stageTexts: string[] }>();
-  const results = [];
-  for (const spec of specs) {
-    results.push(await runOne(spec, staged.find((item) => item.variant === spec.variant)!.exePath, outputRoot, path.join(outputRoot, "runtime", "LocalAppData"), paired));
-  }
+  const paired = new Map<Session, { recordId: string; participantName: string; searchNeedle: string; stageTexts: string[]; repeatParticipantAttempts: number }>();
+  const simultaneouslyReady = new Set<Variant>();
+  const results = await Promise.all(specs.map((spec) => runOne(
+    spec,
+    staged.find((item) => item.variant === spec.variant)!.exePath,
+    outputRoot,
+    path.join(outputRoot, "runtime", "LocalAppData"),
+    paired,
+    simultaneouslyReady
+  )));
   const stageSourceHash = sha256(path.resolve("events/geumcheon-2026/stage_texts.csv"));
   const stageSeeds = (["official", "practice"] as const).map((session) => {
     const target = path.join(outputRoot, "runtime", "LocalAppData", "ThePMD", "TypingKing", "Geumcheon2026", "Review", session, "data", "stage_texts.csv");
@@ -672,10 +974,20 @@ async function main(): Promise<void> {
       ...evidence
     };
   });
-  const summary = { schemaVersion: 1, generatedAt: new Date().toISOString(), launchMethod: "PowerShell Start-Process (ShellExecute)", actualNasUsed: false, operationalCredentialsUsed: false, offlineSingleExeTest: "HOLD", standaloneExe4: "HOLD", offlineReason: "No proven network-disabled Windows Sandbox or VM was available on this host.", preflight, stageSeeds, results, officialRecordShare: results.find((entry) => entry.variant === "ai-leaderboard")?.verdict === "PASS" ? "PASS" : "HOLD", practiceRecordShare: results.find((entry) => entry.variant === "practice-leaderboard")?.verdict === "PASS" ? "PASS" : "HOLD", crossLeakCount: results.filter((entry) => entry.role === "leaderboard").reduce((sum, entry) => sum + (entry.flow?.crossLeak ?? 0), 0), passed: results.filter((entry) => entry.verdict === "PASS").length, failed: results.filter((entry) => entry.verdict === "FAIL").length };
+  const crossLeakCount = results.filter((entry) => entry.role === "leaderboard").reduce((sum, entry) => sum + (entry.flow?.crossLeak ?? 0), 0);
+  const concurrentEvidence = {
+    simultaneouslyReadyVariants: [...simultaneouslyReady].sort(),
+    officialRefreshes: results.find((entry) => entry.variant === "ai-leaderboard")?.flow?.refreshes ?? 0,
+    practiceRefreshes: results.find((entry) => entry.variant === "practice-leaderboard")?.flow?.refreshes ?? 0,
+    crossLeakCount,
+    residualProcessCount: results.reduce((sum, entry) => sum + entry.residualProcessCount, 0)
+  };
+  const concurrentViolations = assessConcurrentEvidence(concurrentEvidence);
+  const standaloneViolations = assessStandaloneReviewVerdict({ concurrentViolations, results, stageSeeds });
+  const summary = { schemaVersion: 2, generatedAt: new Date().toISOString(), launch: reviewHarnessLaunchEvidence(), actualNasUsed: false, operationalCredentialsUsed: false, offlineSingleExeTest: "HOLD", hostInstrumentedStandaloneExe4: standaloneViolations.length ? "HOLD" : "PASS", standaloneExe4: "HOLD", offlineReason: "No proven network-disabled Windows Sandbox or VM was available on this host. Ordinary no-argument startup with default user directories remains NOT_RUN.", preflight, stageSeeds, concurrentEvidence, concurrentViolations, standaloneViolations, results, officialRecordShare: results.find((entry) => entry.variant === "ai-leaderboard")?.verdict === "PASS" ? "PASS" : "HOLD", practiceRecordShare: results.find((entry) => entry.variant === "practice-leaderboard")?.verdict === "PASS" ? "PASS" : "HOLD", crossLeakCount, passed: results.filter((entry) => entry.verdict === "PASS").length, failed: results.filter((entry) => entry.verdict === "FAIL").length };
   fs.writeFileSync(path.join(outputRoot, "summary.json"), `${JSON.stringify(summary, null, 2)}\n`);
   console.log(JSON.stringify({ outputRoot, passed: summary.passed, failed: summary.failed, offlineSingleExeTest: summary.offlineSingleExeTest }, null, 2));
-  if (summary.failed || stageSeeds.some((entry) => !entry.exists || !entry.seededBeforeInitialization || !entry.canonicalDrawObserved)) process.exitCode = 1;
+  if (standaloneViolations.length) process.exitCode = 1;
 }
 
 const isDirect = process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href;

@@ -10,7 +10,7 @@ import type {
   SaveRecordInput,
   StageTextSelection
 } from "../../../shared/types";
-import { resolveEventAssetUrl } from "../../../shared/events/types";
+import { resolveAiBossResultAsset, resolveEventAssetUrl } from "../../../shared/events/types";
 import { formatBirthdate } from "../../../shared/utils/date";
 import { buildPhoneFull } from "../../../shared/utils/masking";
 import { buildCanonicalAiAttempt } from "../../../shared/utils/geumcheonAiAttempt";
@@ -1021,7 +1021,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
           <p className="notice-text debug-result-note">디버그 모드 기록은 리더보드에 반영되지 않습니다.</p>
         )}
         <AssetImage
-          src={profileAsset(eventProfile.assets.aiBossDefeat)}
+          src={profileAsset(resolveAiBossResultAsset(eventProfile, "USER_WIN", 3))}
           alt="패배한 AI"
           className="challenge-result-art"
         />
@@ -1118,7 +1118,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
         </div>
 
         <DuelPanel
-          title={eventProfile.profileId === "geumcheon-2026" ? eventProfile.gameName : "AI 타자왕"}
+          title={eventProfile.profileId === "geumcheon-2026" ? "금나래" : "AI 타자왕"}
           target={target}
           input={aiInput}
           cpm={aiObservedCpm}
@@ -1456,7 +1456,7 @@ function BattlePopup({
       <section className="modal challenge-modal">
         <div className="challenge-modal-lead">
           <AssetImage
-            src={resolveEventAssetUrl(assetBaseUrl, eventProfile, userWin ? eventProfile.assets.aiBossDefeat : eventProfile.assets.aiBossVictory)}
+            src={resolveEventAssetUrl(assetBaseUrl, eventProfile, resolveAiBossResultAsset(eventProfile, battle.result, battle.stage as 1 | 2 | 3))}
             alt={userWin ? "패배한 AI" : "승리한 AI"}
             className="challenge-modal-art"
           />

@@ -120,10 +120,12 @@ export function validateEventProfile(value: unknown): EventProfile {
     startBackground: assets.startBackground ?? assets.pageBackground,
     playBackground: assets.playBackground ?? assets.pageBackground,
     leaderboardBackground: assets.leaderboardBackground ?? assets.pageBackground,
-    aiBossMain: assets.aiBossMain ?? assets.aiBossTyping
+    aiBossMain: assets.aiBossMain ?? assets.aiBossTyping,
+    aiBossDefeats: assets.aiBossDefeats ?? undefined
   };
-  requireExactKeys(resolvedAssets, ["eventTitle", "pageBackground", "startBackground", "playBackground", "leaderboardBackground", "aiBossMain", "aiBossTyping", "aiBossVictory", "aiBossDefeat", "vsBadge", "stageBadges"], "event profile.assets");
+  requireExactKeys(resolvedAssets, ["eventTitle", "pageBackground", "startBackground", "playBackground", "leaderboardBackground", "aiBossMain", "aiBossTyping", "aiBossVictory", "aiBossDefeat", "aiBossDefeats", "vsBadge", "stageBadges"], "event profile.assets");
   if (!Array.isArray(resolvedAssets.stageBadges) || resolvedAssets.stageBadges.length !== 3) throw new Error("event profile.assets.stageBadges must contain three paths");
+  if (resolvedAssets.aiBossDefeats !== undefined && (!Array.isArray(resolvedAssets.aiBossDefeats) || resolvedAssets.aiBossDefeats.length !== 3)) throw new Error("event profile.assets.aiBossDefeats must contain three paths");
   const variants = requireRecord(record.variants, "event profile.variants");
   requireExactKeys(variants, APP_VARIANTS, "event profile.variants");
   const aiChallenge = requireRecord(record.aiChallenge, "event profile.aiChallenge");
@@ -151,6 +153,7 @@ export function validateEventProfile(value: unknown): EventProfile {
       aiBossTyping: requireString(resolvedAssets.aiBossTyping, "event profile.assets.aiBossTyping"),
       aiBossVictory: requireString(resolvedAssets.aiBossVictory, "event profile.assets.aiBossVictory"),
       aiBossDefeat: requireString(resolvedAssets.aiBossDefeat, "event profile.assets.aiBossDefeat"),
+      ...(resolvedAssets.aiBossDefeats === undefined ? {} : { aiBossDefeats: resolvedAssets.aiBossDefeats.map((asset, index) => requireString(asset, `event profile.assets.aiBossDefeats.${index}`)) as [string, string, string] }),
       vsBadge: requireString(resolvedAssets.vsBadge, "event profile.assets.vsBadge"),
       stageBadges: resolvedAssets.stageBadges.map((badge, index) => requireString(badge, `event profile.assets.stageBadges.${index}`)) as [string, string, string]
     },

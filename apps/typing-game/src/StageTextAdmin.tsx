@@ -31,6 +31,10 @@ export function formatStageTextPublishSuccess(count: number): string {
   return `문구 설정을 NAS 운영 저장소에 공유했습니다.\n다른 PC는 잠시 후 자동으로 갱신됩니다.\n저장 문구: ${count}건`;
 }
 
+export function stageTextEditingAllowed(profileId: EventProfileId | undefined, practice: boolean): boolean {
+  return !practice && profileId !== "geumcheon-2026";
+}
+
 export function StageTextAdmin({
   onClose,
   onStartDebug,
@@ -40,6 +44,7 @@ export function StageTextAdmin({
   deviceProfile,
   sessionKind
 }: Props) {
+  const canEditStageTexts = stageTextEditingAllowed(eventProfileId, isPractice);
   const [authorized, setAuthorized] = useState(false);
   const [password, setPassword] = useState("");
   const [adminName, setAdminName] = useState("admin");
@@ -302,10 +307,13 @@ export function StageTextAdmin({
           ))}
         </div>
 
-        {isPractice && (
+        {eventProfileId === "geumcheon-2026" && (
+          <p className="practice-mode-note">금천과학축제 승인 문구는 읽기 전용입니다. 문구 변경은 승인된 배포 패키지로만 적용합니다.</p>
+        )}
+        {isPractice && eventProfileId !== "geumcheon-2026" && (
           <p className="practice-mode-note">연습모드의 문구는 읽기 전용입니다. 문구 변경과 전체 PC 공유는 공식 실행기의 관리자 모드에서 진행해 주세요.</p>
         )}
-        {!isPractice && <div className="admin-editor">
+        {canEditStageTexts && <div className="admin-editor">
           <label className="field grow">
             <span>{editingId ? `${MODE_LABELS[mode]} 문구 수정` : `${MODE_LABELS[mode]} 문구 추가`}</span>
             <textarea
@@ -343,7 +351,7 @@ export function StageTextAdmin({
           <div className="admin-table-head">
             <span>상태</span>
             <span>문구</span>
-              <span>{isPractice ? "권한" : "관리"}</span>
+              <span>{canEditStageTexts ? "관리" : "권한"}</span>
           </div>
           {filtered.map((row) => (
             <div className="admin-table-row" key={row.id}>
@@ -351,7 +359,7 @@ export function StageTextAdmin({
                 {row.is_active === "true" ? "활성" : "비활성"}
               </span>
               <span className="stage-text-preview">{row.text}</span>
-              {isPractice ? (
+              {!canEditStageTexts ? (
                 <span className="status inactive">읽기 전용</span>
               ) : <span className="mini-actions">
                 <button onClick={() => toggle(row)}>{row.is_active === "true" ? "비활성" : "활성"}</button>

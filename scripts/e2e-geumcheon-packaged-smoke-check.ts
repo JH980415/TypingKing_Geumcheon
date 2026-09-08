@@ -171,6 +171,10 @@ const requiredPublicResources = [
   "events/geumcheon-2026/assets/robot_04_science_lab.png",
   "events/geumcheon-2026/assets/robot_05_festival_victory.png",
   "events/geumcheon-2026/assets/robot_defeat_01_geumnarae_typer.png",
+  "events/geumcheon-2026/assets/금나래 승리.png",
+  "events/geumcheon-2026/assets/금나래패배_스테이지1.png",
+  "events/geumcheon-2026/assets/금나래패배_스테이지2.png",
+  "events/geumcheon-2026/assets/금나래패배_스테이지3.png",
   "events/geumcheon-2026/assets/stage_01_03_science_classroom.png",
   "events/geumcheon-2026/assets/ai_타자왕_금나래의_도전.png",
   "events/geumcheon-2026/assets/vs_03_science_portal.png",
@@ -1090,6 +1094,9 @@ async function runCase(options: {
   let nativeTitleEvidence: CaseResult["nativeTitleEvidence"];
   let nativeTitleLimitation: string | undefined;
   const observationStart = options.observations.length;
+  const stagedExeHashBefore = sha256(stagedExePath);
+  const stagedCatalogPath = path.join(executableDirectory, "events", eventProfileId, "stage_texts.csv");
+  const stagedCatalogHashBefore = sha256(stagedCatalogPath);
   const expectedReadyRole: PackagedSmokeReadyRole = testCase.role === "player" ? "writer" : "leaderboard";
   try {
     const debugPort = await takeFreeLoopbackPort();
@@ -1215,7 +1222,7 @@ async function runCase(options: {
     });
     addCheck(checks, "Geumcheon title image loaded", imageLoaded, true, imageLoaded === true);
     if (testCase.role === "player") {
-      const modeCardArt = page.locator(".entry-panel .mode-card.active .mode-card-art").first();
+    const modeCardArt = page.locator(".geumcheon-main-title-image").first();
       await modeCardArt.waitFor({ state: "visible", timeout: 20_000 });
       const modeCardArtSrc = await modeCardArt.evaluate((element) => {
         const imageElement = element as HTMLImageElement;
@@ -1230,7 +1237,7 @@ async function runCase(options: {
       );
       const modeCardGeometry = await modeCardArt.evaluate((element) => {
         const imageElement = element as HTMLImageElement;
-        const card = imageElement.closest<HTMLElement>(".mode-card");
+      const card = imageElement.closest<HTMLElement>(".left-title-group");
         const imageRect = imageElement.getBoundingClientRect();
         const cardRect = card?.getBoundingClientRect();
         const tolerance = 1;
@@ -1254,7 +1261,7 @@ async function runCase(options: {
       const legacyTitleMatches = await page.evaluate((patterns) => {
         const visibleText = [
           document.body.innerText,
-          (document.querySelector(".entry-panel .mode-card.active") as HTMLElement | null)?.innerText ?? ""
+        (document.querySelector(".entry-panel") as HTMLElement | null)?.innerText ?? ""
         ];
         return patterns.filter((pattern) => visibleText.some((text) => text.includes(pattern)));
       }, ["AI타자왕을이겨라", "AI 타자왕을 이겨라", "AI 타자왕 금나래를 이겨라!"]);
@@ -1480,6 +1487,47 @@ async function runCase(options: {
     );
   }
 
+  if (!error) {
+    let restartBrowser: Browser | undefined;
+    let restartChild: ChildProcess | undefined;
+    let restartPage: Page | undefined;
+    try {
+      const restartDebugPort = await takeFreeLoopbackPort();
+      restartChild = spawn(stagedExePath, [`--remote-debugging-port=${restartDebugPort}`], {
+        cwd: executableDirectory,
+        env: sanitizedLaunchEnv(caseRoot, options.caPemPath, stagedExePath),
+        stdio: "ignore",
+        windowsHide: true
+      });
+      restartChild.once("error", () => undefined);
+      assert.ok(restartChild.pid, "Restarted portable wrapper did not expose a root PID");
+      const restartCdp = await waitForCdpVersion(restartDebugPort, restartChild);
+      restartBrowser = await chromium.connectOverCDP(restartCdp.webSocketDebuggerUrl!);
+      restartPage = restartBrowser.contexts()[0]?.pages()[0];
+      assert.ok(restartPage, "Restarted packaged renderer page missing");
+      await restartPage.waitForLoadState("domcontentloaded");
+      await restartPage.locator(testCase.uiSelector).waitFor({ state: "visible", timeout: 20_000 });
+      const restartBootstrap = await restartPage.evaluate(async () => (window as any).typingKing.getBootstrap());
+      addCheck(
+        checks,
+        "second launch current CDP bootstrap ready",
+        { ok: restartBootstrap?.ok, profileId: restartBootstrap?.data?.eventProfile?.profileId },
+        { ok: true, profileId: eventProfileId },
+        restartBootstrap?.ok === true && restartBootstrap?.data?.eventProfile?.profileId === eventProfileId
+      );
+    } catch (caught) {
+      const restartError = sanitizeError(caught, options.temporaryRoot, Object.values(options.tokens));
+      error = restartError;
+      addCheck(checks, "second launch current CDP bootstrap ready", restartError, { ok: true, profileId: eventProfileId }, false);
+    } finally {
+      const restartCleanup = await cleanupPackagedProcess(restartBrowser, restartPage, restartChild);
+      addCheck(checks, "second launch portable root PID tree cleaned", restartCleanup, { exited: true }, restartCleanup.exited);
+    }
+    const stagedExeHashAfter = sha256(stagedExePath);
+    const stagedCatalogHashAfter = sha256(stagedCatalogPath);
+    addCheck(checks, "staged EXE unchanged across restart", stagedExeHashAfter, stagedExeHashBefore, stagedExeHashAfter === stagedExeHashBefore);
+    addCheck(checks, "staged catalog unchanged across restart", stagedCatalogHashAfter, stagedCatalogHashBefore, stagedCatalogHashAfter === stagedCatalogHashBefore);
+  }
   return {
     variant: testCase.variant,
     fileName: testCase.fileName,

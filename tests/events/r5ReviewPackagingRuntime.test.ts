@@ -302,3 +302,107 @@ test("review local store stays atomic across independent child processes", async
   const residue = fs.readdirSync(recordDir).filter((name) => name.includes(".tmp-"));
   assert.deepEqual(residue, []);
 });
+
+test("R6 concurrency gate requires all four variants alive together and both shared pairs within two refreshes", () => {
+  const assess = (reviewHarness as unknown as {
+    assessConcurrentEvidence?: (input: Record<string, unknown>) => string[];
+  }).assessConcurrentEvidence;
+  assert.equal(typeof assess, "function");
+  const valid = {
+    simultaneouslyReadyVariants: ["ai", "ai-leaderboard", "practice", "practice-leaderboard"],
+    officialRefreshes: 1,
+    practiceRefreshes: 2,
+    crossLeakCount: 0,
+    residualProcessCount: 0
+  };
+  assert.deepEqual(assess!(valid), []);
+  assert.deepEqual(assess!({ ...valid, simultaneouslyReadyVariants: ["ai", "practice"] }), [
+    "FOUR_VARIANTS_NOT_SIMULTANEOUS"
+  ]);
+  assert.deepEqual(assess!({ ...valid, officialRefreshes: 3, practiceRefreshes: 0 }), [
+    "OFFICIAL_SHARE_EXCEEDED_TWO_REFRESHES",
+    "PRACTICE_SHARE_NOT_OBSERVED"
+  ]);
+  assert.deepEqual(assess!({ ...valid, crossLeakCount: 1, residualProcessCount: 2 }), [
+    "CROSS_SESSION_LEAK:1",
+    "RESIDUAL_PROCESS:2"
+  ]);
+});
+
+test("R6 leaderboard gate requires a real all-versus-best row reduction from repeat participants", () => {
+  const assess = (reviewHarness as unknown as {
+    assessLeaderboardViewDifference?: (input: Record<string, unknown>) => string[];
+  }).assessLeaderboardViewDifference;
+  assert.equal(typeof assess, "function");
+  assert.deepEqual(assess!({ allRowCount: 2, bestRowCount: 1, repeatParticipantAttempts: 2 }), []);
+  assert.deepEqual(assess!({ allRowCount: 1, bestRowCount: 1, repeatParticipantAttempts: 1 }), [
+    "REPEAT_PARTICIPANT_ATTEMPTS_MISSING",
+    "BEST_VIEW_DID_NOT_REDUCE_ROWS"
+  ]);
+});
+
+test("R6 launch evidence discloses debugger argument and every overridden runtime directory", () => {
+  const evidence = (reviewHarness as unknown as {
+    reviewHarnessLaunchEvidence?: () => Record<string, unknown>;
+  }).reviewHarnessLaunchEvidence;
+  assert.equal(typeof evidence, "function");
+  assert.deepEqual(evidence!(), {
+    method: "PowerShell Start-Process (ShellExecute)",
+    extraArguments: ["--remote-debugging-port=<ephemeral>", "--user-data-dir=<variant-isolated>"],
+    environmentOverrides: ["LOCALAPPDATA", "APPDATA", "TEMP", "TMP"],
+    ordinaryNoArgumentLaunch: false,
+    defaultUserDirectories: false
+  });
+});
+
+test("R6 reset gate requires the visible rows to clear without deleting source records", () => {
+  const assess = (reviewHarness as unknown as {
+    assessResetEvidence?: (input: Record<string, unknown>) => string[];
+  }).assessResetEvidence;
+  assert.equal(typeof assess, "function");
+  assert.deepEqual(assess!({ rowsBefore: 2, rowsAfter: 0, sourceRecordsBefore: 2, sourceRecordsAfter: 2 }), []);
+  assert.deepEqual(assess!({ rowsBefore: 2, rowsAfter: 1, sourceRecordsBefore: 2, sourceRecordsAfter: 1 }), [
+    "RESET_DID_NOT_CLEAR_VISIBLE_ROWS",
+    "RESET_DELETED_SOURCE_RECORDS"
+  ]);
+});
+
+test("R6 standalone verdict cannot pass a failed variant, forced cleanup, or invalid stage seed", () => {
+  const assess = (reviewHarness as unknown as {
+    assessStandaloneReviewVerdict?: (input: Record<string, unknown>) => string[];
+  }).assessStandaloneReviewVerdict;
+  assert.equal(typeof assess, "function");
+  const valid = {
+    concurrentViolations: [],
+    results: ["ai", "ai-leaderboard", "practice", "practice-leaderboard"].map((variant) => ({
+      variant, verdict: "PASS", cleanExit: true, forcedCleanup: false
+    })),
+    stageSeeds: ["official", "practice"].map((session) => ({
+      session, exists: true, seededBeforeInitialization: true, canonicalDrawObserved: true
+    }))
+  };
+  assert.deepEqual(assess!(valid), []);
+  assert.deepEqual(assess!({ ...valid, results: valid.results.map((result, index) => index === 0 ? { ...result, verdict: "FAIL" } : result) }), [
+    "VARIANT_NOT_PASS:ai"
+  ]);
+  assert.deepEqual(assess!({ ...valid, results: valid.results.map((result, index) => index === 1 ? { ...result, cleanExit: false, forcedCleanup: true } : result) }), [
+    "VARIANT_UNCLEAN_EXIT:ai-leaderboard",
+    "VARIANT_FORCED_CLEANUP:ai-leaderboard"
+  ]);
+  assert.deepEqual(assess!({ ...valid, stageSeeds: valid.stageSeeds.map((seed, index) => index === 0 ? { ...seed, canonicalDrawObserved: false } : seed) }), [
+    "STAGE_SEED_INVALID:official"
+  ]);
+});
+
+test("R6 concurrent runtime shares record LocalAppData but isolates Electron AppData per variant", () => {
+  const resolve = (reviewHarness as unknown as {
+    concurrentRuntimeDirectories?: (root: string, variant: string) => Record<string, string>;
+  }).concurrentRuntimeDirectories;
+  assert.equal(typeof resolve, "function");
+  const ai = resolve!("C:\\evidence", "ai");
+  const board = resolve!("C:\\evidence", "ai-leaderboard");
+  assert.equal(ai.LOCALAPPDATA, board.LOCALAPPDATA);
+  assert.notEqual(ai.APPDATA, board.APPDATA);
+  assert.match(ai.APPDATA, /AppData[\\/]ai$/);
+  assert.match(board.APPDATA, /AppData[\\/]ai-leaderboard$/);
+});

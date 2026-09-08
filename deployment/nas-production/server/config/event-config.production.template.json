@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "eventId": "geumcheon-science-festival-2026",
+  "recordBaseFolderName": "기록저장",
+  "stageTextCatalogPath": "__ABSOLUTE_STAGE_TEXT_CATALOG_PATH__",
+  "allowedSessions": {
+    "official": [{ "sessionId": "__OFFICIAL_SESSION_ID__", "dayNo": "__OFFICIAL_DAY_NO__", "roundNo": "__OFFICIAL_ROUND_NO__" }],
+    "practice": { "sessionId": "__PRACTICE_SESSION_ID__" }
+  },
+  "aiRanges": { "official": [[100, 125], [125, 150], [150, 200]], "practice": [[100, 125], [125, 150], [150, 200]] }
+}

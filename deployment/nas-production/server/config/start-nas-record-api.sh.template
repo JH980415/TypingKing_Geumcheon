@@ -1,0 +1,16 @@
+#!/bin/sh
+set -eu
+
+ENV_FILE='__ABSOLUTE_ENV_FILE_PATH__'
+SERVER_ROOT='__ABSOLUTE_SERVER_ROOT__'
+NODE24='__ABSOLUTE_NODE24_PATH__'
+
+test -f "$ENV_FILE"
+test -x "$NODE24"
+test -f "$SERVER_ROOT/dist/server.cjs"
+
+set -a
+. "$ENV_FILE"
+set +a
+
+exec "$NODE24" "$SERVER_ROOT/dist/server.cjs"

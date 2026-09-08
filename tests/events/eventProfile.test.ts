@@ -49,6 +49,7 @@ test("loads the approved Geumcheon screen assets and preserves SkillUp fallbacks
       aiBossTyping: geumcheonAssets.aiBossTyping,
       aiBossVictory: geumcheonAssets.aiBossVictory,
       aiBossDefeat: geumcheonAssets.aiBossDefeat,
+      aiBossDefeats: geumcheonAssets.aiBossDefeats,
       vsBadge: geumcheonAssets.vsBadge
     },
     {
@@ -58,8 +59,9 @@ test("loads the approved Geumcheon screen assets and preserves SkillUp fallbacks
       leaderboardBackground: "assets/stage_01_03_science_classroom.png",
       aiBossMain: "assets/robot_03_speed_champion.png",
       aiBossTyping: "assets/robot_04_science_lab.png",
-      aiBossVictory: "assets/robot_05_festival_victory.png",
-      aiBossDefeat: "assets/robot_defeat_01_geumnarae_typer.png",
+      aiBossVictory: "assets/금나래 승리.png",
+      aiBossDefeat: "assets/금나래패배_스테이지3.png",
+      aiBossDefeats: ["assets/금나래패배_스테이지1.png", "assets/금나래패배_스테이지2.png", "assets/금나래패배_스테이지3.png"],
       vsBadge: "assets/vs_03_science_portal.png"
     }
   );

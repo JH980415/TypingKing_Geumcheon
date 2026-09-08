@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import * as startupProfileModule from "../../electron/startupProfile";
-import { ensureRuntime } from "../../shared/csv/fileStore";
+import { addStageText, ensureRuntime } from "../../shared/csv/fileStore";
 import { loadEventProfile } from "../../shared/events/eventProfile";
 import {
   resolveDeviceRuntimeRoot,
@@ -80,7 +80,7 @@ test("keeps packaged SkillUp compatible without a copied event profile", () => {
   assert.equal(startup.runtimeRoot, path.join("C:\\Local", "ThePMD", "TypingKing2026"));
 });
 
-test("seeds a packaged Geumcheon runtime from the bundled catalog without a fallback notice", (t) => {
+test("seeds a packaged Geumcheon runtime from the bundled catalog without a fallback notice", async (t) => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-packaged-catalog-"));
   t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
   const resourceRoot = path.join(tempRoot, "resources");
@@ -117,11 +117,37 @@ test("seeds a packaged Geumcheon runtime from the bundled catalog without a fall
     executableDirectory,
     localAppData
   });
-  const runtime = ensureRuntime(startup.runtimeRoot, resourceRoot);
+  const seededCatalogPath = path.join(startup.runtimeRoot, "data", "stage_texts.csv");
+  const seededCatalog = fs.readFileSync(seededCatalogPath);
+  const runtime = ensureRuntime(startup.runtimeRoot, resourceRoot, { eventProfile: startup.eventProfile });
   const runtimeCatalog = fs.readFileSync(runtime.paths.stageTextsFile, "utf8");
 
   assert.equal(runtime.notices.includes("문구 파일이 없어 기본 문구로 생성합니다."), false);
   assert.match(runtimeCatalog, /로봇과 노는 금천과학축제/);
+  assert.deepEqual(fs.readFileSync(seededCatalogPath), seededCatalog);
+  await assert.rejects(
+    addStageText(runtime, "1", "승인되지 않은 변경", "ai_challenge"),
+    /승인된 문구 카탈로그/
+  );
+  assert.deepEqual(fs.readFileSync(seededCatalogPath), seededCatalog);
+  assert.doesNotThrow(() => resolveStartupProfile({
+    isPackaged: true,
+    packagedEventProfile: "geumcheon-2026",
+    projectRoot: resourceRoot,
+    executableDirectory,
+    localAppData
+  }));
+});
+
+test("keeps legacy SkillUp stage text bootstrap with normal and AI rows", (t) => {
+  const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-skillup-stage-bootstrap-"));
+  t.after(() => fs.rmSync(runtimeRoot, { recursive: true, force: true }));
+
+  const runtime = ensureRuntime(runtimeRoot, path.resolve("."));
+  const rows = fs.readFileSync(runtime.paths.stageTextsFile, "utf8");
+
+  assert.match(rows, /normal/);
+  assert.match(rows, /ai_challenge/);
 });
 
 test("allows executable-adjacent runtime migration only for legacy SkillUp", () => {

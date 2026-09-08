@@ -78,6 +78,7 @@ test("Geumcheon challenge screen names the AI competitor as Geumnarae", () => {
   const html = renderChallengeMarkup();
 
   assert.match(html, /금나래 입력 대기 중/);
+  assert.match(html, /<h2>금나래<\/h2>/);
   assert.match(html, /금나래보다 먼저 완성하세요/);
   assert.doesNotMatch(html, /AI 입력 대기 중/);
   assert.doesNotMatch(html, /AI보다 먼저/);

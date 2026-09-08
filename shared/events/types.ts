@@ -37,6 +37,7 @@ export type EventProfile = {
     aiBossTyping: string;
     aiBossVictory: string;
     aiBossDefeat: string;
+    aiBossDefeats?: readonly [string, string, string];
     vsBadge: string;
     stageBadges: readonly [string, string, string];
   };
@@ -54,6 +55,15 @@ export function resolveEventAssetUrl(
   return eventProfile.profileId === "geumcheon-2026"
     ? `${baseUrl}/../events/${eventProfile.profileId}/assets/${relativePath}`
     : `${baseUrl}/${relativePath}`;
+}
+
+export function resolveAiBossResultAsset(
+  eventProfile: Pick<EventProfile, "assets">,
+  result: "USER_WIN" | "AI_WIN",
+  stage: 1 | 2 | 3
+): string {
+  if (result === "AI_WIN") return eventProfile.assets.aiBossVictory;
+  return eventProfile.assets.aiBossDefeats?.[stage - 1] ?? eventProfile.assets.aiBossDefeat;
 }
 
 export type DeviceProfile = {

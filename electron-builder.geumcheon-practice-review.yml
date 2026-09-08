@@ -4,6 +4,7 @@ extraMetadata:
   author:
     name: 제8회 금천과학축제
   typingKingEventProfile: geumcheon-2026
+  typingKingReleaseCandidate: R6-v2-20260908
   typingKingVariant: practice
   typingKingEnvironment: review
   typingKingBuildId: R2.0.4-R5
@@ -40,6 +41,10 @@ extraResources:
       - assets/robot_04_science_lab.png
       - assets/robot_05_festival_victory.png
       - assets/robot_defeat_01_geumnarae_typer.png
+      - assets/금나래 승리.png
+      - assets/금나래패배_스테이지1.png
+      - assets/금나래패배_스테이지2.png
+      - assets/금나래패배_스테이지3.png
       - assets/stage_01_03_science_classroom.png
       - assets/ai_타자왕_금나래의_도전.png
       - assets/vs_03_science_portal.png

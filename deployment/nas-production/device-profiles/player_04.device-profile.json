@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "eventProfileId": "geumcheon-2026",
+  "eventId": "geumcheon-science-festival-2026",
+  "deviceId": "PC04",
+  "role": "player",
+  "apiBaseUrl": "__NAS_RECORD_API_URL__",
+  "sessions": { "official": { "sessionId": "__OFFICIAL_SESSION_ID__", "dayNo": "__OFFICIAL_DAY_NO__", "roundNo": "__OFFICIAL_ROUND_NO__" }, "practice": { "sessionId": "__PRACTICE_SESSION_ID__" } },
+  "requestTimeoutMs": 5000,
+  "retry": { "initialDelayMs": 1000, "maxDelayMs": 30000 }
+}

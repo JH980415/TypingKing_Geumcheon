@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadDeviceProfile, loadEventProfile } from "../shared/events/eventProfile";
+import { parseStageTextCatalog } from "../shared/events/stageTextCatalog";
 import type { AppVariant, PcRole, ReviewRuntimeContext } from "../shared/types";
 import type { DeviceProfile, EventProfile, EventProfileId, EventVariantPolicy } from "../shared/events/types";
 
@@ -112,7 +113,10 @@ export function assertSafeTlsEnvironment(
   }
 }
 
-export function formatStartupErrorForDisplay(_error: unknown): string {
+export function formatStartupErrorForDisplay(error: unknown): string {
+  if (error instanceof Error && error.message === "GEUMCHEON_CATALOG_UPDATE_REQUIRED") {
+    return "저장된 문구 파일의 업데이트가 필요합니다. 프로그램을 종료하고 적용 안내문의 문구 파일 교체 절차를 따라 주세요. 기존 파일은 변경하지 않았습니다.";
+  }
   return "보안 설정을 확인할 수 없어 시작하지 못했습니다. 관리자에게 문의해 주세요.";
 }
 
@@ -276,11 +280,22 @@ export function resolveDeviceRuntimeRoot(
 function seedPackagedGeumcheonStageTexts(
   options: StartupProfileOptions,
   profileId: EventProfileId,
-  runtimeRoot: string
+  runtimeRoot: string,
+  expectedCatalogVersion: string
 ): void {
   if (!options.isPackaged || profileId !== "geumcheon-2026") return;
   const target = path.join(runtimeRoot, "data", "stage_texts.csv");
-  if (fs.existsSync(target)) return;
+  if (fs.existsSync(target)) {
+    try {
+      const rows = parseStageTextCatalog(fs.readFileSync(target, "utf8"));
+      if (rows.some((row) => row.catalog_version !== expectedCatalogVersion)) {
+        throw new Error("GEUMCHEON_CATALOG_UPDATE_REQUIRED");
+      }
+    } catch {
+      throw new Error("GEUMCHEON_CATALOG_UPDATE_REQUIRED");
+    }
+    return;
+  }
   const source = path.join(options.projectRoot, "events", profileId, "stage_texts.csv");
   if (!fs.existsSync(source) || !fs.statSync(source).isFile()) {
     throw new Error("Packaged Geumcheon stage catalog is missing");
@@ -336,7 +351,7 @@ export function resolveStartupProfile(options: StartupProfileOptions): StartupPr
     }
     const localBase = options.localAppData || options.projectRoot;
     const runtimeRoot = resolveReviewStorageRoot(localBase, options.reviewContext.sessionKind);
-    seedPackagedGeumcheonStageTexts(options, profileId, runtimeRoot);
+    seedPackagedGeumcheonStageTexts(options, profileId, runtimeRoot, eventProfile.stageTextCatalogVersion);
     return {
       eventProfile,
       runtimeRoot,
@@ -353,7 +368,7 @@ export function resolveStartupProfile(options: StartupProfileOptions): StartupPr
   const runtimeRoot = !options.isPackaged && options.runtimeRootOverride
     ? options.runtimeRootOverride
     : resolveDeviceRuntimeRoot(localBase, eventProfile.profileId, deviceProfile.deviceId);
-  seedPackagedGeumcheonStageTexts(options, eventProfile.profileId, runtimeRoot);
+  seedPackagedGeumcheonStageTexts(options, eventProfile.profileId, runtimeRoot, eventProfile.stageTextCatalogVersion);
   return {
     eventProfile,
     deviceProfile,
