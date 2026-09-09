@@ -1,6 +1,6 @@
 /* R7 presentation changes are restricted to the Geumcheon game. */
 /* R6 measured gaps: logo/copy 18.078px (720p), 23.109px (1080p),
-   copy/robot 4px and robot/guide 8px. Shift via parent padding only. */
+   copy/robot 4px and robot/guide 8px. Shift via parent layout only. */
 html[data-event-profile="geumcheon-2026"] .game-app .hero-panel {
   padding-top: calc(clamp(28px, 5.2vh, 76px) - 24px);
 }
@@ -65,7 +65,11 @@ html[data-event-profile="geumcheon-2026"] .game-app .r7-stage-result-card strong
 
 @media (max-width: 1366px), (max-height: 768px) {
   html[data-event-profile="geumcheon-2026"] .game-app .hero-panel {
-    padding-top: 6px;
+    /* R7's second subtitle line adds 27px. The left panel alone starts
+       14px higher; removing its 6px top padding supplies the remaining
+       upward shift while leaving the right panel and child gaps intact. */
+    margin-top: -14px;
+    padding-top: 0;
   }
 
   /* The required second guide line adds 27px at 720p. Use existing
