@@ -279,7 +279,7 @@ function assertConfiguredSession(
   }
   if (!allowedSessions.includes(session.kind)) throw new Error("SESSION_SCOPE");
   if (session.kind === "practice") {
-    if (session.session_id !== config.allowedSessions.practice.sessionId) {
+    if (config.allowedSessions.practice === undefined || session.session_id !== config.allowedSessions.practice.sessionId) {
       throw new Error("SESSION_INVALID");
     }
     return;

@@ -219,6 +219,7 @@ function canonicalize(value: unknown): unknown {
 
 function sessionFor(profile: DeviceProfile, kind: SessionKind): NasSessionV1 {
   if (kind === "practice") {
+    if (profile.sessions.practice === undefined) throw new Error("NAS_PRACTICE_SESSION_NOT_CONFIGURED");
     const sessionId = profile.sessions.practice.sessionId;
     assertNonEmptyString(sessionId, "NAS_SESSION_INVALID");
     return { kind, session_id: sessionId };

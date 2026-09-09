@@ -5,6 +5,8 @@ import { resolveBootstrapTheme } from "../../../shared/events/bootstrapData";
 import { TypingGameApp } from "../../typing-game/src/TypingGameApp";
 import { LeaderboardApp } from "../../leaderboard/src/LeaderboardApp";
 import "./styles.css";
+import "../../typing-game/src/r7-geumcheon.css";
+import "../../leaderboard/src/r7-geumcheon.css";
 
 function Shell() {
   const [bootstrap, setBootstrap] = useState<BootstrapData | null>(null);

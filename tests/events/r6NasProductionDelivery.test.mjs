@@ -31,7 +31,7 @@ test("prepares five fail-closed production profiles and a server bundle without 
       assert.equal(profile.eventId, "geumcheon-science-festival-2026");
       assert.equal(profile.apiBaseUrl, "__NAS_RECORD_API_URL__");
       assert.equal(profile.sessions.official.sessionId, "__OFFICIAL_SESSION_ID__");
-      assert.equal(profile.sessions.practice.sessionId, "__PRACTICE_SESSION_ID__");
+      assert.deepEqual(Object.keys(profile.sessions), ["official"]);
       assert.equal(profile.sessions.official.dayNo, "__OFFICIAL_DAY_NO__");
       assert.equal(profile.sessions.official.roundNo, "__OFFICIAL_ROUND_NO__");
     }

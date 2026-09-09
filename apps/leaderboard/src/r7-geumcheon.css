@@ -1,0 +1,43 @@
+.r7-geumcheon-leaderboard .leaderboard-header {
+  align-items: center;
+  gap: 24px;
+}
+
+.r7-geumcheon-leaderboard .leaderboard-header > div:first-child {
+  min-width: 0;
+}
+
+.r7-geumcheon-leaderboard .geumcheon-leaderboard-logo {
+  display: block;
+  width: min(38vw, 560px);
+  max-height: 104px;
+  height: auto;
+  object-fit: contain;
+  object-position: left center;
+}
+
+.r7-geumcheon-leaderboard .leader-actions {
+  flex-shrink: 0;
+}
+
+.r7-geumcheon-leaderboard .leaderboard-session {
+  position: static;
+  flex: 0 0 auto;
+  padding: 18px 24px;
+}
+
+.r7-geumcheon-leaderboard .ranking-body .ranking-row.selected {
+  background: #fff6e8;
+  outline: 4px solid rgba(226, 24, 131, 0.28);
+  outline-offset: -4px;
+}
+
+.r7-geumcheon-leaderboard [data-leaderboard-record]:focus:not(:focus-visible):not(.selected) {
+  outline: none;
+  box-shadow: none;
+}
+
+html[data-event-profile="geumcheon-2026"] .r7-geumcheon-leaderboard [data-leaderboard-record]:focus-visible {
+  outline: 3px solid var(--primary);
+  outline-offset: -3px;
+}

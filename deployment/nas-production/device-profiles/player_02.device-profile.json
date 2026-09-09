@@ -5,7 +5,7 @@
   "deviceId": "PC02",
   "role": "player",
   "apiBaseUrl": "__NAS_RECORD_API_URL__",
-  "sessions": { "official": { "sessionId": "__OFFICIAL_SESSION_ID__", "dayNo": "__OFFICIAL_DAY_NO__", "roundNo": "__OFFICIAL_ROUND_NO__" }, "practice": { "sessionId": "__PRACTICE_SESSION_ID__" } },
+  "sessions": { "official": { "sessionId": "__OFFICIAL_SESSION_ID__", "dayNo": "__OFFICIAL_DAY_NO__", "roundNo": "__OFFICIAL_ROUND_NO__" } },
   "requestTimeoutMs": 5000,
   "retry": { "initialDelayMs": 1000, "maxDelayMs": 30000 }
 }

@@ -96,6 +96,13 @@ test("rejects wrong event, device role, and record/device mismatch", () => {
   assert.throws(() => buildNasRecordEnvelope({ ...profile, deviceId: "PC09" }, "official", row), /DEVICE_MISMATCH/);
 });
 
+test("official-only envelopes work and missing practice fails explicitly", () => {
+  const officialOnly = { ...profile, sessions: { official: profile.sessions.official } } as DeviceProfile;
+  assert.deepEqual(buildNasRecordEnvelope(officialOnly, "official", row).session, { kind: "official", session_id: "official-1", day_no: 1, round_no: 2 });
+  assert.throws(() => buildNasRecordEnvelope(officialOnly, "practice", row), /^Error: NAS_PRACTICE_SESSION_NOT_CONFIGURED$/);
+  assert.deepEqual(buildNasRecordEnvelope(profile, "practice", row).session, { kind: "practice", session_id: "practice-1" });
+});
+
 test("validates ACK against both record ID and submitted payload hash", () => {
   assert.doesNotThrow(() => assertNasRecordAck(acknowledgement(), RECORD_ID, HASH));
   assert.throws(() => assertNasRecordAck(acknowledgement(), RECORD_ID, "0".repeat(64)), /payload/i);

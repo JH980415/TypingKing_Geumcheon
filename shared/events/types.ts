@@ -75,7 +75,7 @@ export type DeviceProfile = {
   apiBaseUrl: string;
   sessions: {
     official: { sessionId: string; dayNo: number; roundNo: number };
-    practice: { sessionId: string };
+    practice?: { sessionId: string };
   };
   requestTimeoutMs: number;
   retry: { initialDelayMs: number; maxDelayMs: number };

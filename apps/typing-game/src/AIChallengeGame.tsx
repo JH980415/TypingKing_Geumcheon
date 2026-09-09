@@ -1013,18 +1013,18 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
 
   if (resultReady) {
     return (
-      <section className="challenge-result-panel">
-        <AiTitle assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} className="challenge-result-title" />
-        <p className="eyebrow">AI 챌린지 성공</p>
-        <h1>참여자 승리. 금나래보다 빠르고 정확하게 완주했습니다.</h1>
+      <section className={eventProfile.profileId === "geumcheon-2026" ? "challenge-result-panel r7-final-victory" : "challenge-result-panel"}>
+        {eventProfile.profileId !== "geumcheon-2026" && <AiTitle assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} className="challenge-result-title" />}
+        {eventProfile.profileId !== "geumcheon-2026" && <p className="eyebrow">AI 챌린지 성공</p>}
+        <h1>{eventProfile.profileId === "geumcheon-2026" ? <>참여자 승리.<br />금나래보다 빠르고 정확하게 완주했습니다.</> : "참여자 승리. 금나래보다 빠르고 정확하게 완주했습니다."}</h1>
         {debugModeType === "ai_challenge_debug" && (
           <p className="notice-text debug-result-note">디버그 모드 기록은 리더보드에 반영되지 않습니다.</p>
         )}
-        <AssetImage
+        {eventProfile.profileId !== "geumcheon-2026" && <AssetImage
           src={profileAsset(resolveAiBossResultAsset(eventProfile, "USER_WIN", 3))}
           alt="패배한 AI"
           className="challenge-result-art"
-        />
+        />}
         {saveError && <p className="error-text">{saveError}</p>}
         <p className="notice-text auto-home-notice">{autoHomeSeconds}초뒤 메인화면으로 이동</p>
         <ChallengeSummary battles={battles} row={savedRow} participant={participant} assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} />
@@ -1039,9 +1039,9 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
   return (
     <section className="challenge-screen">
       <header className="challenge-top challenge-top-repositioned">
-        <div className="challenge-title-side">
+        {eventProfile.profileId !== "geumcheon-2026" && <div className="challenge-title-side">
           <AiTitle assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} className="challenge-title-image" />
-        </div>
+        </div>}
         <div className="challenge-stage-center">
           <p className="challenge-game-name eyebrow">{eventProfile.profileId === "geumcheon-2026" ? eventProfile.gameName : "AI 타자왕을 이겨라"}</p>
           <StageBadges assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} badgePaths={eventProfile.assets.stageBadges} currentStage={stageIndex + 1} completedStages={battles.map((battle) => battle.stage)} />
@@ -1143,7 +1143,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
         onConfirm={() => void confirmChallengeControl()}
         />
       )}
-      <p className="challenge-guide">문장 전체가 100% 일치하면 자동으로 완료됩니다. 금나래보다 먼저 완성하세요.</p>
+      <p className="challenge-guide">{eventProfile.profileId === "geumcheon-2026" ? <>문장 전체가 100% 일치하면 자동으로 완료됩니다.<br />금나래보다 먼저 완성하세요.</> : "문장 전체가 100% 일치하면 자동으로 완료됩니다. 금나래보다 먼저 완성하세요."}</p>
       {modalBattle && !pendingControlAction && (
         <BattlePopup
           battle={modalBattle}
@@ -1413,7 +1413,7 @@ function battleAiCharCount(battle: StageBattle): number {
   return battle.result === "AI_WIN" ? targetChars : Math.min(targetChars, battle.aiTypedChars);
 }
 
-function BattlePopup({
+export function BattlePopup({
   battle,
   isFinalWin,
   onNext,
@@ -1462,14 +1462,14 @@ function BattlePopup({
           />
           <div>
             <StageBadges assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} badgePaths={eventProfile.assets.stageBadges} currentStage={battle.stage} completedStages={userWin ? [battle.stage] : []} compact />
-            <p className="eyebrow">Stage {battle.stage}</p>
-            <h2>{userWin ? "승리했습니다. 금나래보다 빠르게 입력했습니다." : "아쉽습니다. 금나래가 먼저 입력을 완료했습니다."}</h2>
+            {eventProfile.profileId !== "geumcheon-2026" && <p className="eyebrow">Stage {battle.stage}</p>}
+            <h2>{userWin ? eventProfile.profileId === "geumcheon-2026" ? <>승리했습니다.<br />금나래보다 빠르게 입력했습니다.</> : "승리했습니다. 금나래보다 빠르게 입력했습니다." : "아쉽습니다. 금나래가 먼저 입력을 완료했습니다."}</h2>
           </div>
         </div>
         <div className="battle-stats">
-          <span>사용자 기록 <strong>{formatRecordDisplay(battle.userTimeMs, battleUserCharCount(battle))}</strong></span>
+          <span>{eventProfile.profileId === "geumcheon-2026" ? "참여자" : "사용자"} 기록 <strong>{formatRecordDisplay(battle.userTimeMs, battleUserCharCount(battle))}</strong></span>
           <span>금나래 기록 <strong>{formatRecordDisplay(battle.aiElapsedMs, battleAiCharCount(battle))}</strong></span>
-          <span>{userWin ? "사용자 타수" : "사용자 현재 타수"} <strong>{formatDisplayNumber(battle.userCpm, 2)}타/분</strong></span>
+          <span>{eventProfile.profileId === "geumcheon-2026" ? "참여자" : "사용자"}{userWin ? " 타수" : " 현재 타수"} <strong>{formatDisplayNumber(battle.userCpm, 2)}타/분</strong></span>
           <span>금나래 평균 타수 <strong>{formatDisplayNumber(battle.aiCpm, 2)}타/분</strong></span>
         </div>
         {isDebug && <p className="notice-text debug-result-note">디버그 모드 기록은 리더보드에 반영되지 않습니다.</p>}
@@ -1518,7 +1518,7 @@ function ChallengeControlConfirmModal({
   );
 }
 
-function ChallengeSummary({
+export function ChallengeSummary({
   battles,
   row,
   participant,
@@ -1538,21 +1538,26 @@ function ChallengeSummary({
   const userCharTotal = battles.reduce((sum, battle) => sum + battleUserCharCount(battle), 0);
   const aiCharTotal = battles.reduce((sum, battle) => sum + battleAiCharCount(battle), 0);
   const totalTypingUnits = battles.reduce((sum, battle) => sum + countConvertedTypingUnits(battle.text), 0);
+  const isGeumcheon = eventProfile.profileId === "geumcheon-2026";
   return (
-    <div className="challenge-summary">
+    <div className={isGeumcheon ? "challenge-summary r7-victory-summary" : "challenge-summary"}>
       <div className="summary-identity">
         <span>참여자 <strong>{participant.name}</strong></span>
         <span>휴대폰번호 <strong>{phone.replace(/-(\d{3,4})-/, "-****-")}</strong></span>
         <span>생년월일 <strong>{birth.replace(/-\d{2}-\d{2}$/, "-**-**")}</strong></span>
       </div>
       {battles.map((battle) => (
-        <div key={battle.stage}>
+        <div key={battle.stage} className={isGeumcheon ? "r7-stage-result-card" : undefined}>
           <StageBadge assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} assetPath={eventProfile.assets.stageBadges[battle.stage - 1]} stage={battle.stage} state="complete" compact />
-          <strong>
+          {isGeumcheon ? <>
+            <strong>참여자 : {(battle.userTimeMs / 1000).toFixed(2)}초｜{battleUserCharCount(battle)}글자｜{formatDisplayNumber(battle.userCpm, 2)}타</strong>
+            <strong>금나래 : {(battle.aiElapsedMs / 1000).toFixed(2)}초｜{battleAiCharCount(battle)}글자｜{formatDisplayNumber(battle.aiCpm, 2)}타</strong>
+          </> : <strong>
             사용자 {formatRecordDisplay(battle.userTimeMs, battleUserCharCount(battle))} / 금나래 {formatRecordDisplay(battle.aiElapsedMs, battleAiCharCount(battle))} / 금나래 평균 {formatDisplayNumber(battle.aiCpm, 2)}타
-          </strong>
+          </strong>}
         </div>
       ))}
+      {!isGeumcheon && <>
       <div className="highlight-result">
         <span>사용자 총 기록</span>
         <strong>{formatRecordDisplay(userTotal, userCharTotal)}</strong>
@@ -1569,6 +1574,7 @@ function ChallengeSummary({
         <span>최종 시간 차이</span>
         <strong>{formatDisplayMs(Math.abs(userTotal - aiTotal))}초</strong>
       </div>
+      </>}
     </div>
   );
 }

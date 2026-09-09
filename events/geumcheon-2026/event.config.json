@@ -92,7 +92,7 @@
     },
     "practice": {
       "variant": "practice",
-      "enabled": true,
+      "enabled": false,
       "role": "player",
       "sessionKind": "practice",
       "gameModes": [
@@ -104,7 +104,7 @@
     },
     "practice-leaderboard": {
       "variant": "practice-leaderboard",
-      "enabled": true,
+      "enabled": false,
       "role": "leaderboard",
       "sessionKind": "practice",
       "gameModes": [

@@ -25,6 +25,7 @@ const publicResources = [
     "events/geumcheon-2026/assets/robot_defeat_01_geumnarae_typer.png",
     "events/geumcheon-2026/assets/금나래 승리.png",
     "events/geumcheon-2026/assets/금나래패배_스테이지1.png",
+    "events/geumcheon-2026/assets/금나래패배_스테이지1_alpha_r7.png",
     "events/geumcheon-2026/assets/금나래패배_스테이지2.png",
     "events/geumcheon-2026/assets/금나래패배_스테이지3.png",
   "events/geumcheon-2026/assets/stage_01_03_science_classroom.png",
@@ -64,7 +65,7 @@ function stageFixtureProject(root: string): void {
   }
 }
 
-test("prepares an R2 release override without replacing release-geumcheon", () => {
+test("prepares official-only release using legacy R2 override without replacing existing release or copying stale practice EXEs", () => {
   const fixtureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "typingking-r2-release-output-"));
   try {
     stageFixtureProject(fixtureRoot);
@@ -84,6 +85,10 @@ test("prepares an R2 release override without replacing release-geumcheon", () =
     const output = `${result.stdout}\n${result.stderr}`;
 
     assert.equal(result.status, 0, output);
+    assert.deepEqual(
+      fs.readdirSync(path.join(fixtureRoot, outputRoot)).filter(name => name.endsWith(".exe")).sort(),
+      ["G-Science AI 타자왕.exe", "G-Science AI 타자왕 리더보드.exe"].sort()
+    );
     assert.equal(fs.readFileSync(path.join(fixtureRoot, "release-geumcheon", "preexisting.txt"), "utf8"), "keep me");
     assert.equal(
       fs.existsSync(path.join(fixtureRoot, outputRoot, ".typingking-geumcheon-client-release.json")),
@@ -96,6 +101,7 @@ test("prepares an R2 release override without replacing release-geumcheon", () =
   for (const fileName of [
     "금나래 승리.png",
     "금나래패배_스테이지1.png",
+    "금나래패배_스테이지1_alpha_r7.png",
     "금나래패배_스테이지2.png",
     "금나래패배_스테이지3.png"
   ]) {

@@ -103,9 +103,9 @@ test("adds the validated Geumcheon profile policy and device to renderer bootstr
 });
 
 for (const variant of ["ai", "ai-leaderboard", "practice", "practice-leaderboard"] as const) {
-  test(`${variant} is enabled and AI-only`, () => {
+  test(`${variant} keeps AI-only policy with only official variants enabled`, () => {
     const policy = variantPolicyFor(geumcheonProfile, variant);
-    assert.equal(policy.enabled, true);
+    assert.equal(policy.enabled, variant === "ai" || variant === "ai-leaderboard");
     assert.deepEqual(policy.gameModes, ["ai_challenge"]);
   });
 }
@@ -182,13 +182,16 @@ test("packaged Geumcheon launch resolves profiles and assets from resourcesPath"
 
 for (const [variant, sessionKind] of [["ai", "official"], ["practice", "practice"]] as const) {
   test(`Geumcheon ${sessionKind} runtime refresh keeps profile-owned settings`, () => {
+    const configuredProfile = sessionKind === "practice"
+      ? { ...geumcheonProfile, variants: { ...geumcheonProfile.variants, practice: { ...geumcheonProfile.variants.practice, enabled: true } } }
+      : geumcheonProfile;
     const bootstrap = createBootstrapData({
       config: DEFAULT_CONFIG,
       assetBaseUrl: "file:///assets",
       notices: [],
       mode: "game",
       variant,
-      eventProfile: geumcheonProfile
+      eventProfile: configuredProfile
     });
     const runtimeRefresh = {
       ...DEFAULT_CONFIG,
@@ -229,9 +232,7 @@ test("SkillUp runtime refresh remains raw settings", () => {
 
 const geumcheonArtifacts = [
   ["ai", "G-Science AI 타자왕.exe"],
-  ["ai-leaderboard", "G-Science AI 타자왕 리더보드.exe"],
-  ["practice", "G-Science AI 타자왕 연습모드.exe"],
-  ["practice-leaderboard", "G-Science AI 타자왕 연습모드 리더보드.exe"]
+  ["ai-leaderboard", "G-Science AI 타자왕 리더보드.exe"]
 ] as const;
 const approvedEventResources = [
   "event.config.json",
@@ -246,6 +247,7 @@ const approvedEventResources = [
       "assets/robot_defeat_01_geumnarae_typer.png",
       "assets/금나래 승리.png",
       "assets/금나래패배_스테이지1.png",
+      "assets/금나래패배_스테이지1_alpha_r7.png",
       "assets/금나래패배_스테이지2.png",
       "assets/금나래패배_스테이지3.png",
   "assets/stage_01_03_science_classroom.png",

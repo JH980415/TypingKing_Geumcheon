@@ -40,7 +40,7 @@ test("groups the approved Geumcheon title and exact subtitle in one centered lef
   const leftTitleGroup = html.match(/<div class="left-title-group">[\s\S]*?<\/div>/)?.[0];
   assert.ok(leftTitleGroup, "approved title and subtitle must share .left-title-group");
   assert.match(leftTitleGroup, /geumcheon-main-title-image/);
-  assert.match(leftTitleGroup, />3개의 스테이지에서 금나래보다 먼저 정확하게 입력하세요\.<\/p>/);
+  assert.match(leftTitleGroup, />3개의 스테이지에서 금나래보다<br\/>먼저 정확하게 입력하세요\.<\/p>/);
 });
 
 test("replaces the Geumcheon right-panel mode card with one event copy above the participant form", () => {
@@ -116,12 +116,12 @@ test("hides routine Geumcheon first-run creation notices but keeps real stage fa
   assert.match(html, /문구 파일을 읽지 못해 기본 문구를 사용합니다/);
 });
 
-test("all eight Geumcheon builders include approved result art and R6 candidate metadata", () => {
+test("Geumcheon builders preserve art with R7 official and historical practice candidate metadata", () => {
   const configs = fs.readdirSync(path.resolve()).filter((name) => /^electron-builder\.geumcheon.*\.yml$/.test(name));
   assert.equal(configs.length, 8);
   for (const config of configs) {
     const source = fs.readFileSync(path.resolve(config), "utf8");
-    assert.match(source, /typingKingReleaseCandidate: R6-v2-20260908/, config);
+    assert.match(source, config.includes('practice') ? /typingKingReleaseCandidate: R6-v2-20260908/ : /typingKingReleaseCandidate: R7-ppt-official-only-20260909/, config);
     for (const asset of ["금나래 승리.png", "금나래패배_스테이지1.png", "금나래패배_스테이지2.png", "금나래패배_스테이지3.png"]) {
       assert.match(source, new RegExp(`assets/${asset.replace(".", "\\.")}`), `${config}: ${asset}`);
     }
@@ -136,7 +136,7 @@ test("renders the approved Geumcheon leaderboard background", () => {
   );
 
   assert.match(html, /stage_01_03_science_classroom\.png/);
-  assert.match(html, /leaderboard-ai-title-img/);
+  assert.match(html, /geumcheon-leaderboard-logo/);
   assert.match(html, /ai_타자왕_금나래의_도전\.png/);
 });
 

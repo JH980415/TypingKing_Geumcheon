@@ -879,7 +879,7 @@ export function TypingGameApp({ bootstrap }: Props) {
                     : "mode-title-image start-ai-title-image ai-title-image"}
                   fallback={<h1>{bootstrap.eventProfile.profileId === "geumcheon-2026" ? "AI 타자왕 금나래를 이겨라!" : bootstrap.variantPolicy.displayName}</h1>}
                 />
-                <p className="hero-copy">3개의 스테이지에서 금나래보다 먼저 정확하게 입력하세요.</p>
+                <p className="hero-copy">{isGeumcheon ? <>3개의 스테이지에서 금나래보다<br />먼저 정확하게 입력하세요.</> : "3개의 스테이지에서 금나래보다 먼저 정확하게 입력하세요."}</p>
               </div>
               {bootstrap.eventProfile.profileId === "geumcheon-2026" && (
                 <FallbackAssetImage

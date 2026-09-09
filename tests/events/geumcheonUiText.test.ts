@@ -99,7 +99,7 @@ test("renders a dedicated Geumcheon game-name row before the separate stage badg
   );
 });
 
-test("Geumcheon official leaderboard removes the outer festival title while keeping the panel title", () => {
+test("Geumcheon official leaderboard keeps the approved title in the upper-left header", () => {
   const html = renderLeaderboardMarkup();
 
   for (const label of [
@@ -111,14 +111,15 @@ test("Geumcheon official leaderboard removes the outer festival title while keep
     "참여자 기록",
     "금나래 기록",
     "총 대결시간",
-    "공식 도전 기록 0건"
+    "현재 참여 기록 0건"
   ]) {
     assert.match(html, new RegExp(label));
   }
   const outerHeader = html.match(/<header class="leaderboard-header">[\s\S]*?<\/header>/)?.[0];
   assert.ok(outerHeader, "leaderboard header must render its controls");
   assert.doesNotMatch(outerHeader, /geumcheon-header-title|제8회 금천과학축제/);
-  assert.match(html, /leaderboard-ai-title-img/);
+  assert.match(outerHeader, /geumcheon-leaderboard-logo/);
+  assert.doesNotMatch(html, /leaderboard-ai-title-img/);
   assert.match(html, /ai_타자왕_금나래의_도전\.png/);
   assert.doesNotMatch(html, /종료 스테이지/);
   assert.doesNotMatch(html, /참여자 점수/);

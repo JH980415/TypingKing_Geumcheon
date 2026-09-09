@@ -195,11 +195,11 @@ export function validateDeviceProfile(value: unknown): DeviceProfile {
   if (url.search) throw new Error("device profile.apiBaseUrl cannot contain a query");
   if (url.hash) throw new Error("device profile.apiBaseUrl cannot contain a hash");
   const sessions = requireRecord(record.sessions, "device profile.sessions");
-  requireExactKeys(sessions, ["official", "practice"], "device profile.sessions");
+  requireExactKeys(sessions, eventProfileId === "geumcheon-2026" && !("practice" in sessions) ? ["official"] : ["official", "practice"], "device profile.sessions");
   const official = requireRecord(sessions.official, "device profile.sessions.official");
   requireExactKeys(official, ["sessionId", "dayNo", "roundNo"], "device profile.sessions.official");
-  const practice = requireRecord(sessions.practice, "device profile.sessions.practice");
-  requireExactKeys(practice, ["sessionId"], "device profile.sessions.practice");
+  const practice = "practice" in sessions ? requireRecord(sessions.practice, "device profile.sessions.practice") : undefined;
+  if (practice !== undefined) requireExactKeys(practice, ["sessionId"], "device profile.sessions.practice");
   const retry = requireRecord(record.retry, "device profile.retry");
   requireExactKeys(retry, ["initialDelayMs", "maxDelayMs"], "device profile.retry");
   const initialDelayMs = requirePositiveInteger(retry.initialDelayMs, "device profile.retry.initialDelayMs");
@@ -214,7 +214,7 @@ export function validateDeviceProfile(value: unknown): DeviceProfile {
     apiBaseUrl: url.toString().replace(/\/$/, ""),
     sessions: {
       official: { sessionId: requireString(official.sessionId, "device profile.sessions.official.sessionId"), dayNo: requirePositiveInteger(official.dayNo, "device profile.sessions.official.dayNo"), roundNo: requirePositiveInteger(official.roundNo, "device profile.sessions.official.roundNo") },
-      practice: { sessionId: requireString(practice.sessionId, "device profile.sessions.practice.sessionId") }
+      ...(practice === undefined ? {} : { practice: { sessionId: requireString(practice.sessionId, "device profile.sessions.practice.sessionId") } })
     },
     requestTimeoutMs: requirePositiveInteger(record.requestTimeoutMs, "device profile.requestTimeoutMs"),
     retry: { initialDelayMs, maxDelayMs }

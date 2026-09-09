@@ -15,7 +15,7 @@ export type NasServerConfigV1 = {
   stageTextCatalogPath: string;
   allowedSessions: {
     official: Array<{ sessionId: string; dayNo: number; roundNo: number }>;
-    practice: { sessionId: string };
+    practice?: { sessionId: string };
   };
   aiRanges: {
     official: [[100, 125], [125, 150], [150, 200]];
@@ -81,7 +81,7 @@ function parseEventConfig(value: unknown): Omit<NasServerConfigV1, "dataRoot"> {
   if (config.recordBaseFolderName !== "기록저장") throw new Error("CONFIG_FOLDER_INVALID");
   const stageTextCatalogPath = requiredPath(config.stageTextCatalogPath, "CONFIG_CATALOG");
 
-  const allowed = exactObject(config.allowedSessions, ["official", "practice"], "SESSION_CONFIG");
+  const allowed = exactObject(config.allowedSessions, ["official"], "SESSION_CONFIG", ["practice"]);
   if (!Array.isArray(allowed.official) || allowed.official.length === 0) throw new Error("OFFICIAL_SESSION_INVALID");
   const official = allowed.official.map((entry) => {
     const session = exactObject(entry, ["sessionId", "dayNo", "roundNo"], "OFFICIAL_SESSION");
@@ -94,9 +94,9 @@ function parseEventConfig(value: unknown): Omit<NasServerConfigV1, "dataRoot"> {
   const officialIds = new Set(official.map((session) => session.sessionId));
   const officialRounds = new Set(official.map((session) => `${session.dayNo}:${session.roundNo}`));
   if (officialIds.size !== official.length || officialRounds.size !== official.length) throw new Error("OFFICIAL_SESSION_DUPLICATE");
-  const practiceObject = exactObject(allowed.practice, ["sessionId"], "PRACTICE_SESSION");
-  const practice = { sessionId: nonEmptyString(practiceObject.sessionId, "PRACTICE_SESSION_INVALID") };
-  if (officialIds.has(practice.sessionId)) throw new Error("SESSION_ID_DUPLICATE");
+  const practiceObject = "practice" in allowed ? exactObject(allowed.practice, ["sessionId"], "PRACTICE_SESSION") : undefined;
+  const practice = practiceObject === undefined ? undefined : { sessionId: nonEmptyString(practiceObject.sessionId, "PRACTICE_SESSION_INVALID") };
+  if (practice !== undefined && officialIds.has(practice.sessionId)) throw new Error("SESSION_ID_DUPLICATE");
 
   const aiRangesObject = exactObject(config.aiRanges, ["official", "practice"], "AI_RANGES");
   assertExactRanges(aiRangesObject.official, [[100, 125], [125, 150], [150, 200]], "OFFICIAL_AI_RANGES_INVALID");
@@ -107,7 +107,7 @@ function parseEventConfig(value: unknown): Omit<NasServerConfigV1, "dataRoot"> {
     eventId: GEUMCHEON_NAS_EVENT_ID,
     recordBaseFolderName: "기록저장",
     stageTextCatalogPath,
-    allowedSessions: { official, practice },
+    allowedSessions: { official, ...(practice === undefined ? {} : { practice }) },
     aiRanges: {
       official: [[100, 125], [125, 150], [150, 200]],
       practice: [[100, 125], [125, 150], [150, 200]],
@@ -261,10 +261,10 @@ function comparablePath(path: string): string {
   return process.platform === "win32" ? comparable.toLowerCase() : comparable;
 }
 
-function exactObject(value: unknown, keys: readonly string[], prefix: string): Record<string, unknown> {
+function exactObject(value: unknown, keys: readonly string[], prefix: string, optionalKeys: readonly string[] = []): Record<string, unknown> {
   if (value == null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${prefix}_OBJECT_INVALID`);
   const object = value as Record<string, unknown>;
-  for (const key of Object.keys(object)) if (!keys.includes(key)) throw new Error(`${prefix}_UNKNOWN_KEY`);
+  for (const key of Object.keys(object)) if (!keys.includes(key) && !optionalKeys.includes(key)) throw new Error(`${prefix}_UNKNOWN_KEY`);
   for (const key of keys) if (!(key in object)) throw new Error(`${prefix}_MISSING_KEY`);
   return object;
 }

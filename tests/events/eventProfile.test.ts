@@ -154,8 +154,44 @@ test("accepts each permitted Geumcheon device profile", () => {
   }
 });
 
+test("accepts official-only Geumcheon sessions without inventing practice and keeps SkillUp strict", () => {
+  const sessions = { official: validDeviceProfile.sessions.official };
+  assert.deepEqual(validateDeviceProfile({ ...validDeviceProfile, sessions }).sessions, sessions);
+  assert.throws(() => validateDeviceProfile({ ...validDeviceProfile, eventProfileId: "skillup-2026", eventId: "skillup-festa-2026", sessions }), /practice/);
+  for (const practice of [null, {}, { sessionId: "" }, { sessionId: "practice", extra: true }]) {
+    assert.throws(() => validateDeviceProfile({ ...validDeviceProfile, sessions: { ...sessions, practice } }), /practice/);
+  }
+  assert.throws(() => validateDeviceProfile({ ...validDeviceProfile, sessions: { ...sessions, unofficial: {} } }), /unknown key/);
+});
+
+test("Geumcheon enables only official AI variants while SkillUp retains practice", () => {
+  const geumcheon = loadEventProfile(path.resolve("events/geumcheon-2026/event.config.json"));
+  assert.deepEqual(Object.values(geumcheon.variants).filter((variant) => variant.enabled).map((variant) => variant.variant), ["ai", "ai-leaderboard"]);
+  const skillup = loadEventProfile(path.resolve("events/skillup-2026/event.config.json"));
+  assert.equal(skillup.variants.practice.enabled, true);
+  assert.equal(skillup.variants["practice-leaderboard"].enabled, true);
+  assert.ok(geumcheon.aiChallenge.practice);
+});
+
 test("rejects a device profile with an unknown key", () => {
   assert.throws(() => validateDeviceProfile({ ...validDeviceProfile, unexpected: true }), /unknown key/i);
+});
+
+test("five deployment templates become valid official-only profiles after explicit operational substitution", () => {
+  for (const [file, deviceId, role] of [
+    ["player_01", "PC01", "player"], ["player_02", "PC02", "player"],
+    ["player_03", "PC03", "player"], ["player_04", "PC04", "player"],
+    ["leaderboard_01", "LEADERBOARD01", "leaderboard"],
+  ]) {
+    const template = JSON.parse(fs.readFileSync(path.resolve(`deployment/nas-production/device-profiles/${file}.device-profile.json`), "utf8"));
+    assert.throws(() => validateDeviceProfile(template), /HTTPS/);
+    const configured = { ...template, apiBaseUrl: "https://synthetic.example.test", sessions: { ...template.sessions, official: { sessionId: "synthetic-official", dayNo: 2, roundNo: 3 } } };
+    const profile = validateDeviceProfile(configured);
+    assert.equal(profile.deviceId, deviceId);
+    assert.equal(profile.role, role);
+    assert.deepEqual(profile.sessions, { official: { sessionId: "synthetic-official", dayNo: 2, roundNo: 3 } });
+    assert.throws(() => validateDeviceProfile({ ...configured, sessions: { official: { sessionId: "synthetic-official", dayNo: "2", roundNo: 3 } } }), /positive integer/);
+  }
 });
 
 test("rejects a mismatched event or device role", () => {

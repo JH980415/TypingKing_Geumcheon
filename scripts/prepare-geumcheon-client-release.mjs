@@ -8,9 +8,7 @@ const sentinelName = ".typingking-geumcheon-client-release.json";
 const sentinel = { schemaVersion: 1, kind: "typingking-geumcheon-client-release" };
 const expected = new Map([
   ["ai", "G-Science AI 타자왕.exe"],
-  ["ai-leaderboard", "G-Science AI 타자왕 리더보드.exe"],
-  ["practice", "G-Science AI 타자왕 연습모드.exe"],
-  ["practice-leaderboard", "G-Science AI 타자왕 연습모드 리더보드.exe"]
+  ["ai-leaderboard", "G-Science AI 타자왕 리더보드.exe"]
 ]);
 const publicResources = [
   "events/geumcheon-2026/event.config.json",
@@ -25,6 +23,7 @@ const publicResources = [
   "events/geumcheon-2026/assets/robot_defeat_01_geumnarae_typer.png",
   "events/geumcheon-2026/assets/금나래 승리.png",
   "events/geumcheon-2026/assets/금나래패배_스테이지1.png",
+  "events/geumcheon-2026/assets/금나래패배_스테이지1_alpha_r7.png",
   "events/geumcheon-2026/assets/금나래패배_스테이지2.png",
   "events/geumcheon-2026/assets/금나래패배_스테이지3.png",
   "events/geumcheon-2026/assets/stage_01_03_science_classroom.png",

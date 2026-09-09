@@ -228,6 +228,7 @@ function sessionFor(device: DeviceProfile, kind: SessionKind): NasSessionV1 {
       round_no: device.sessions.official.roundNo,
     };
   }
+  if (device.sessions.practice === undefined) throw new Error("NAS_PRACTICE_SESSION_NOT_CONFIGURED");
   return { kind, session_id: device.sessions.practice.sessionId };
 }
 

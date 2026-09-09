@@ -17,6 +17,30 @@ const operatorToken = "3".repeat(64);
 const recordId = "gsc26-pc01-11111111-1111-4111-8111-111111111111";
 const attemptId = "gsc26-attempt-11111111-1111-4111-8111-111111111111";
 
+test("official-only server stores and reads official records but rejects practice with stable validation errors", async (context) => {
+  const root = mkdtempSync(join(tmpdir(), "typingking-official-only-"));
+  context.after(() => rmSync(root, { recursive: true, force: true }));
+  const configured = operatorConfig(root);
+  configured.allowedSessions = { official: configured.allowedSessions.official };
+  const app = buildNasApp({ config: configured, now: () => "2026-08-26T03:10:00.000Z" });
+  context.after(() => app.close());
+  const saved = await app.inject({ method: "POST", url: "/api/v1/records", headers: headers(), payload: body() });
+  assert.equal(saved.statusCode, 201);
+  const officialQuery = "session_kind=official&session_id=official-day1-round1&day_no=1&round_no=1";
+  const read = await app.inject({ method: "GET", url: `/api/v1/records?${officialQuery}`, headers: leaderboardHeaders() });
+  assert.equal(read.statusCode, 200);
+  assert.equal(read.json().rows[0].record_id, recordId);
+  const practiceQuery = "session_kind=practice&session_id=practice-2026";
+  for (const endpoint of ["records", "ready"]) {
+    const rejected = await app.inject({ method: "GET", url: `/api/v1/${endpoint}?${practiceQuery}`, headers: leaderboardHeaders() });
+    assert.equal(rejected.statusCode, 422);
+    assert.equal(rejected.json().code, "SESSION_INVALID");
+  }
+  const rejected = await app.inject({ method: "POST", url: "/api/v1/records", headers: headers(), payload: { ...body(), session: { kind: "practice", session_id: "practice-2026" } } });
+  assert.equal(rejected.statusCode, 422);
+  assert.equal(rejected.json().code, "SESSION_INVALID");
+});
+
 function legacyBody(): Record<string, unknown> {
   return { schema_version: 1, event_id: "geumcheon-science-festival-2026", session: { kind: "official", session_id: "official-day1-round1", day_no: 1, round_no: 1 }, record: { record_id: recordId, created_at: "2026-08-26T03:00:00.000Z", completed_at: "2026-08-26T03:00:06.000Z", participant: { name: "synthetic", phone: "01000000001", birthdate: "2000-02-29", privacy_agreed: true, privacy_agreed_at: "2026-08-26T02:59:59.000Z" }, status: "success", stages: [{ stage_no: 1, text_id: "s1", catalog_version: "v1", target_text: "가", typed_text: "가", user_time_ms: 1000, ai_cpm: 100, result: "USER_WIN" }, { stage_no: 2, text_id: "s2", catalog_version: "v1", target_text: "나", typed_text: "나", user_time_ms: 1000, ai_cpm: 125, result: "USER_WIN" }, { stage_no: 3, text_id: "s3", catalog_version: "v1", target_text: "다", typed_text: "다", user_time_ms: 1000, ai_cpm: 150, result: "USER_WIN" }], app_version: "synthetic", is_test: false, is_debug: false, debug_mode_type: "" } };
 }

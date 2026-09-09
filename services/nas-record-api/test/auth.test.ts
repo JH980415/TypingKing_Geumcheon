@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -187,6 +187,20 @@ test("loads strict NAS configuration from only the four approved environment pat
   assert.equal(loaded.participantHmacKey.byteLength, 32);
 });
 
+test("loads official-only sessions while rejecting malformed optional practice and unknown session keys", (context) => {
+  const fixture = configFixture();
+  context.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+  const officialOnly = { ...fixture.eventConfig, allowedSessions: { official: fixture.eventConfig.allowedSessions.official } };
+  writeFileSync(fixture.eventConfigPath, JSON.stringify(officialOnly), "utf8");
+  assert.deepEqual(loadSyntheticConfig(fixture.env).allowedSessions, officialOnly.allowedSessions);
+  for (const practice of [null, {}, { sessionId: "" }, { sessionId: "practice", extra: true }]) {
+    writeFileSync(fixture.eventConfigPath, JSON.stringify({ ...officialOnly, allowedSessions: { ...officialOnly.allowedSessions, practice } }), "utf8");
+    assert.throws(() => loadSyntheticConfig(fixture.env), /PRACTICE_SESSION/);
+  }
+  writeFileSync(fixture.eventConfigPath, JSON.stringify({ ...officialOnly, allowedSessions: { ...officialOnly.allowedSessions, unofficial: {} } }), "utf8");
+  assert.throws(() => loadSyntheticConfig(fixture.env), /SESSION_CONFIG_UNKNOWN_KEY/);
+});
+
 test("rejects unknown configuration keys and short HMAC material", (context) => {
   const fixture = configFixture();
   context.after(() => rmSync(fixture.root, { recursive: true, force: true }));
@@ -196,6 +210,26 @@ test("rejects unknown configuration keys and short HMAC material", (context) => 
   writeFileSync(fixture.eventConfigPath, JSON.stringify(fixture.eventConfig), "utf8");
   writeFileSync(fixture.hmacPath, Buffer.alloc(31, 29));
   assert.throws(() => loadSyntheticConfig(fixture.env), /HMAC_KEY_INVALID/);
+});
+
+test("production templates load after synthetic substitution with six official-only scoped tokens", (context) => {
+  const fixture = configFixture();
+  context.after(() => rmSync(fixture.root, { recursive: true, force: true }));
+  const base = new URL("../../../deployment/nas-production/server/config/", import.meta.url);
+  const configured = JSON.parse(readFileSync(new URL("event-config.production.template.json", base), "utf8"));
+  configured.stageTextCatalogPath = fixture.catalogPath;
+  configured.allowedSessions.official = [{ sessionId: "synthetic-official", dayNo: 2, roundNo: 3 }];
+  const tokens = JSON.parse(readFileSync(new URL("token-manifest.production.template.json", base), "utf8"));
+  tokens.tokens.forEach((entry: { tokenHash: string; expiresAt: string }, index: number) => {
+    entry.tokenHash = tokenHash(syntheticToken(index + 40));
+    entry.expiresAt = "2026-09-30T00:00:00.000Z";
+  });
+  writeFileSync(fixture.eventConfigPath, JSON.stringify(configured), "utf8");
+  writeFileSync(fixture.tokenManifestPath, JSON.stringify(tokens), "utf8");
+  const loaded = loadSyntheticConfig(fixture.env);
+  assert.deepEqual(loaded.allowedSessions, { official: [{ sessionId: "synthetic-official", dayNo: 2, roundNo: 3 }] });
+  assert.deepEqual(loaded.tokenManifest.tokens.map(({ deviceId, role }) => [deviceId, role]), [["PC01", "writer"], ["PC02", "writer"], ["PC03", "writer"], ["PC04", "writer"], ["LEADERBOARD01", "leaderboard"], ["LEADERBOARD01", "operator"]]);
+  for (const entry of loaded.tokenManifest.tokens) assert.deepEqual(entry.allowedSessions, ["official"]);
 });
 
 test("rejects a missing configured phrase catalog", (context) => {

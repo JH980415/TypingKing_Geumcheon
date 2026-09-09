@@ -100,6 +100,22 @@ export function supportsLegacyLeaderboardStorageTools(profileId: string): boolea
   return profileId !== "geumcheon-2026";
 }
 
+export function readLeaderboardDayRound(storage: Pick<Storage, "getItem">, variant: string): boolean {
+  try {
+    return storage.getItem(`typingking:geumcheon-2026:${variant}:show-day-round`) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function saveLeaderboardDayRound(storage: Pick<Storage, "setItem">, variant: string, visible: boolean): void {
+  storage.setItem(`typingking:geumcheon-2026:${variant}:show-day-round`, String(visible));
+}
+
+export function resolveLeaderboardHighlight(current: string, rowId: string | null): string {
+  return rowId === null || current === rowId ? "" : rowId;
+}
+
 export function LeaderboardApp({ bootstrap }: Props) {
   const { assetBaseUrl } = bootstrap;
   const [config, setConfig] = useState<AppConfig>(bootstrap.config);
@@ -107,6 +123,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
   const isPracticeBoard = bootstrap.variantPolicy.sessionKind === "practice";
   const isGeumcheonOfficialBoard = bootstrap.eventProfile.profileId === "geumcheon-2026" && !isPracticeBoard;
   const isGeumcheonPracticeBoard = bootstrap.eventProfile.profileId === "geumcheon-2026" && isPracticeBoard;
+  const isGeumcheonBoard = isGeumcheonOfficialBoard || isGeumcheonPracticeBoard;
   const supportsLegacyStorageTools = supportsLegacyLeaderboardStorageTools(bootstrap.eventProfile.profileId);
   const showNormalLeaderboard = bootstrap.variantPolicy.gameModes.includes("normal");
   const showAiLeaderboard = bootstrap.variantPolicy.gameModes.includes("ai_challenge");
@@ -128,6 +145,13 @@ export function LeaderboardApp({ bootstrap }: Props) {
   const [includeTest, setIncludeTest] = useState(false);
   const [includeDebug, setIncludeDebug] = useState(false);
   const [selectedId, setSelectedId] = useState("");
+  const [highlightedId, setHighlightedId] = useState("");
+  const [showDayRound, setShowDayRound] = useState(() => {
+    if (!isGeumcheonBoard || typeof window === "undefined") return false;
+    try { return readLeaderboardDayRound(window.localStorage, leaderboardVariant); } catch { return false; }
+  });
+  const [dayRoundDraft, setDayRoundDraft] = useState(showDayRound);
+  const visualSelectedId = isGeumcheonBoard ? highlightedId : selectedId;
   const [edit, setEdit] = useState<EditState | null>(null);
   const [backups, setBackups] = useState<string[]>([]);
   const [syncStatus, setSyncStatus] = useState<LeaderboardSyncStatus | null>(null);
@@ -282,12 +306,28 @@ export function LeaderboardApp({ bootstrap }: Props) {
     setMessage("");
     setEdit(null);
     setSelectedId("");
+    setHighlightedId("");
+    setDayRoundDraft(showDayRound);
   }
 
   function beginEdit(record: RecordRow) {
+    if (isGeumcheonBoard) {
+      setHighlightedId(resolveLeaderboardHighlight(highlightedId, record.record_id));
+      if (selectedId === record.record_id && highlightedId !== record.record_id) return;
+    }
     const next = resolveLeaderboardEditSelection(selectedId, record);
     setSelectedId(next.selectedId);
     setEdit(next.edit);
+  }
+
+  function saveDisplaySettings() {
+    try {
+      saveLeaderboardDayRound(window.localStorage, leaderboardVariant, dayRoundDraft);
+      setShowDayRound(dayRoundDraft);
+      setMessage("표시 설정을 저장했습니다.");
+    } catch {
+      setMessage("표시 설정을 저장하지 못했습니다. 다시 시도해 주세요.");
+    }
   }
 
   async function saveEdit() {
@@ -401,9 +441,21 @@ export function LeaderboardApp({ bootstrap }: Props) {
   }
 
   return (
-    <main className="app leaderboard-app" style={{ backgroundImage: `url("${eventAsset(bootstrap.eventProfile.assets.leaderboardBackground)}")` }}>
+    <main className={isGeumcheonBoard ? "app leaderboard-app r7-geumcheon-leaderboard" : "app leaderboard-app"}
+      onClickCapture={isGeumcheonBoard ? (event) => {
+        if (!(event.target instanceof Element) || !event.target.closest("[data-leaderboard-record]")) {
+          setHighlightedId(resolveLeaderboardHighlight(highlightedId, null));
+        }
+      } : undefined}
+      style={{ backgroundImage: `url("${eventAsset(bootstrap.eventProfile.assets.leaderboardBackground)}")` }}>
       <header className="leaderboard-header">
         <div>
+          {isGeumcheonBoard && <AssetImage
+            src={eventAsset(bootstrap.eventProfile.assets.eventTitle)}
+            alt={bootstrap.eventProfile.gameName}
+            className="geumcheon-leaderboard-logo"
+            fallback={<span>{bootstrap.eventProfile.gameName}</span>}
+          />}
           {bootstrap.eventProfile.profileId !== "geumcheon-2026" && (
             <p className="eyebrow">2026 일잘러 페스타</p>
           )}
@@ -431,6 +483,8 @@ export function LeaderboardApp({ bootstrap }: Props) {
               <SessionSummary
                 config={config}
                 participantCount={normalPlayCount}
+                geumcheon={isGeumcheonBoard}
+                showDayRound={showDayRound}
                 forcePractice={isPracticeBoard}
                 compactPractice={isPracticeBoard}
               />
@@ -454,7 +508,8 @@ export function LeaderboardApp({ bootstrap }: Props) {
                 </div>
                 {normalRecords.map((record, index) => (
                   <button
-                    className={selectedId === record.record_id ? "ranking-row normal-row selected" : "ranking-row normal-row"}
+                    className={visualSelectedId === record.record_id ? "ranking-row normal-row selected" : "ranking-row normal-row"}
+                    data-leaderboard-record={record.record_id}
                     key={record.record_id}
                     onClick={() => beginEdit(record)}
                   >
@@ -475,10 +530,12 @@ export function LeaderboardApp({ bootstrap }: Props) {
               <SessionSummary
                 config={config}
                 participantCount={aiPlayCount}
+                geumcheon={isGeumcheonBoard}
+                showDayRound={showDayRound}
                 forcePractice={isPracticeBoard}
                 compactPractice={isPracticeBoard}
               />
-              <h2 className="leaderboard-mode-title leaderboard-ai-title">
+              {!isGeumcheonBoard && <h2 className="leaderboard-mode-title leaderboard-ai-title">
                 <AssetImage
                   src={bootstrap.eventProfile.profileId === "geumcheon-2026"
                     ? eventAsset(bootstrap.eventProfile.assets.eventTitle)
@@ -490,7 +547,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
                   className="leaderboard-mode-title-img leaderboard-ai-title-img"
                     fallback={<span>{bootstrap.eventProfile.gameName}</span>}
                 />
-              </h2>
+              </h2>}
               <div className="ranking-body">
                 <div className="ranking-head ai-head">
                   <span>순위</span>
@@ -504,7 +561,8 @@ export function LeaderboardApp({ bootstrap }: Props) {
                 </div>
                 {aiRecords.map(({ record, display, rank }) => (
                   <button
-                    className={selectedId === record.record_id ? "ranking-row ai-row selected" : "ranking-row ai-row"}
+                    className={visualSelectedId === record.record_id ? "ranking-row ai-row selected" : "ranking-row ai-row"}
+                    data-leaderboard-record={record.record_id}
                     key={record.record_id}
                     onClick={() => beginEdit(record)}
                   >
@@ -589,6 +647,13 @@ export function LeaderboardApp({ bootstrap }: Props) {
                 )}
 
                 <div className="admin-toolbar">
+                  {isGeumcheonOfficialBoard && <>
+                    <label className="check-line compact">
+                      <input type="checkbox" checked={dayRoundDraft} onChange={(event) => setDayRoundDraft(event.target.checked)} />
+                      일차·회차 표시
+                    </label>
+                    <button className="secondary-button" onClick={saveDisplaySettings}>표시 설정 저장</button>
+                  </>}
                   <button aria-pressed={viewMode === "best"} className={viewMode === "best" ? "stage-pill active" : "stage-pill"} onClick={() => setViewMode("best")}>
                     최고기록만 보기
                   </button>
@@ -611,7 +676,8 @@ export function LeaderboardApp({ bootstrap }: Props) {
                     <div className="admin-record-picker" aria-label="수정할 기록 선택">
                       {adminSelectableRecords.map((record, index) => (
                         <button
-                          className={selectedId === record.record_id ? "selected" : ""}
+                          className={visualSelectedId === record.record_id ? "selected" : ""}
+                          data-leaderboard-record={record.record_id}
                           key={record.record_id}
                           onClick={() => beginEdit(record)}
                           type="button"
@@ -1325,21 +1391,34 @@ function sameRecordSnapshot(a: RecordRow[], b: RecordRow[]): boolean {
   return true;
 }
 
-function SessionSummary({
+export function SessionSummary({
   config,
   participantCount = 0,
   forcePractice = false,
-  compactPractice = false
+  compactPractice = false,
+  geumcheon = false,
+  showDayRound = false
 }: {
   config: AppConfig;
   participantCount?: number;
   forcePractice?: boolean;
   compactPractice?: boolean;
+  geumcheon?: boolean;
+  showDayRound?: boolean;
 }) {
   const day = Number(config.dayNo) || 1;
   const round = Number(config.roundNo) || 1;
   const count = Number.isFinite(participantCount) ? participantCount : 0;
   const isPractice = forcePractice || Boolean(config.isPracticeSession);
+  if (geumcheon && !isPractice) {
+    return <div className="leaderboard-session">
+      <div className="session-top"><span className="session-count">현재 참여 기록 {count}건</span></div>
+      {showDayRound && <div className="session-badges">
+        <strong className="session-day">{day}일차</strong>
+        <strong className="session-round">{round}회차</strong>
+      </div>}
+    </div>;
+  }
   return (
     <div
       className={isPractice ? "leaderboard-session practice-session" : "leaderboard-session"}

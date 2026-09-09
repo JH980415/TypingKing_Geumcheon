@@ -152,7 +152,7 @@ function validateSession(
 
   if (session.kind === "practice") {
     exactKeys(session, ["kind", "session_id"], "SESSION");
-    if (session.session_id !== config.allowedSessions.practice.sessionId) {
+    if (config.allowedSessions.practice === undefined || session.session_id !== config.allowedSessions.practice.sessionId) {
       throw new Error("SESSION_INVALID");
     }
     return { kind: "practice", session_id: session.session_id };

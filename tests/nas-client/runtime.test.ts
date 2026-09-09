@@ -141,6 +141,21 @@ test("checkpoints and saves one official RecordRow into encrypted outbox, then f
   assert.deepEqual(await runtime.queueStatus(), { pending: 0, blocked: 0 });
 });
 
+test("official-only runtime rejects requested practice before any network or persistence", async (context) => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "typingking-nas-official-only-"));
+  context.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+  const configured = device();
+  const common = {
+    event: event(), device: { ...configured, sessions: { official: configured.sessions.official } } as DeviceProfile,
+    runtimeRoot, safeStorage: safeStorage(),
+    fetch: (async () => { throw new Error("unexpected network"); }) as FetchLike,
+    local: localCallbacks(async () => { throw new Error("unexpected persistence"); }).callbacks,
+  };
+  assert.doesNotThrow(() => createGeumcheonNasRuntime({ ...common, sessionKind: "official" }));
+  assert.throws(() => createGeumcheonNasRuntime({ ...common, sessionKind: "practice" }), /^Error: NAS_PRACTICE_SESSION_NOT_CONFIGURED$/);
+  assert.deepEqual(await readdir(runtimeRoot), []);
+});
+
 test("recovers a practice checkpoint into practice outbox with the same stable record ID", async (context) => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "typingking-nas-runtime-"));
   context.after(() => rm(runtimeRoot, { recursive: true, force: true }));

@@ -20,7 +20,7 @@
     "dist:geumcheon:ai-leaderboard": "electron-builder --config electron-builder.geumcheon-ai-leaderboard.yml --publish=never",
     "dist:geumcheon:practice": "electron-builder --config electron-builder.geumcheon-practice.yml --publish=never",
     "dist:geumcheon:practice-leaderboard": "electron-builder --config electron-builder.geumcheon-practice-leaderboard.yml --publish=never",
-    "dist:geumcheon": "npm run build && npm run dist:geumcheon:ai && npm run dist:geumcheon:ai-leaderboard && npm run dist:geumcheon:practice && npm run dist:geumcheon:practice-leaderboard",
+    "dist:geumcheon": "npm run build && npm run dist:geumcheon:ai && npm run dist:geumcheon:ai-leaderboard",
     "dist": "vite build && tsc -p tsconfig.node.json && electron-builder --config electron-builder.game.yml --publish=never && electron-builder --config electron-builder.leaderboard.yml --publish=never && electron-builder --config electron-builder.ai.yml --publish=never && electron-builder --config electron-builder.ai-leaderboard.yml --publish=never && electron-builder --config electron-builder.practice.yml --publish=never && electron-builder --config electron-builder.practice-leaderboard.yml --publish=never && node scripts/prepare-release.mjs",
     "test:logic": "tsx scripts/logic-tests.ts",
     "test:geumcheon:client": "tsx --test tests/events/eventProfile.test.ts tests/events/runtimeIsolation.test.ts tests/events/geumcheonVariants.test.ts tests/events/geumcheonUiAssets.test.ts tests/events/r2UatAdminPin.test.ts tests/domain/geumcheonStageTexts.test.ts tests/domain/stageTextShuffle.test.ts tests/domain/geumcheonTiming.test.ts tests/domain/geumcheonLeaderboardSelection.test.ts tests/domain/geumcheonLeaderboardCsv.test.ts",
@@ -35,7 +35,9 @@
     "test:e2e:large-session": "tsx scripts/e2e-large-session-check.ts",
     "test:e2e:packaged": "tsx scripts/e2e-packaged-runtime-check.ts",
     "test:e2e:geumcheon-multi-pc": "tsx scripts/e2e-geumcheon-multi-pc-nas-simulation.ts",
-    "dist:geumcheon:review": "npm run build && electron-builder --config electron-builder.geumcheon-ai-review.yml --publish=never && electron-builder --config electron-builder.geumcheon-ai-leaderboard-review.yml --publish=never && electron-builder --config electron-builder.geumcheon-practice-review.yml --publish=never && electron-builder --config electron-builder.geumcheon-practice-leaderboard-review.yml --publish=never",
+    "dist:geumcheon:review": "npm run build && electron-builder --config electron-builder.geumcheon-ai-review.yml --publish=never && electron-builder --config electron-builder.geumcheon-ai-leaderboard-review.yml --publish=never",
+    "package:geumcheon:r7": "tsx scripts/r7-package-release.ts",
+    "test:geumcheon:r7-packaging": "tsx --test tests/events/r7Packaging.test.ts",
     "test:e2e:geumcheon-review": "tsx scripts/r5-standalone-review-check.ts"
   },
   "dependencies": {
