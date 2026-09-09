@@ -104,6 +104,57 @@ test("PPT12 board and logo remain anchored with empty, populated and scrolled re
       await page.waitForFunction(() => document.querySelectorAll(".ai-ranking .ranking-row").length === 20);
       const populated = await measure(page);
       await page.screenshot({ path: path.join(output, `${reference.width}-populated.png`) });
+      // Catch translucent sticky headers leaking underlying row glyphs. The
+      // bottom 12px band contains no header labels; scroll 48px places the first
+      // 76px row's centered text beneath it without changing viewport geometry.
+      const header = populated.boxes[".ranking-head"];
+      const headerClip = { x: Math.ceil(header.x) + 8, y: Math.ceil(header.y) + 48,
+        width: Math.floor(header.width) - 16, height: 12 };
+      const headerBefore = await page.screenshot({ clip: headerClip,
+        path: path.join(output, `${reference.width}-header-before-scroll.png`) });
+      await page.locator(".ranking-body").evaluate((element) => { element.scrollTop = 48; });
+      await page.waitForFunction(() => document.querySelector(".ranking-body")!.scrollTop === 48);
+      const headerAfter = await page.screenshot({ clip: headerClip,
+        path: path.join(output, `${reference.width}-header-after-scroll.png`) });
+      const headerAtScroll = await measure(page);
+      const columns = await page.evaluate(() => [".ranking-head", ".ai-ranking .ranking-row"].map((selector) =>
+        Array.from(document.querySelector(selector)!.children).map((cell) => {
+          const box = cell.getBoundingClientRect(); return { x: box.x, width: box.width };
+        })));
+      const headerPixels = await page.evaluate(async ({ before, after }) => {
+        const images = [before, after].map((base64) => {
+          const image = new Image(); image.src = `data:image/png;base64,${base64}`;
+          return image;
+        });
+        await Promise.all(images.map((image) => image.decode()));
+        const [first, second] = images.map((image) => {
+          const canvas = document.createElement("canvas"); canvas.width = image.width; canvas.height = image.height;
+          const context = canvas.getContext("2d")!; context.drawImage(image, 0, 0);
+          return context.getImageData(0, 0, canvas.width, canvas.height).data;
+        });
+        let changedPixels = 0, maximumChannelDelta = 0;
+        for (let offset = 0; offset < first.length; offset += 4) {
+          let changed = false;
+          for (let channel = 0; channel < 4; channel++) {
+            const delta = Math.abs(first[offset + channel] - second[offset + channel]);
+            changed ||= delta !== 0; maximumChannelDelta = Math.max(maximumChannelDelta, delta);
+          }
+          if (changed) changedPixels++;
+        }
+        return { changedPixels, maximumChannelDelta, pixelCount: first.length / 4 };
+      }, { before: headerBefore.toString("base64"), after: headerAfter.toString("base64") });
+      observations.push({ viewport: reference, state: "header-scroll-pixels", clip: headerClip, actual: headerPixels,
+        scrollTop: headerAtScroll.scrollTop, headerBefore: header, headerAfter: headerAtScroll.boxes[".ranking-head"], columns });
+      await t.test(`${reference.width} sticky header conceals scrolling row pixels`, async () => {
+        assert.equal(headerAtScroll.scrollTop, 48);
+        assert.deepEqual(headerAtScroll.boxes[".ranking-head"], header, "sticky header geometry must not move");
+        assert.deepEqual(columns[0], columns[1], "header and body columns remain aligned");
+        assert.equal(headerPixels.changedPixels, 0, `Scrolled rows changed ${headerPixels.changedPixels} header-band pixels (max channel delta ${headerPixels.maximumChannelDelta})`);
+        await page.locator(".ai-ranking .ranking-row").nth(1).click();
+        await page.waitForFunction(() => document.querySelectorAll(".ai-ranking .ranking-row.selected").length === 1);
+        await page.mouse.click(headerClip.x + 2, headerClip.y + 2);
+        await page.waitForFunction(() => document.querySelectorAll(".ai-ranking .ranking-row.selected").length === 0);
+      });
       await page.locator(".ai-ranking .ranking-row").last().scrollIntoViewIfNeeded();
       const scrolled = await measure(page);
       await page.screenshot({ path: path.join(output, `${reference.width}-scrolled.png`) });

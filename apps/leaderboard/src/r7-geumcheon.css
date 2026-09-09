@@ -56,6 +56,11 @@ html[data-event-profile="geumcheon-2026"] .r7-geumcheon-leaderboard .leaderboard
   padding: 18px 24px;
 }
 
+html[data-event-profile="geumcheon-2026"] .r7-geumcheon-leaderboard .ranking-head {
+  /* Keep the purple tint, but prevent scrolling row glyphs showing through. */
+  background: linear-gradient(rgba(31, 17, 82, 0.72), rgba(31, 17, 82, 0.72)), #fff;
+}
+
 .r7-geumcheon-leaderboard .ranking-body .ranking-row.selected {
   background: #fff6e8;
   outline: 4px solid rgba(226, 24, 131, 0.28);
