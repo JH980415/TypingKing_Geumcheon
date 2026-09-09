@@ -39,6 +39,7 @@ import {
   type AtomicStoreHooks,
 } from "./atomicStore.js";
 import type { StoredNasRecordV1 } from "./recordSchema.js";
+import { isGeumcheonRecordEvidenceV1 } from "../../../shared/utils/geumcheonRecordEvidence.js";
 
 const ACTION_ID = /^gsc26-action-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const MAX_STORED_BYTES = 128 * 1024;
@@ -153,7 +154,7 @@ export class RecordStore {
     if (!CONTRADICTION_CODES.has(reasonCode)) {
       throw new Error("QUARANTINE_REASON_INVALID");
     }
-    const attempt = record.row.canonicalAttempt;
+    const attempt = record.row.recordEvidence?.canonicalAttempt ?? record.row.canonicalAttempt;
     if (attempt == null) throw new Error("CANONICAL_ATTEMPT_INVALID");
     const quarantined: QuarantinedNasRecordV1 = {
       schema_version: 1,
@@ -493,6 +494,16 @@ function recordAcknowledgement(
 async function readStoredRow(targetPath: string): Promise<RecordRow> {
   const value = await readBoundedJson(targetPath);
   if (!isCompleteRecordRow(value)) throw new StorageError("STORAGE_CORRUPT");
+  if (value.recordEvidence) {
+    // Accepted originals must remain coherent before any permitted admin overlay.
+    // Quarantine reads intentionally use only structural validation instead.
+    const attempt = value.recordEvidence.canonicalAttempt;
+    const identity = /^gsc26-(pc(?:0[1-9]|10))-/.exec(value.record_id);
+    if (!identity || !isPairedGeumcheonAttemptIdentity(value.record_id, attempt.attemptId)
+      || !isCanonicalAiAttemptPubliclyRankable(attempt, { recordId: value.record_id, deviceId: identity[1]!.toUpperCase() })) {
+      throw new StorageError("STORAGE_CORRUPT");
+    }
+  }
   return value;
 }
 
@@ -533,6 +544,7 @@ async function pathExists(targetPath: string): Promise<boolean> {
 function isCompleteRecordRow(value: unknown): value is RecordRow {
   if (!plainObject(value) || !isGeumcheonRecordId(value.record_id)) return false;
   if (!RECORD_HEADERS.every((key) => typeof value[key] === "string")) return false;
+  if (Object.hasOwn(value, "recordEvidence") && (!isGeumcheonRecordEvidenceV1(value.recordEvidence) || value.canonicalAttempt !== undefined)) return false;
   return value.canonicalAttempt === undefined
     || isCanonicalAiAttemptV1(value.canonicalAttempt);
 }
@@ -569,7 +581,7 @@ function isCompleteQuarantine(value: unknown): value is QuarantinedNasRecordV1 {
     || !validSession(value.envelope.session)
     || !isCompleteRecordRow(value.envelope.row)
     || value.envelope.row.record_id !== value.record_id
-    || value.envelope.row.canonicalAttempt?.attemptId !== value.attempt_id
+    || (value.envelope.row.recordEvidence?.canonicalAttempt ?? value.envelope.row.canonicalAttempt)?.attemptId !== value.attempt_id
   ) {
     return false;
   }

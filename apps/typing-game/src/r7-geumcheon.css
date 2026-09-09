@@ -29,6 +29,21 @@ html[data-event-profile="geumcheon-2026"] .game-app .r7-final-victory {
   overflow: visible;
 }
 
+/* Reserve the square badge's full painted height before the message. */
+html[data-event-profile="geumcheon-2026"] .game-app .challenge-modal-message {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+html[data-event-profile="geumcheon-2026"] .game-app .challenge-modal-message .compact-badges {
+  margin-bottom: 0;
+}
+
+html[data-event-profile="geumcheon-2026"] .game-app .challenge-modal-message .stage-badge.compact {
+  height: 84px;
+}
+
 html[data-event-profile="geumcheon-2026"] .game-app .r7-victory-summary {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;

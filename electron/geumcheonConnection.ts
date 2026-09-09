@@ -1,4 +1,5 @@
 import path from "node:path";
+import { RECORD_HEADERS } from "../shared/constants/defaults";
 
 import type { DeviceProfile } from "../shared/events/types";
 import type {
@@ -12,6 +13,7 @@ import type {
 import { createActiveAttemptStore, type ActiveAttemptEncryption } from "./activeAttemptStore";
 import { createGeumcheonRecordRuntime } from "./geumcheonRecordRuntime";
 import { RendererCheckpointFence } from "./rendererCheckpointHandshake";
+import { toGeumcheonPublicRecordRow } from "../shared/utils/geumcheonRecordEvidence";
 import {
   createReviewAttemptIdentity,
   createReviewLocalRuntime,
@@ -59,6 +61,19 @@ export function assertPlayerRecordSaveAllowed(role: PcRole): void {
   if (role !== "player") throw new Error("RECORD_SAVE_PLAYER_ONLY");
 }
 
+export function assertGeumcheonRecordEditAllowed(patch: Partial<RecordRow>): void {
+  if (patch === null || typeof patch !== "object" || Array.isArray(patch) || Object.keys(patch).length === 0) {
+    throw new Error("ADMIN_CHANGES_INVALID");
+  }
+  if (Object.hasOwn(patch, "recordEvidence")) throw new Error("RECORD_EVIDENCE_EDIT_FORBIDDEN");
+  for (const [key, value] of Object.entries(patch)) {
+    if (key === "record_id" || !RECORD_HEADERS.includes(key as typeof RECORD_HEADERS[number])) {
+      throw new Error("ADMIN_EDIT_FIELD_FORBIDDEN");
+    }
+    if (typeof value !== "string") throw new Error("ADMIN_CHANGES_INVALID");
+  }
+}
+
 export async function validateReviewStorage(options: {
   reviewContext: ReviewRuntimeContext;
   runtime: Pick<ReviewLocalRuntime, "validateStorage">;
@@ -88,9 +103,10 @@ export async function listGeumcheonRecords(options: {
   readLegacy(): Promise<RecordRow[]> | RecordRow[];
 }): Promise<RecordRow[]> {
   if (options.connection?.source === "review" || (options.connection && options.role === "leaderboard")) {
-    return (await options.connection.runtime.loadRecords()).rows;
+    return (await options.connection.runtime.loadRecords()).rows.map(toGeumcheonPublicRecordRow);
   }
-  return options.readLegacy();
+  const rows = await options.readLegacy();
+  return options.connection ? rows.map(toGeumcheonPublicRecordRow) : rows;
 }
 
 export type ReviewGeumcheonConnection = {

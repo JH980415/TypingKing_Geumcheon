@@ -14,6 +14,7 @@ import { resolveAiBossResultAsset, resolveEventAssetUrl } from "../../../shared/
 import { formatBirthdate } from "../../../shared/utils/date";
 import { buildPhoneFull } from "../../../shared/utils/masking";
 import { buildCanonicalAiAttempt } from "../../../shared/utils/geumcheonAiAttempt";
+import { cloneGeumcheonRecordEvidence } from "../../../shared/utils/geumcheonRecordEvidence";
 import {
   calculateAccuracy,
   calculateCurrentCpm,
@@ -211,6 +212,9 @@ export function createChallengeSaveInput({
     stageTimesMs: userTimes,
     fairness,
     canonicalAttempt,
+    ...(canonicalAttempt ? {
+      recordEvidence: cloneGeumcheonRecordEvidence({ schemaVersion: 1, canonicalAttempt, battles: battleRows })
+    } : {}),
     game_mode: "ai_challenge",
     final_accuracy: status === "SUCCESS" ? 100 : Math.round(lastAccuracy),
     ai: {
@@ -1073,10 +1077,11 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
           progress={userProgress}
           elapsedMs={elapsedMs}
           active
+          showTargetCursor={eventProfile.profileId !== "geumcheon-2026"}
         >
           <div className="duel-input-layer">
             <div className="duel-input-highlight" aria-hidden="true">
-              <ColorChars target={target} input={input} includePending={false} showCursor={running} />
+              <ColorChars target={target} input={input} includePending={false} showCursor={running && eventProfile.profileId !== "geumcheon-2026"} />
             </div>
             <textarea
               ref={inputRef}
@@ -1170,6 +1175,7 @@ function DuelPanel({
   progress,
   elapsedMs,
   active,
+  showTargetCursor = active,
   media,
   children
 }: {
@@ -1181,6 +1187,7 @@ function DuelPanel({
   progress: number;
   elapsedMs: number;
   active: boolean;
+  showTargetCursor?: boolean;
   media?: ReactNode;
   children: ReactNode;
 }) {
@@ -1197,7 +1204,7 @@ function DuelPanel({
         {media && <div className="duel-header-media">{media}</div>}
         <span>{formatDisplayNumber(progress, 1, true)}%</span>
       </header>
-      <DuelTarget target={target} input={input} showCursor={active} />
+      <DuelTarget target={target} input={input} showCursor={showTargetCursor} />
       {children}
       <div className="duel-progress">
         <i style={{ width: `${Math.min(100, progress)}%` }} />
@@ -1460,10 +1467,10 @@ export function BattlePopup({
             alt={userWin ? "패배한 AI" : "승리한 AI"}
             className="challenge-modal-art"
           />
-          <div>
+          <div className={eventProfile.profileId === "geumcheon-2026" ? "challenge-modal-message" : undefined}>
             <StageBadges assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} badgePaths={eventProfile.assets.stageBadges} currentStage={battle.stage} completedStages={userWin ? [battle.stage] : []} compact />
             {eventProfile.profileId !== "geumcheon-2026" && <p className="eyebrow">Stage {battle.stage}</p>}
-            <h2>{userWin ? eventProfile.profileId === "geumcheon-2026" ? <>승리했습니다.<br />금나래보다 빠르게 입력했습니다.</> : "승리했습니다. 금나래보다 빠르게 입력했습니다." : "아쉽습니다. 금나래가 먼저 입력을 완료했습니다."}</h2>
+            <h2>{userWin ? eventProfile.profileId === "geumcheon-2026" ? <>승리했습니다.<br />금나래보다 빠르게 입력했습니다.</> : "승리했습니다. 금나래보다 빠르게 입력했습니다." : eventProfile.profileId === "geumcheon-2026" ? <>아쉽습니다.<br />금나래가 먼저 입력을 완료했습니다.</> : "아쉽습니다. 금나래가 먼저 입력을 완료했습니다."}</h2>
           </div>
         </div>
         <div className="battle-stats">

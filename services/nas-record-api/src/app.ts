@@ -9,6 +9,7 @@ import {
   validateAndNormalizeRecord,
 } from "./recordSchema.js";
 import { RecordStore } from "./recordStore.js";
+import { toGeumcheonPublicRecordRow } from "../../../shared/utils/geumcheonRecordEvidence.js";
 
 type AppConfig = RecordValidationConfigV1 & { tokenManifest: TokenManifestV1 };
 
@@ -112,7 +113,7 @@ export function buildNasApp(dependencies: BuildNasAppDependencies): FastifyInsta
       event_id: dependencies.config.eventId,
       session,
       generated_at: new Date(now()).toISOString(),
-      rows,
+      rows: rows.map(toGeumcheonPublicRecordRow),
     });
   });
 

@@ -13,6 +13,7 @@ type ElectronHarness = {
   ipcHandlers: Map<string, (event: unknown, ...args: unknown[]) => unknown>;
   listeners: Map<string, ElectronAppListener>;
   windowActions: string[];
+  webContentsListeners: Map<string, ElectronAppListener>;
   createdWindowOptions(): Record<string, unknown> | undefined;
   dispose(): void;
   whenReadyCalls(): number;
@@ -31,6 +32,7 @@ function createElectronHarness(
   const ipcHandlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
   const listeners = new Map<string, ElectronAppListener>();
   const windowActions: string[] = [];
+  const webContentsListeners = new Map<string, ElectronAppListener>();
   let browserWindowOptions: Record<string, unknown> | undefined;
   let readyCalls = 0;
   const pendingReadiness = new Promise<void>(() => undefined);
@@ -80,6 +82,7 @@ function createElectronHarness(
     ipcHandlers,
     listeners,
     windowActions,
+    webContentsListeners,
     createdWindowOptions: () => browserWindowOptions,
     dispose: () => {
       if (packagedMetadata) fs.rmSync(appPath, { recursive: true, force: true });
@@ -121,11 +124,12 @@ function createElectronHarness(
         }
       },
       BrowserWindow: class BrowserWindow {
+        private fullScreen = false;
         webContents = {
           getURL: () => "",
           loadURL: async () => undefined,
           once: () => undefined,
-          on: () => undefined,
+          on: (name: string, listener: ElectronAppListener) => webContentsListeners.set(name, listener),
           setWindowOpenHandler: () => undefined
         };
 
@@ -140,6 +144,11 @@ function createElectronHarness(
         destroy(): void {}
         focus(): void {}
         isDestroyed(): boolean { return false; }
+        isFullScreen(): boolean { return this.fullScreen; }
+        setFullScreen(value: boolean): void {
+          this.fullScreen = value;
+          windowActions.push(`fullscreen:${value}`);
+        }
         loadFile(): Promise<void> { return Promise.resolve(); }
         loadURL(): Promise<void> { return Promise.resolve(); }
         on(): void {}
@@ -400,6 +409,47 @@ test("development and SkillUp windows keep their existing DevTools and menu beha
     assert.notEqual(webPreferences?.devTools, false, current.label);
     assert.deepEqual(harness.windowActions, ["menu-bar:false"], current.label);
   }
+});
+
+test("F11 toggles both Geumcheon windows once per press while preserving unrelated input", () => {
+  for (const variant of ["ai", "ai-leaderboard"]) for (const isPackaged of [false, true]) {
+    const harness = createElectronHarness(false, [], isPackaged);
+    const mainModule = executeMain(harness);
+    const createWindow = mainModule.createWindow as (...args: unknown[]) => void;
+    createWindow(variant, {
+      profileId: "geumcheon-2026", theme: { backgroundColor: "#ffffff" },
+      variants: { [variant]: { windowTitle: "F11 synthetic test" } }
+    }, { iconPath: "icon.ico" });
+    const beforeInput = harness.webContentsListeners.get("before-input-event");
+    assert.equal(typeof beforeInput, "function", `${variant}/${isPackaged} must handle F11 without a menu`);
+    let prevented = 0;
+    const press = (extra: Record<string, unknown> = {}) => beforeInput?.(
+      { preventDefault: () => { prevented += 1; } },
+      { type: "keyDown", key: "F11", isAutoRepeat: false, control: false, alt: false, meta: false, shift: false, ...extra }
+    );
+    press();
+    press({ isAutoRepeat: true });
+    press({ type: "keyUp" });
+    assert.deepEqual(harness.windowActions.filter((item) => item.startsWith("fullscreen:")), ["fullscreen:true"]);
+    press();
+    assert.deepEqual(harness.windowActions.filter((item) => item.startsWith("fullscreen:")), ["fullscreen:true", "fullscreen:false"]);
+    assert.equal(prevented, 3, "consume only F11 down and its repeat");
+    for (const modifier of ["control", "alt", "meta", "shift"]) press({ [modifier]: true });
+    press({ key: "a" });
+    press({ key: "Process", isComposing: true });
+    assert.equal(prevented, 3, "typing, IME and modified shortcuts remain untouched");
+    assert.equal(harness.windowActions.filter((item) => item.startsWith("fullscreen:")).length, 2);
+  }
+});
+
+test("SkillUp window does not acquire the Geumcheon F11 override", () => {
+  const harness = createElectronHarness(false, [], true);
+  const createWindow = executeMain(harness).createWindow as (...args: unknown[]) => void;
+  createWindow("ai", {
+    profileId: "skillup-2026", theme: { backgroundColor: "#ffffff" },
+    variants: { ai: { windowTitle: "SkillUp" } }
+  }, { iconPath: "icon.ico" });
+  assert.equal(harness.webContentsListeners.has("before-input-event"), false);
 });
 
 test("sync renderer failures return a safe IPC result instead of undefined", () => {

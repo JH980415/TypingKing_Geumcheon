@@ -1,6 +1,12 @@
+.r7-geumcheon-leaderboard {
+  display: flex;
+  flex-direction: column;
+}
+
 .r7-geumcheon-leaderboard .leaderboard-header {
   align-items: center;
   gap: 24px;
+  flex: 0 0 auto;
 }
 
 .r7-geumcheon-leaderboard .leaderboard-header > div:first-child {
@@ -9,8 +15,8 @@
 
 .r7-geumcheon-leaderboard .geumcheon-leaderboard-logo {
   display: block;
-  width: min(38vw, 560px);
-  max-height: 104px;
+  width: min(38vw, 760px);
+  max-height: none;
   height: auto;
   object-fit: contain;
   object-position: left center;
@@ -18,6 +24,12 @@
 
 .r7-geumcheon-leaderboard .leader-actions {
   flex-shrink: 0;
+}
+
+.r7-geumcheon-leaderboard .leaderboard-board {
+  flex: 1;
+  min-height: 0;
+  height: auto;
 }
 
 .r7-geumcheon-leaderboard .leaderboard-session {

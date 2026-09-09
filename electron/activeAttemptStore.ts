@@ -4,6 +4,7 @@ import path from "node:path";
 import type { SaveRecordInput } from "../shared/types";
 import { isPairedGeumcheonAttemptIdentity } from "../shared/nas/protocol";
 import { isCanonicalAiAttemptV1 } from "../shared/utils/geumcheonAiAttempt";
+import { isGeumcheonRecordEvidenceV1 } from "../shared/utils/geumcheonRecordEvidence";
 
 export type ActiveAttemptCheckpointV1 = {
   schemaVersion: 1;
@@ -254,6 +255,7 @@ function isSaveRecordInput(value: unknown): value is SaveRecordInput {
       "stageTimesMs",
       "fairness",
       "canonicalAttempt",
+      "recordEvidence",
       "game_mode",
       "final_accuracy",
       "ai",
@@ -289,6 +291,7 @@ function isSaveRecordInput(value: unknown): value is SaveRecordInput {
   }
   if ("fairness" in value && !isFairness(value.fairness)) return false;
   if ("canonicalAttempt" in value && !isCanonicalAiAttemptV1(value.canonicalAttempt)) return false;
+  if ("recordEvidence" in value && !isGeumcheonRecordEvidenceV1(value.recordEvidence)) return false;
   if ("game_mode" in value && value.game_mode !== "normal" && value.game_mode !== "ai_challenge") return false;
   if ("final_accuracy" in value && (!isFiniteNumber(value.final_accuracy) || value.final_accuracy < 0 || value.final_accuracy > 100)) return false;
   if ("ai" in value && !isAi(value.ai)) return false;

@@ -65,6 +65,7 @@ import { checkGeumcheonNasReadiness, requireGeumcheonCredential } from "./nas/re
 import { rendererSafeFailure } from "./nas/piiBoundary";
 import { createGeumcheonNasRuntime, type GeumcheonNasRuntime } from "./nas/runtime";
 import {
+  assertGeumcheonRecordEditAllowed,
   assertPlayerRecordSaveAllowed,
   assertReviewExternalStorageIpcAllowed,
   createReviewGeumcheonConnection,
@@ -73,6 +74,7 @@ import {
   validateReviewStorage,
   type ReviewGeumcheonConnection
 } from "./geumcheonConnection";
+import { toGeumcheonPublicRecordRow } from "../shared/utils/geumcheonRecordEvidence";
 import {
   RendererCheckpointFence,
   requestRendererActiveAttemptCheckpoint
@@ -391,6 +393,17 @@ export function createWindow(
 
   mainWindow.setMenuBarVisibility(false);
   if (restrictPackagedGeumcheonWindow) mainWindow.removeMenu();
+  if (eventProfile.profileId === "geumcheon-2026") {
+    const fullScreenWindow = mainWindow;
+    fullScreenWindow.webContents.on("before-input-event", (event, input) => {
+      if (input.type !== "keyDown" || input.key !== "F11"
+        || input.control || input.alt || input.meta || input.shift) return;
+      event.preventDefault();
+      if (!input.isAutoRepeat && !fullScreenWindow.isDestroyed()) {
+        fullScreenWindow.setFullScreen(!fullScreenWindow.isFullScreen());
+      }
+    });
+  }
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
   mainWindow.webContents.on("will-navigate", (event, navigationUrl) => {
     const currentUrl = mainWindow?.webContents.getURL();
@@ -641,7 +654,7 @@ async function registerIpc(
         void geumcheonNas.flush().catch((error) => {
           appendStartupLog(`Geumcheon NAS save flush failed: ${errorMessage(error)}`);
         });
-        return row;
+        return toGeumcheonPublicRecordRow(row);
       }
       return saveRecord(ctx, input);
     }, "기록 저장에 실패했습니다. 복구 파일에 임시 저장합니다.")
@@ -671,13 +684,14 @@ async function registerIpc(
         async () => {
           const { adminName } = adminAccessSessions.require(event.sender);
           if (!geumcheonNas) return updateRecord(ctx, recordId, patch, adminName);
+          assertGeumcheonRecordEditAllowed(patch);
           const before = (await geumcheonNas.runtime.loadRecords()).rows.find(
             (record) => record.record_id === recordId
           );
           if (!before) throw new Error("수정 또는 삭제할 기록을 선택해 주세요.");
           const replacement = recalculateRecord({ ...before, ...patch, record_id: recordId });
           await geumcheonNas.runtime.edit(recordId, replacement, adminName);
-          return replacement;
+          return toGeumcheonPublicRecordRow(replacement);
         },
         "기록 수정 중 오류가 발생했습니다. 백업 파일을 확인해 주세요."
       )

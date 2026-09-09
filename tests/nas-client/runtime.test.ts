@@ -12,6 +12,9 @@ import { payloadSha256 } from "../../shared/nas/protocol";
 import type { DeviceProfile, EventProfile, RecordRow, SaveRecordInput } from "../../shared/types";
 import type { SafeStorageAdapter } from "../../electron/nas/credentialStore";
 import type { FetchLike } from "../../electron/nas/apiClient";
+import { createChallengeSaveInput } from "../../apps/typing-game/src/AIChallengeGame";
+import { buildRecordRow } from "../../shared/csv/fileStore";
+import { RecordStore } from "../../services/nas-record-api/src/recordStore";
 
 const recordId = "gsc26-pc01-123e4567-e89b-42d3-a456-426614174000";
 const attemptId = "gsc26-attempt-123e4567-e89b-42d3-a456-426614174000";
@@ -346,5 +349,86 @@ test("missing operator credential fails closed before an admin NAS request", asy
     () => runtime.hide(recordId, true, "운영자"),
     (error: unknown) => error instanceof Error && error.message === "NAS_CREDENTIAL_MISSING",
   );
+  assert.equal(requests, 0);
+});
+
+test("editing a complete renderer-produced row sends unchanged public columns through the strict server admin boundary", async (context) => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "r7-admin-record-"));
+  context.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+  const server = new RecordStore({ dataRoot: path.join(runtimeRoot, "server") });
+  const source = createChallengeSaveInput({
+    participant: { name: "합성참가자", phone1: "010", phone2: "0000", phone3: "0001",
+      birthYear: "2000", birthMonth: "01", birthDay: "01", privacyAgreedAt: "2026-09-09T00:00:00.000Z" },
+    stageTexts: ["1234", "5678", "9012"],
+    stageTextSelections: [1, 2, 3].map((stage) => ({
+      id: `synthetic-${stage}`, catalogVersion: "synthetic-v1", stageNumber: stage,
+      text: ["1234", "5678", "9012"][stage - 1]
+    })) as unknown as NonNullable<SaveRecordInput["stageTextSelections"]>,
+    battleRows: [{ stage: 1, text: "1234", userTimeMs: 5000, userCpm: 24, userAccuracy: 50,
+      aiTimeMs: 5000, aiElapsedMs: 5000, aiCpm: 48, plannedAiCpm: 100,
+      aiTypedUnits: 4, aiTypedChars: 4, result: "AI_WIN", userInput: "12x" }],
+    status: "FAILED", failedStage: "1", terminalStage: 1, isGeumcheon: true, debugModeType: ""
+  });
+  const original = { record_id: recordId, ...buildRecordRow(source), participantKey: "protected-key" };
+  const before = JSON.stringify(original);
+  const replacement = { ...original, participant_name: "수정 합성", final_cpm: "777", memo: "운영자 확인" };
+  let sentChanges: Record<string, unknown> | undefined;
+  let receiverFailure: string | undefined;
+  let actionNumber = 0;
+  const runtime = createGeumcheonNasRuntime({
+    event: event(), device: device("leaderboard"), sessionKind: "official", runtimeRoot,
+    safeStorage: safeStorage(), local: localCallbacks(async () => { throw new Error("unused"); }).callbacks,
+    createActionId: () => `gsc26-action-123e4567-e89b-42d3-a456-42661417400${++actionNumber}`,
+    now: () => "2026-09-09T01:00:00.000Z",
+    fetch: async (_url, init) => {
+      const action = JSON.parse(String(init?.body));
+      sentChanges = action.changes;
+      try { await server.putAdminAction(action); }
+      catch (error) {
+        receiverFailure = error instanceof Error ? error.message : "unknown failure";
+        return new Response(JSON.stringify({ code: receiverFailure }), { status: 422, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } });
+    }
+  });
+  await runtime.importOperatorToken("f".repeat(64));
+  const legacyReplacement = { ...replacement };
+  delete legacyReplacement.recordEvidence;
+  for (const candidate of [legacyReplacement, replacement]) {
+    try { await runtime.edit(recordId, candidate, "합성운영자"); }
+    catch (error) {
+      assert.equal(receiverFailure, undefined, "strict server rejected outgoing admin fields");
+      throw error;
+    }
+  }
+  assert.equal(sentChanges?.participant_name, "수정 합성");
+  assert.equal(sentChanges?.final_cpm, "777", "transport must not recalculate editor values");
+  assert.equal(sentChanges?.participant_avg_cpm, "24");
+  assert.equal(sentChanges?.memo, "운영자 확인");
+  for (const field of ["record_id", "fairness", "participantKey", "canonicalAttempt", "recordEvidence"]) {
+    assert.equal(Object.hasOwn(sentChanges!, field), false, field);
+  }
+  assert.equal(JSON.stringify(original), before);
+});
+
+test("admin edit rejects malformed public values and unknown keys before sending a request", async (context) => {
+  const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "r7-admin-invalid-"));
+  context.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+  let requests = 0;
+  const runtime = createGeumcheonNasRuntime({
+    event: event(), device: device("leaderboard"), sessionKind: "official", runtimeRoot,
+    safeStorage: safeStorage(), local: localCallbacks(async () => { throw new Error("unused"); }).callbacks,
+    createActionId: () => "gsc26-action-123e4567-e89b-42d3-a456-426614174008",
+    now: () => "2026-09-09T01:00:00.000Z",
+    fetch: async () => { requests += 1; return new Response("{}", { headers: { "content-type": "application/json" } }); }
+  });
+  await runtime.importOperatorToken("f".repeat(64));
+  for (const replacement of [
+    { ...row(), final_cpm: 777 }, { ...row(), unknownMetric: "777" },
+    { record_id: recordId }, null
+  ]) {
+    await assert.rejects(async () => runtime.edit(recordId, replacement as RecordRow, "합성운영자"),
+      /NAS_ADMIN_REPLACEMENT_(?:INVALID|FIELD_INVALID)/);
+  }
   assert.equal(requests, 0);
 });

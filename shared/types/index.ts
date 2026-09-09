@@ -220,6 +220,30 @@ export type CanonicalAiAttemptV1 = CanonicalAiAttemptEvidenceV1 & {
   contradictionCodes: readonly CanonicalAiContradictionCode[];
 };
 
+export type GeumcheonBattleEvidenceV1 = Readonly<{
+  stage: number;
+  entered?: boolean;
+  text: string;
+  userTimeMs: number;
+  userCpm: number;
+  userAccuracy: number;
+  aiTimeMs: number;
+  aiElapsedMs: number;
+  aiCpm: number;
+  plannedAiCpm: number;
+  aiTypedUnits: number;
+  aiTypedChars: number;
+  result: "USER_WIN" | "AI_WIN";
+  userInput: string;
+}>;
+
+// Protected source evidence; canonical metrics never replace legacy public fields.
+export type GeumcheonRecordEvidenceV1 = Readonly<{
+  schemaVersion: 1;
+  canonicalAttempt: CanonicalAiAttemptV1;
+  battles: readonly GeumcheonBattleEvidenceV1[];
+}>;
+
 export type RecordRow = {
   record_id: string;
   created_at: string;
@@ -304,6 +328,7 @@ export type RecordRow = {
   totalTypingUnits?: number | string;
   totalUserTimeMs?: number | string;
   canonicalAttempt?: CanonicalAiAttemptV1;
+  recordEvidence?: GeumcheonRecordEvidenceV1;
 };
 
 export type SaveRecordInput = {
@@ -321,6 +346,7 @@ export type SaveRecordInput = {
   stageTimesMs: [number, number, number];
   fairness?: GeumcheonFairnessInput;
   canonicalAttempt?: CanonicalAiAttemptV1;
+  recordEvidence?: GeumcheonRecordEvidenceV1;
   game_mode?: "normal" | "ai_challenge";
   final_accuracy?: number;
   ai?: {

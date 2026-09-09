@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import os from "node:os";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { parse } from "csv-parse/sync";
 import { stringify } from "csv-stringify/sync";
 import lockfile from "proper-lockfile";
@@ -37,6 +38,7 @@ import { formatBirthdate, formatMs, nowIso, timestampForFile } from "../utils/da
 import { buildPhoneFull, maskBirthdate, maskPhone, validatePhoneParts } from "../utils/masking";
 import { compareLegacyAiRecords, compareRecords, isInterruptedRecord, rankCanonicalAiAttempts } from "../utils/ranking";
 import { isCanonicalAiAttemptPubliclyRankable, isCanonicalAiAttemptV1 } from "../utils/geumcheonAiAttempt";
+import { cloneGeumcheonRecordEvidence, isGeumcheonRecordEvidenceV1 } from "../utils/geumcheonRecordEvidence";
 import { calculateFinalCpm, calculateTotalUserTimeMs, countConvertedTypingUnits, countTypeableChars } from "../utils/typing";
 import { parseStageTextCatalog } from "../events/stageTextCatalog";
 import type { EventProfile } from "../events/types";
@@ -1889,7 +1891,7 @@ function normalizeGeumcheonFairness(value: unknown): GeumcheonFairnessInput | un
   return { catalogVersion: source.catalogVersion, totalUserTimeMs, stages: validStages };
 }
 
-function normalizeJsonRecord(value: unknown): RecordRow | null {
+function normalizeJsonRecord(value: unknown, original?: RecordRow): RecordRow | null {
   if (value == null || typeof value !== "object") return null;
   const source = value as Record<string, unknown>;
   const row = Object.fromEntries(
@@ -1899,11 +1901,24 @@ function normalizeJsonRecord(value: unknown): RecordRow | null {
   const canonicalAttempt = isCanonicalAiAttemptV1(source.canonicalAttempt)
     ? source.canonicalAttempt
     : undefined;
+  // Admin replacement IDs can change repeatedly; their protected source must
+  // remain byte-value equivalent to the already validated original evidence.
+  if (original?.recordEvidence && !isDeepStrictEqual(source.recordEvidence, original.recordEvidence)) return null;
+  if (Object.hasOwn(source, "recordEvidence")) {
+    if (Object.hasOwn(source, "canonicalAttempt") || !isGeumcheonRecordEvidenceV1(source.recordEvidence)) return null;
+    const expectedRecordId = original?.recordEvidence?.canonicalAttempt.recordId ?? row.record_id;
+    const attempt = source.recordEvidence.canonicalAttempt;
+    if (attempt.contradictionCodes.length > 0 ||
+      !isCanonicalAiAttemptPubliclyRankable(attempt, { recordId: expectedRecordId })) return null;
+  }
+  const recordEvidence = source.recordEvidence === undefined
+    ? undefined : cloneGeumcheonRecordEvidence(source.recordEvidence as NonNullable<RecordRow["recordEvidence"]>);
   return row.record_id
     ? {
         ...row,
         ...(fairness ? { fairness } : {}),
-        ...(canonicalAttempt ? { canonicalAttempt } : {})
+        ...(canonicalAttempt ? { canonicalAttempt } : {}),
+        ...(recordEvidence ? { recordEvidence } : {})
       }
     : null;
 }
@@ -2388,8 +2403,10 @@ function applyAdminActions(ctx: RuntimeContext, rows: RecordRow[]): RecordRow[] 
       continue;
     }
     if (action.action_type === "edit") {
+      const original = byId.get(targetId);
+      const replacement = normalizeJsonRecord(action.replacement_record, original);
+      if (original?.recordEvidence && !replacement) continue;
       byId.delete(targetId);
-      const replacement = normalizeJsonRecord(action.replacement_record);
       if (replacement) byId.set(replacement.record_id, replacement);
     }
   }
@@ -2612,6 +2629,9 @@ export function flushQueuedRecords(ctx: RuntimeContext): QueuedRecordFlushResult
 }
 
 export function buildRecordRow(input: SaveRecordInput): Omit<RecordRow, "record_id"> {
+  if (input.recordEvidence !== undefined && !isGeumcheonRecordEvidenceV1(input.recordEvidence)) {
+    throw new Error("RECORD_EVIDENCE_INVALID");
+  }
   const phoneError = validatePhoneParts(input.phone_part1, input.phone_part2, input.phone_part3);
   if (phoneError) throw new Error(phoneError);
 
@@ -2740,7 +2760,8 @@ export function buildRecordRow(input: SaveRecordInput): Omit<RecordRow, "record_
           : "",
     original_record_id: "",
     is_admin_edited: "false",
-    ...(fairness ? { fairness } : {})
+    ...(fairness ? { fairness } : {}),
+    ...(input.recordEvidence ? { recordEvidence: cloneGeumcheonRecordEvidence(input.recordEvidence) } : {})
   };
 
   return rowWithoutId;

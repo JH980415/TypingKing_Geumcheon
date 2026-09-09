@@ -75,12 +75,13 @@ test("uses the user-approved Geumcheon title and refreshed stage badges", () => 
 test("maps the approved Geumcheon result art by winner and stage", () => {
   assert.equal(resolveAiBossResultAsset(geumcheonProfile, "AI_WIN", 1), "assets/금나래 승리.png");
   assert.deepEqual(geumcheonProfile.assets.aiBossDefeats, [
-    "assets/금나래패배_스테이지1.png",
+    "assets/금나래패배_스테이지1_alpha_r7.png",
     "assets/금나래패배_스테이지2.png",
     "assets/금나래패배_스테이지3.png"
   ]);
   for (const stage of [1, 2, 3] as const) {
-    assert.equal(resolveAiBossResultAsset(geumcheonProfile, "USER_WIN", stage), `assets/금나래패배_스테이지${stage}.png`);
+    assert.equal(resolveAiBossResultAsset(geumcheonProfile, "USER_WIN", stage), stage === 1
+      ? "assets/금나래패배_스테이지1_alpha_r7.png" : `assets/금나래패배_스테이지${stage}.png`);
   }
 });
 

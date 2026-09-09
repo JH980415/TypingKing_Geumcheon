@@ -48,9 +48,10 @@ for (const stage of [1, 2, 3]) for (const result of ["USER_WIN", "AI_WIN"] as co
     assert.doesNotMatch(html, /<p class="eyebrow">Stage [123]<\/p>/);
     assert.match(html, new RegExp(`alt="Stage ${stage}"`));
     assert.match(html, /참여자 기록/);
+    assert.match(html, /class="challenge-modal-message"/);
     assert.doesNotMatch(html, /사용자/);
     if (result === "USER_WIN") assert.match(html, /승리했습니다\.<br\/>금나래보다 빠르게 입력했습니다\./);
-    else assert.match(html, /아쉽습니다\. 금나래가 먼저 입력을 완료했습니다\./);
+    else assert.match(html, /아쉽습니다\.<br\/>금나래가 먼저 입력을 완료했습니다\./);
   });
 }
 

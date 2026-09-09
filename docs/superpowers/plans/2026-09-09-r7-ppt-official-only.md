@@ -34,4 +34,22 @@ Owner: root with runtime and independent reviewers. Run focused RED/GREEN checks
 
 ## Recovery and completion
 
+## Approved additions after NAS boundary reproduction (2026-09-09)
+
+- User explicitly approved narrow client/server record-contract corrections, not formula changes. Reproduce missing detailed evidence, independent rounding and Korean typing-unit mismatch first. Compare original result, transmitted row, server validation/storage, retrieval and public display independently.
+- Preserve participant CPM/accuracy, AI difficulty, outcome and existing public order. Never promote canonical raw CPM into the existing public ranking: the literal `1234`/`12x`/5000ms counterexample is public24, protected canonical36, accuracy50. Keep these different meanings explicit.
+- Proposed compatible contract: new versioned nested `recordEvidence` holds trusted canonical and actual StageBattle primitive snapshots; legacy public fields remain unchanged. Validate every new raw/canonical/fairness/legacy boundary, persist evidence securely, omit only this evidence from public projection. Existing incomplete rows remain rejected; no reconstruction, migration, guessed defaults or widened tolerances.
+- Client owner: record-contract agent, shared types/helper/persistence and AIChallengeGame record creation only. Server owner: build-diagnosis agent, server schema/store/routes/tests. Root owns Electron F11 and public IPC projection. UI edits are already present and must survive. Runtime agent exclusively owns GUI/harness.
+- User UI additions: no simulated caret in target or lower overlay, native lower textarea caret retained; larger original-ratio leaderboard logo; F11 toggle both apps; win/loss exact two-line left-aligned captions below fully reserved Stage badge; separate transparent Stage1 derivative while originals remain unchanged.
+- RED F11 handler-missing reproduced in `source-checks/f11-red.log`. Root fresh added-UI suite34/34 passes in `additional-ui-green.log` (source/harness checks, not native EXE/IME proof).
+- Final affected four EXEs and compatible server must be rebuilt after source freeze. Verify real synthetic win/loss/stages/save/query/different-speed rank/idempotency and independently calculated literals. No actual NAS operation is authorized. PRODUCTION_RELEASE=HOLD until actual NAS storage and user approval.
+- User explicitly approved local non-AI background removal. Stage1 derivative now exists, all decoded RGB pixels unchanged, original hash intact; root inspected three 280px composites and selected it in active config. Four final EXEs and ZIP assets still require fresh proof. External Git destination approval remains separate and pending.
+
+## Latest NAS storage decision (2026-09-09)
+
+- Use existing Korean shared folder `임시` / child `typingking` for record data; do not create a new NAS share or bind the entire `임시` share. The user will supply the exact NAS absolute path from folder properties. Never infer a volume or fix `/volume1/typingking`.
+- Server config and Container Manager bind template must retain an explicit unresolved host-data path. Runtime package and secrets use separately confirmed, non-overlapping locations; only record data is writable, runtime/secret mounts read-only. Existing share/other-folder ACLs stay unchanged.
+- A host-network/loopback compose candidate is REVIEW_ONLY, not an approved final network topology or deployment. DSM support, reverse proxy/TLS, image digest and UID/GID remain confirmation gates. No actual NAS access, configuration, network or record operation is authorized by this storage update.
+- Test Korean/space path YAML substitution and local actual server storage in `임시/typingking`, with sibling bytes/hash unchanged. These prove local path handling, not Synology/Container Manager execution.
+
 Preserve R6 and main. No destructive cleanup of evidence. Ledger and task reports are under `.superpowers/sdd/2026-09-09-r7-ppt-official-only/`; retain evidence/report deliverables per user even if generic skill suggests deleting scratch. Root coordinates commits rather than concurrent worker commits. Completion claims use PASS/FAIL/PARTIAL/HOLD/NOT_RUN, never inferred from old reports.

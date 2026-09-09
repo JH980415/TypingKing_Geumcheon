@@ -13,10 +13,12 @@ import type {
   StageText,
 } from "../../../shared/types/index.js";
 import {
+  buildCanonicalAiAttempt,
   canonicalAiContradictionCodes,
   isCanonicalAiAttemptV1,
 } from "../../../shared/utils/geumcheonAiAttempt.js";
-import { calculateFinalCpm, countTypeableChars } from "../../../shared/utils/typing.js";
+import { calculateAccuracy, calculateCurrentCpm, calculateFinalCpm, countConvertedTypingUnits, countMatchingPrefixTypingUnits, countTypeableChars, getTextPrefixByTypingUnits, isExactMatch } from "../../../shared/utils/typing.js";
+import { isGeumcheonRecordEvidenceV1 } from "../../../shared/utils/geumcheonRecordEvidence.js";
 import type { AuthenticatedPrincipal } from "./auth.js";
 import type { NasServerConfigV1 } from "./config.js";
 
@@ -36,6 +38,7 @@ const OPTIONAL_ROW_KEYS = new Set([
   "totalTypingUnits",
   "totalUserTimeMs",
   "canonicalAttempt",
+  "recordEvidence",
 ]);
 
 export type RecordValidationConfigV1 = NasServerConfigV1 & {
@@ -90,8 +93,11 @@ export function validateAndNormalizeRecord(
   validateTimestamps(row, receivedAt);
   validateParticipant(row);
   validatePhrases(row, config.stageTextCatalog);
-  validateRowSemantics(row);
-  validateAiRanges(row, session, config);
+  const evidenceSemantics = Object.hasOwn(row, "recordEvidence")
+    ? validateRecordEvidence(row, principal, session, config)
+    : undefined;
+  validateRowSemantics(row, evidenceSemantics);
+  if (!evidenceSemantics) validateAiRanges(row, session, config);
 
   const normalizedEnvelope: NasRecordEnvelopeV1 = {
     schema_version: 1,
@@ -105,7 +111,7 @@ export function validateAndNormalizeRecord(
     authenticated_device_id: principal.deviceId,
     received_at: receivedAt,
   };
-  const attempt = row.canonicalAttempt;
+  const attempt = row.recordEvidence?.canonicalAttempt ?? row.canonicalAttempt;
   if (attempt === undefined) throw new Error("invalid record");
   if (!isCanonicalAiAttemptV1(attempt)) {
     throw new Error("CANONICAL_ATTEMPT_INVALID");
@@ -209,7 +215,113 @@ function validateParticipant(row: RecordRow): void {
   }
 }
 
-function validateRowSemantics(row: RecordRow): void {
+type EvidenceSemantics = { aiTotal: number; differences: readonly number[]; finalDifference: number; participantResultTime: number | null; successCpm: number };
+
+function validateRecordEvidence(row: RecordRow, principal: AuthenticatedPrincipal, session: NasSessionV1, config: RecordValidationConfigV1): EvidenceSemantics {
+  const evidence = row.recordEvidence;
+  if (!isGeumcheonRecordEvidenceV1(evidence) || row.canonicalAttempt !== undefined) throw new Error("RECORD_EVIDENCE_INVALID");
+  exactKeys(row as unknown as Record<string, unknown>, [...RECORD_HEADERS, "fairness", "recordEvidence"], "ROW");
+  const { battles, canonicalAttempt: attempt } = evidence;
+  const interrupted = INTERRUPTION_MEMOS.has(row.memo);
+  const stageReached = rangedStage(row.result_stage, "RESULT_STAGE_INVALID");
+  const fail = (): never => { throw new Error("RECORD_EVIDENCE_MISMATCH"); };
+  const equal = (actual: unknown, expected: unknown): void => { if (canonicalStringify(actual) !== canonicalStringify(expected)) fail(); };
+  const rounded = (value: number | null): string => value === null ? "" : String(Math.round(value));
+  const sum = (values: readonly number[]): number => values.reduce((a, b) => a + b, 0);
+  if (battles.length !== stageReached || battles.some((battle, index) => battle.stage !== index + 1)) fail();
+  if (timestamp(attempt.recordedAt, "RECORD_EVIDENCE_INVALID") > timestamp(row.completed_at, "COMPLETED_AT_INVALID")) fail();
+  const ranges = config.aiRanges[session.kind];
+  for (const battle of battles) {
+    const stage = battle.stage as 1 | 2 | 3;
+    const target = row[`stage${stage}_text`];
+    const assigned = countConvertedTypingUnits(target);
+    const terminalInterruption = interrupted && stage === stageReached && battle.result !== "USER_WIN";
+    equal(battle.text, target);
+    if (!Number.isSafeInteger(battle.userTimeMs) || battle.userTimeMs < 0 || battle.aiTypedUnits > assigned) fail();
+    if (battle.entered === false && (!terminalInterruption || battle.userTimeMs !== 0 || battle.userInput !== "" || battle.aiTypedUnits !== 0)) fail();
+    const [minimum, maximum] = ranges[stage - 1];
+    if (!Number.isInteger(battle.plannedAiCpm) || battle.plannedAiCpm < minimum || battle.plannedAiCpm > maximum) throw new Error("AI_RANGE_INVALID");
+    equal(battle.userCpm, calculateCurrentCpm(battle.userInput, battle.userTimeMs, target));
+    equal(battle.userAccuracy, calculateAccuracy(battle.userInput, target));
+    equal(battle.aiTypedChars, countTypeableChars(getTextPrefixByTypingUnits(target, battle.aiTypedUnits)));
+    equal(battle.aiCpm, terminalInterruption ? battle.plannedAiCpm : calculateFinalCpm(battle.aiTypedUnits, battle.aiElapsedMs));
+    if (terminalInterruption) {
+      equal(battle.aiTimeMs, battle.userTimeMs);
+      equal(battle.aiElapsedMs, battle.userTimeMs);
+    } else if (battle.result === "USER_WIN") {
+      if (!isExactMatch(battle.userInput, target) || battle.userAccuracy !== 100 || battle.userTimeMs > battle.aiTimeMs) fail();
+      equal(battle.aiElapsedMs, battle.userTimeMs);
+    } else {
+      equal(battle.aiElapsedMs, battle.aiTimeMs);
+      equal(battle.aiTypedUnits, assigned);
+      // Timer loss is decided on the raw clock, then participant time is rounded.
+      // Monotonic rounding gives this exact integer bound, without an epsilon.
+      if (battle.userTimeMs < Math.round(battle.aiTimeMs)) fail();
+    }
+    equal(row[`stage${stage}_time_ms`], rounded(battle.userTimeMs));
+    equal(row[`ai_stage${stage}_time_ms`], rounded(battle.aiTimeMs));
+    equal(row[`ai_stage${stage}_cpm`], String(battle.aiCpm));
+    equal(row[`stage${stage}_vs_ai_result`], battle.result);
+  }
+  const expectedStages = ([1, 2, 3] as const).map((stageNumber) => {
+    const battle = battles.find((b) => b.stage === stageNumber);
+    const assignedInputUnits = countConvertedTypingUnits(row[`stage${stageNumber}_text`]);
+    if (!battle || battle.entered === false) return { stageNumber, entered: false, assignedInputUnits, participantCorrectInputUnits: 0, participantValidInputUnits: 0, participantActiveTypingTimeMs: 0, geumnaraeCorrectInputUnits: 0, geumnaraeValidInputUnits: 0, geumnaraeActiveTypingTimeMs: 0, activeDuelTimeMs: 0 };
+    const aiUnits = countConvertedTypingUnits(getTextPrefixByTypingUnits(battle.text, battle.aiTypedUnits));
+    return { stageNumber, entered: true, assignedInputUnits, participantCorrectInputUnits: countMatchingPrefixTypingUnits(battle.userInput, battle.text), participantValidInputUnits: countConvertedTypingUnits(battle.userInput), participantActiveTypingTimeMs: Math.round(battle.userTimeMs), geumnaraeCorrectInputUnits: aiUnits, geumnaraeValidInputUnits: aiUnits, geumnaraeActiveTypingTimeMs: Math.round(battle.aiElapsedMs), activeDuelTimeMs: Math.round(battle.aiElapsedMs) };
+  });
+  const enteredBattles = battles.filter((b) => b.entered !== false);
+  const terminal = enteredBattles.at(-1);
+  const participantCompleted = row.ai_challenge_status === "SUCCESS" && !interrupted;
+  const aiCompleted = terminal != null && terminal.aiTypedUnits >= countConvertedTypingUnits(terminal.text);
+  const interruptionReason = !interrupted ? null : row.memo === "사용자 중단:메인화면" ? "HOME" : row.memo === "사용자 중단:다시하기" ? "RETRY" : "EXIT";
+  const expectedAttempt = buildCanonicalAiAttempt({ schemaVersion: 1, attemptId: attempt.attemptId, recordId: row.record_id, deviceId: principal.deviceId, recordedAt: attempt.recordedAt, result: interrupted ? "INTERRUPTED" : participantCompleted ? "PARTICIPANT_WIN" : "GEUMNARAE_WIN", interruptionReason, participantFinishTimeMs: participantCompleted ? sum(enteredBattles.map((b) => Math.round(b.userTimeMs))) : null, geumnaraeFinishTimeMs: aiCompleted ? sum(enteredBattles.map((b) => Math.round(b.aiElapsedMs))) : null, stages: expectedStages });
+  // Identity and supplied contradiction codes are handled by the existing authoritative
+  // contradiction/quarantine path below; never rewrite the protected submitted identity.
+  const { attemptId: _claimedAttemptId, recordId: _claimedRecordId, deviceId: _claimedDeviceId, contradictionCodes: _claimedCodes, ...observedMetrics } = attempt;
+  const { attemptId: _expectedAttemptId, recordId: _expectedRecordId, deviceId: _expectedDeviceId, contradictionCodes: _expectedCodes, ...expectedMetrics } = expectedAttempt;
+  // Intrinsically contradictory canonical evidence must reach durable quarantine.
+  // Self-consistent evidence must additionally match the raw source projection.
+  if (canonicalAiContradictionCodes(attempt).length === 0) equal(observedMetrics, expectedMetrics);
+  const userTotal = sum(battles.map((b) => b.userTimeMs));
+  equal(row.total_time_ms, rounded(userTotal));
+  for (const stage of [1, 2, 3] as const) {
+    equal(row[`stage${stage}_time_ms`], rounded(battles.find((b) => b.stage === stage)?.userTimeMs ?? 0));
+  }
+  equal(row.fairness, { catalogVersion: row.stage_text_catalog_version, totalUserTimeMs: userTotal, stages: battles.map((b) => ({ stageNumber: b.stage, textId: row[`stage${b.stage as 1 | 2 | 3}_text_id`], catalogVersion: row.stage_text_catalog_version, targetText: b.text, typedText: b.userInput, userTimeMs: b.userTimeMs, typingUnits: countConvertedTypingUnits(b.userInput), aiCpm: b.plannedAiCpm, result: interrupted && b.stage === stageReached && b.result !== "USER_WIN" ? "INTERRUPTED" : b.result })) });
+  const participantUnits = sum(battles.map((b) => b.result === "USER_WIN" ? countConvertedTypingUnits(b.text) : countMatchingPrefixTypingUnits(b.userInput, b.text)));
+  const aiUnits = sum(battles.map((b) => b.result === "AI_WIN" && !interrupted ? countConvertedTypingUnits(b.text) : Math.min(countConvertedTypingUnits(b.text), b.aiTypedUnits)));
+  const aiElapsed = sum(battles.map((b) => b.aiElapsedMs));
+  const averagePositive = (values: readonly number[]): number | null => { const positive = values.filter((v) => v > 0); return positive.length ? sum(positive) / positive.length : null; };
+  const participantCpm = userTotal > 0 ? Math.round((participantUnits / userTotal) * 60000) : averagePositive(battles.map((b) => b.userCpm));
+  const aiCpm = aiElapsed > 0 ? Math.round((aiUnits / aiElapsed) * 60000) : averagePositive(battles.map((b) => b.aiCpm));
+  const resultTimes = battles.map((b) => !interrupted && row.ai_challenge_status === "FAILED" && b.stage === stageReached && b.result === "AI_WIN" ? (b.userCpm > 0 ? (countConvertedTypingUnits(b.text) / b.userCpm) * 60000 : null) : b.userTimeMs);
+  const participantResult = resultTimes.some((v) => v === null) ? null : sum(resultTimes as number[]);
+  const progress = (ai: boolean): number => Math.round(sum(battles.map((b) => {
+    const size = countTypeableChars(b.text);
+    if (ai) return b.result === "AI_WIN" && !interrupted ? 100 : size > 0 ? Math.min(100, Math.min(size, b.aiTypedChars) / size * 100) : 0;
+    return b.result === "USER_WIN" ? 100 : size > 0 ? Math.min(100, countTypeableChars(b.userInput) / size * 100) : 100;
+  })) / 3 * 10) / 10;
+  equal(row.participant_avg_cpm, rounded(participantCpm));
+  equal(row.ai_avg_cpm, rounded(aiCpm));
+  equal(row.participant_result_time_ms, rounded(participantResult));
+  equal(row.ai_result_time_ms, rounded(aiElapsed));
+  equal(row.duel_time_ms, rounded(sum(battles.map((b) => b.result === "AI_WIN" && !interrupted ? b.aiTimeMs : b.userTimeMs))));
+  equal(row.participant_progress_percent, String(participantCompleted ? 100 : progress(false)));
+  equal(row.ai_progress_percent, String(row.ai_challenge_status === "FAILED" && !interrupted ? 100 : progress(true)));
+  equal(row.final_accuracy, String(participantCompleted ? 100 : Math.round(battles.at(-1)!.userAccuracy)));
+  equal(row.challenge_result_label, participantCompleted ? "참여자 승리" : interrupted ? "중단 패배" : "금나래 승리");
+  const totalUnits = interrupted ? participantUnits : sum(([1, 2, 3] as const).map((n) => countConvertedTypingUnits(row[`stage${n}_text`])));
+  const expectedFinalCpm = participantCpm === null ? calculateFinalCpm(totalUnits, userTotal) : Math.round(participantCpm);
+  equal(row.final_cpm, String(expectedFinalCpm));
+  for (const stage of [1, 2, 3] as const) {
+    const battle = battles.find((b) => b.stage === stage);
+    equal(row[`stage${stage}_char_count`], String(interrupted ? battle ? countTypeableChars(battle.result === "USER_WIN" ? battle.text : battle.userInput) : 0 : countTypeableChars(row[`stage${stage}_text`])));
+  }
+  return { aiTotal: Math.round(sum(battles.map((b) => b.aiTimeMs))), differences: battles.map((b) => Math.round(b.userTimeMs - b.aiTimeMs)), finalDifference: Math.round(userTotal - sum(battles.map((b) => b.aiTimeMs))), participantResultTime: participantResult, successCpm: expectedFinalCpm };
+}
+
+function validateRowSemantics(row: RecordRow, evidence?: EvidenceSemantics): void {
   for (const key of ["is_test", "is_debug", "ai_enabled", "is_admin_edited"] as const) {
     if (row[key] !== "true" && row[key] !== "false") throw new Error("BOOLEAN_INVALID");
   }
@@ -245,7 +357,7 @@ function validateRowSemantics(row: RecordRow): void {
 
   const aiTimes = ([1, 2, 3] as const).map((stage) => optionalIntegerString(row[`ai_stage${stage}_time_ms`], false));
   const aiTotalTime = integerString(row.ai_total_time_ms, false);
-  if (aiTimes.reduce<number>((sum, value) => sum + (value ?? 0), 0) !== aiTotalTime) throw new Error("AI_TIME_MISMATCH");
+  if ((evidence?.aiTotal ?? aiTimes.reduce<number>((sum, value) => sum + (value ?? 0), 0)) !== aiTotalTime) throw new Error("AI_TIME_MISMATCH");
 
   const timeDiffs = ([1, 2, 3] as const).map((stage) => optionalIntegerString(row[`stage${stage}_time_diff_ms`], true));
   timeDiffs.forEach((difference, index) => {
@@ -253,11 +365,13 @@ function validateRowSemantics(row: RecordRow): void {
       if (difference != null) throw new Error("TIME_DIFF_MISMATCH");
       return;
     }
-    if (difference !== userTimes[index] - aiTimes[index]!) throw new Error("TIME_DIFF_MISMATCH");
+    if (difference !== (evidence ? evidence.differences[index] : userTimes[index] - aiTimes[index]!)) throw new Error("TIME_DIFF_MISMATCH");
   });
-  if (integerString(row.final_time_diff_ms, true) !== totalTime - aiTotalTime) throw new Error("TIME_DIFF_MISMATCH");
+  if (integerString(row.final_time_diff_ms, true) !== (evidence?.finalDifference ?? totalTime - aiTotalTime)) throw new Error("TIME_DIFF_MISMATCH");
 
-  const participantResultTime = integerString(row.participant_result_time_ms, false);
+  const participantResultTime = evidence?.participantResultTime === null
+    ? optionalIntegerString(row.participant_result_time_ms, false)
+    : integerString(row.participant_result_time_ms, false);
   integerString(row.ai_result_time_ms, false);
   const duelTime = integerString(row.duel_time_ms, false);
   if (row.ai_challenge_status === "SUCCESS" && (participantResultTime !== totalTime || duelTime !== totalTime)) {
@@ -268,7 +382,7 @@ function validateRowSemantics(row: RecordRow): void {
   if (row.ai_challenge_status === "SUCCESS") {
     const expectedCharCounts = ([1, 2, 3] as const).map((stage) =>
       countTypeableChars(row[`stage${stage}_text`]));
-    const expectedCpm = calculateFinalCpm(totalCharCount, totalTime);
+    const expectedCpm = evidence?.successCpm ?? calculateFinalCpm(totalCharCount, totalTime);
     if (
       totalTime === 0
       || userTimes.some((value) => value === 0)

@@ -6,6 +6,7 @@ import {
   type AttemptPersistenceIdentity,
 } from "../geumcheonRecordRuntime";
 import type { DeviceProfile, EventProfile, RecordRow, SaveRecordInput, SessionKind } from "../../shared/types";
+import { RECORD_HEADERS } from "../../shared/constants/defaults";
 import {
   createGeumcheonAttemptIdentity,
   type GeumcheonAttemptIdentityIds,
@@ -21,6 +22,10 @@ import { NasRetryWorker, type RetryFlushResult } from "./retryWorker";
 
 const EVENT_PROFILE_ID = "geumcheon-2026";
 const NAS_EVENT_ID = "geumcheon-science-festival-2026";
+const READ_ONLY_RECORD_METADATA = new Set([
+  "fairness", "attemptNumber", "rankingEligible", "participantKey", "serverReceivedAt",
+  "completionStatus", "totalTypingUnits", "totalUserTimeMs", "canonicalAttempt", "recordEvidence"
+]);
 
 export type GeumcheonLocalCallbacks = {
   persist(
@@ -210,8 +215,21 @@ export function createGeumcheonNasRuntime(options: GeumcheonNasRuntimeOptions): 
       }
     },
     edit: (recordId, replacement, adminName) => {
+      if (replacement == null || typeof replacement !== "object" || Array.isArray(replacement) ||
+        (Object.getPrototypeOf(replacement) !== Object.prototype && Object.getPrototypeOf(replacement) !== null)) {
+        return Promise.reject(new Error("NAS_ADMIN_REPLACEMENT_INVALID"));
+      }
       if (replacement.record_id !== recordId) return Promise.reject(new Error("NAS_ADMIN_REPLACEMENT_ID_MISMATCH"));
-      const { record_id: _recordId, ...changes } = replacement;
+      const changes: Partial<RecordRow> = {};
+      for (const [key, value] of Object.entries(replacement)) {
+        if (key === "record_id" || READ_ONLY_RECORD_METADATA.has(key)) continue;
+        if (!RECORD_HEADERS.includes(key as typeof RECORD_HEADERS[number])) {
+          return Promise.reject(new Error("NAS_ADMIN_REPLACEMENT_FIELD_INVALID"));
+        }
+        if (typeof value !== "string") return Promise.reject(new Error("NAS_ADMIN_REPLACEMENT_INVALID"));
+        changes[key as typeof RECORD_HEADERS[number]] = value;
+      }
+      if (Object.keys(changes).length === 0) return Promise.reject(new Error("NAS_ADMIN_REPLACEMENT_INVALID"));
       return admin.edit(actionBase(adminName), recordId, changes);
     },
     hide: (recordId, hidden, adminName) => admin.hide(actionBase(adminName), recordId, hidden),

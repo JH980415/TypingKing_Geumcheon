@@ -1,0 +1,40 @@
+# REVIEW ONLY: this is not an approved or applied NAS network topology.
+# Confirm DSM/Container Manager host-network support and reverse proxy routing
+# before selecting this candidate. Do not broaden the server's loopback bind.
+x-typingking-status: REVIEW_ONLY_NOT_APPLIED
+services:
+  record-api:
+    image: "__APPROVED_NODE24_IMAGE_WITH_DIGEST__"
+    user: "__APPROVED_CONTAINER_UID__:__APPROVED_CONTAINER_GID__"
+    network_mode: host
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: "no"
+    command: ["node", "/opt/typingking/server/services/nas-record-api/dist/server.cjs"]
+    environment:
+      NAS_EVENT_CONFIG: /run/typingking-private/event-config.production.json
+      NAS_TOKEN_MANIFEST: /run/typingking-private/token-manifest.production.json
+      NAS_PARTICIPANT_HMAC_KEY_FILE: /run/typingking-private/participant-hmac.key
+      NAS_DATA_ROOT: /var/lib/typingking/records
+      NAS_BIND_HOST: "127.0.0.1"
+      NAS_PORT: "8787"
+    volumes:
+      - type: bind
+        source: "__ABSOLUTE_CONFIRMED_SERVER_RUNTIME_PATH__"
+        target: /opt/typingking/server
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "__ABSOLUTE_CONFIRMED_TEMP_SHARE_TYPINGKING_DATA_PATH__"
+        target: /var/lib/typingking/records
+        read_only: false
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "__ABSOLUTE_PROTECTED_TYPINGKING_SECRETS_PATH__"
+        target: /run/typingking-private
+        read_only: true
+        bind:
+          create_host_path: false

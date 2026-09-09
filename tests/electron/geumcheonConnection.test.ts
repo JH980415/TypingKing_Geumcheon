@@ -9,6 +9,7 @@ import type { RecordRow, ReviewRuntimeContext, SaveRecordInput } from "../../sha
 import type { ActiveAttemptEncryption } from "../../electron/activeAttemptStore";
 import { buildRecordRow } from "../../shared/csv/fileStore";
 import {
+  assertGeumcheonRecordEditAllowed,
   createReviewGeumcheonConnection,
   initializeGeumcheonConnection,
   listGeumcheonRecords,
@@ -67,7 +68,7 @@ test("review player record listing uses its local review connection", async () =
     }
   });
 
-  assert.equal(rows, reviewRows);
+  assert.deepEqual(rows, reviewRows);
   assert.equal(legacyReads, 0);
 });
 
@@ -87,7 +88,7 @@ test("production leaderboard record listing retains NAS runtime records", async 
     }
   });
 
-  assert.equal(rows, nasRows);
+  assert.deepEqual(rows, nasRows);
   assert.equal(legacyReads, 0);
 });
 
@@ -109,8 +110,39 @@ test("production player record listing retains legacy records", async () => {
     readLegacy: async () => legacyRows
   });
 
-  assert.equal(rows, legacyRows);
+  assert.deepEqual(rows, legacyRows);
   assert.equal(runtimeReads, 0);
+});
+
+test("all Geumcheon renderer list paths omit protected evidence without mutating stored rows", async () => {
+  const sourceRow = { record_id: "synthetic-source", participant_name: "합성", participant_avg_cpm: "24",
+    recordEvidence: { sourceMarker: "opaque protected payload" } } as unknown as RecordRow;
+  for (const source of ["review", "production"] as const) for (const role of ["player", "leaderboard"] as const) {
+    const rows = await listGeumcheonRecords({ connection: {
+      source, runtime: { loadRecords: async () => ({ rows: [sourceRow] }) }
+    }, role, readLegacy: () => [sourceRow] });
+    assert.deepEqual(rows, [{ record_id: "synthetic-source", participant_name: "합성", participant_avg_cpm: "24" }], `${source}/${role}`);
+    assert.equal("recordEvidence" in sourceRow, true, "public projection must not delete source evidence");
+  }
+  const legacy = await listGeumcheonRecords({ connection: null, role: "player", readLegacy: () => [sourceRow] });
+  assert.equal(legacy[0], sourceRow, "other-event legacy path is unchanged");
+});
+
+test("Geumcheon admin patches cannot replace or clear original record evidence", () => {
+  assert.equal(typeof assertGeumcheonRecordEditAllowed, "function");
+  for (const recordEvidence of [undefined, null, {}]) {
+    assert.throws(() => assertGeumcheonRecordEditAllowed({ recordEvidence } as unknown as Partial<RecordRow>), /RECORD_EVIDENCE_EDIT_FORBIDDEN/);
+  }
+  assert.doesNotThrow(() => assertGeumcheonRecordEditAllowed({ participant_name: "수정 합성", final_cpm: "24" }));
+});
+
+test("Geumcheon admin patches reject read-only ranking metadata and malformed edit values", () => {
+  for (const key of ["canonicalAttempt", "fairness", "participantKey", "attemptNumber", "rankingEligible", "record_id", "unexpected"]) {
+    assert.throws(() => assertGeumcheonRecordEditAllowed({ [key]: "injected" }), /ADMIN_EDIT_FIELD_FORBIDDEN/, key);
+  }
+  for (const patch of [null, [], {}, { participant_name: 42 }]) {
+    assert.throws(() => assertGeumcheonRecordEditAllowed(patch as unknown as Partial<RecordRow>), /ADMIN_CHANGES_INVALID/);
+  }
 });
 
 test("review startup selects only the injected review connection without production dependencies", async () => {

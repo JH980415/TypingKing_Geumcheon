@@ -1,7 +1,8 @@
 import type { RecordRow, SaveRecordInput } from "../shared/types";
 import type { GeumcheonAttemptIdentityIds } from "../shared/nas/protocol";
-import { isPairedGeumcheonAttemptIdentity } from "../shared/nas/protocol";
+import { canonicalStringify, isPairedGeumcheonAttemptIdentity } from "../shared/nas/protocol";
 import { canonicalAiContradictionCodes } from "../shared/utils/geumcheonAiAttempt";
+import { cloneGeumcheonRecordEvidence, isGeumcheonRecordEvidenceV1 } from "../shared/utils/geumcheonRecordEvidence";
 
 export type ActiveAttemptCheckpoint = {
   schemaVersion: 2;
@@ -137,6 +138,13 @@ function withTrustedIdentity(
   input: SaveRecordInput,
   identity: AttemptPersistenceIdentity,
 ): SaveRecordInput {
+  if (input.recordEvidence !== undefined) {
+    if (!isGeumcheonRecordEvidenceV1(input.recordEvidence)) throw new Error("RECORD_EVIDENCE_INVALID");
+    if (input.canonicalAttempt == null ||
+      canonicalStringify(input.canonicalAttempt) !== canonicalStringify(input.recordEvidence.canonicalAttempt)) {
+      throw new Error("RECORD_EVIDENCE_CANONICAL_MISMATCH");
+    }
+  }
   if (input.canonicalAttempt == null) return input;
   const canonicalAttempt = {
     ...input.canonicalAttempt,
@@ -152,5 +160,8 @@ function withTrustedIdentity(
   return {
     ...input,
     canonicalAttempt,
+    ...(input.recordEvidence ? {
+      recordEvidence: cloneGeumcheonRecordEvidence({ ...input.recordEvidence, canonicalAttempt })
+    } : {}),
   };
 }
