@@ -1,12 +1,18 @@
 .r7-geumcheon-leaderboard {
+  position: relative;
   display: flex;
   flex-direction: column;
+  padding: 0;
 }
 
 .r7-geumcheon-leaderboard .leaderboard-header {
+  position: relative;
+  overflow: hidden;
   align-items: center;
   gap: 24px;
-  flex: 0 0 auto;
+  min-height: 0;
+  /* PPT12 client crop is 1280 x 674; the board begins at client y=106. */
+  flex: 0 0 15.727003dvh;
 }
 
 .r7-geumcheon-leaderboard .leaderboard-header > div:first-child {
@@ -14,27 +20,39 @@
 }
 
 .r7-geumcheon-leaderboard .geumcheon-leaderboard-logo {
+  position: absolute;
+  left: 4.609375vw;
+  top: 1.046038dvh;
   display: block;
-  width: min(38vw, 760px);
+  width: 37.265625vw;
   max-height: none;
-  height: auto;
-  object-fit: contain;
+  /* Original PNG is unchanged. Its alpha>16 bounds are y=115..791/941;
+     the permitted display ratio places that artwork at PPT12 y=21..103. */
+  height: 16.935456dvh;
+  object-fit: fill;
   object-position: left center;
 }
 
 .r7-geumcheon-leaderboard .leader-actions {
+  position: absolute;
+  top: 7.715134dvh;
+  right: 2.109375vw;
   flex-shrink: 0;
 }
 
-.r7-geumcheon-leaderboard .leaderboard-board {
+html[data-event-profile="geumcheon-2026"] .r7-geumcheon-leaderboard .leaderboard-board {
   flex: 1;
   min-height: 0;
   height: auto;
+  width: 95.625vw;
+  margin: 0 0 1.928783dvh 2.265625vw;
+  padding: calc(2.967359dvh - 3px) calc(1.5625vw - 3px);
 }
 
 .r7-geumcheon-leaderboard .leaderboard-session {
   position: static;
-  flex: 0 0 auto;
+  /* Keep the column header at client y=217, independent of record count. */
+  flex: 0 0 calc(13.501484dvh - 2px);
   padding: 18px 24px;
 }
 

@@ -33,7 +33,7 @@ html[data-event-profile="geumcheon-2026"] .game-app .r7-final-victory {
 html[data-event-profile="geumcheon-2026"] .game-app .challenge-modal-message {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 24px;
 }
 
 html[data-event-profile="geumcheon-2026"] .game-app .challenge-modal-message .compact-badges {

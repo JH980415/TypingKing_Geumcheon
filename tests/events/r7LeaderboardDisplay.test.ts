@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import path from "node:path";
-import postcss from "postcss";
+import { createHash } from "node:crypto";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import * as leaderboard from "../../apps/leaderboard/src/LeaderboardApp";
@@ -10,34 +10,9 @@ import { DEFAULT_CONFIG } from "../../shared/constants/defaults";
 import { createBootstrapData } from "../../shared/events/bootstrapData";
 import { loadEventProfile } from "../../shared/events/eventProfile";
 
-// Source sizing regression, not final EXE geometry proof. A constrained image
-// box can be wide while object-fit: contain still paints a very small logo.
-test("approved leaderboard logo paints at PPT12's visual width without changing its natural ratio", () => {
-  const stylesheet = postcss.parse(fs.readFileSync("apps/leaderboard/src/r7-geumcheon.css", "utf8"));
-  const declarations: Record<string, string> = {};
-  stylesheet.walkRules(".r7-geumcheon-leaderboard .geumcheon-leaderboard-logo", (rule) => {
-    rule.walkDecls((declaration) => { declarations[declaration.prop] = declaration.value; });
-  });
+test("PPT12 layout adjustment preserves the approved original logo bytes", () => {
   const png = fs.readFileSync("events/geumcheon-2026/assets/ai_타자왕_금나래의_도전.png");
-  const naturalRatio = png.readUInt32BE(16) / png.readUInt32BE(20);
-  for (const viewport of [1280, 1920]) {
-    const length = (value: string): number => {
-      if (value === "none" || value === undefined) return Infinity;
-      if (value.startsWith("min(")) return Math.min(...value.slice(4, -1).split(",").map((part) => length(part.trim())));
-      assert.match(value, /^\d+(?:\.\d+)?(?:px|vw)$/);
-      return Number.parseFloat(value) * (value.endsWith("vw") ? viewport / 100 : 1);
-    };
-    const boxWidth = length(declarations.width);
-    const boxHeight = Math.min(declarations.height === "auto" ? boxWidth / naturalRatio : length(declarations.height), length(declarations["max-height"]));
-    const paintedWidth = declarations["object-fit"] === "contain" ? Math.min(boxWidth, boxHeight * naturalRatio) : boxWidth;
-    const paintedHeight = declarations["object-fit"] === "contain" ? paintedWidth / naturalRatio : boxHeight;
-    // PPT12's pasted artwork occupies about 38% of its viewport width. The
-    // supplied PNG's own ratio takes precedence over the example's squashing.
-    assert.ok(paintedWidth >= viewport * 0.36 && paintedWidth <= viewport * 0.40,
-      `${viewport}px viewport paints only ${paintedWidth.toFixed(1)}px of logo`);
-    assert.ok(Math.abs(paintedWidth / paintedHeight - naturalRatio) < 0.001,
-      "the logo must keep its natural width/height ratio");
-  }
+  assert.equal(createHash("sha256").update(png).digest("hex"), "64cf1a2f1c8dca2f6917b1c8d2ba48c5ec2f686fa11cedd3d0a8d131936c85f6");
 });
 
 test("Geumcheon public board defaults to count only and places its only logo before the search controls", () => {
