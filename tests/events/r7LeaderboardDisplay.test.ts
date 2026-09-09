@@ -55,3 +55,40 @@ test("summary uses the supplied real aggregate and only shows configured day/rou
   assert.match(render(true), /2일차/);
   assert.match(render(true), /3회차/);
 });
+
+const editableRecord = {
+  record_id: "row-a", participant_name: "합성참여자", phone_part1: "010", phone_part2: "0000", phone_part3: "0001",
+  birth_year: "2000", birth_month: "01", birth_day: "01", stage1_time_ms: "1000", stage2_time_ms: "2000", stage3_time_ms: "3000", memo: "saved", is_test: "false"
+};
+
+test("Geumcheon draft survives outside click, same-row reselect and same-row deselect", () => {
+  let state = leaderboard.resolveLeaderboardRowClick({ selectedId: "", highlightedId: "", edit: null }, editableRecord, true);
+  const draft = { ...state.edit!, memo: "unsaved draft" };
+  state = { ...state, edit: draft, highlightedId: leaderboard.resolveLeaderboardHighlight(state.highlightedId, null) };
+  state = leaderboard.resolveLeaderboardRowClick(state, editableRecord, true);
+  assert.equal(state.highlightedId, "row-a");
+  assert.equal(state.edit, draft);
+  state = leaderboard.resolveLeaderboardRowClick(state, editableRecord, true);
+  assert.equal(state.highlightedId, "");
+  assert.equal(state.selectedId, "row-a");
+  assert.equal(state.edit, draft);
+});
+
+test("Geumcheon can reopen the saved record after successful save clears its editor", () => {
+  const afterSave = { selectedId: "row-a", highlightedId: "", edit: null };
+  const reopened = leaderboard.resolveLeaderboardRowClick(afterSave, { ...editableRecord, memo: "new saved value" }, true);
+  assert.equal(reopened.selectedId, "row-a");
+  assert.equal(reopened.highlightedId, "row-a");
+  assert.equal(reopened.edit?.memo, "new saved value");
+});
+
+test("another record replaces the editor while legacy same-row click still clears it", () => {
+  const initial = leaderboard.resolveLeaderboardRowClick({ selectedId: "", highlightedId: "", edit: null }, editableRecord, true);
+  const next = leaderboard.resolveLeaderboardRowClick(initial, { ...editableRecord, record_id: "row-b", memo: "other" }, true);
+  assert.equal(next.selectedId, "row-b");
+  assert.equal(next.highlightedId, "row-b");
+  assert.equal(next.edit?.memo, "other");
+  const legacy = leaderboard.resolveLeaderboardRowClick(initial, editableRecord, false);
+  assert.equal(legacy.selectedId, "");
+  assert.equal(legacy.edit, null);
+});

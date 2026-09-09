@@ -50,6 +50,12 @@ test('profile templates retain fixed device IDs, reject secrets/practice and val
   assert.equal(validateTemplate(profile, 'PC01', 'player').runtimeReady, false);
   assert.throws(() => validateTemplate({...profile, deviceId: '__PC__'}, 'PC01', 'player'));
   assert.throws(() => validateTemplate({...profile, token: 'private'}, 'PC01', 'player'));
+  for (const key of ['token', 'password', 'unexpected']) {
+    assert.throws(() => validateTemplate({
+      ...profile,
+      sessions: { official: { ...profile.sessions.official, [key]: 'synthetic-not-a-secret' } }
+    }, 'PC01', 'player'), /official/, 'reject unknown nested official field: ' + key);
+  }
   assert.throws(() => validateTemplate({...profile, sessions: {...profile.sessions, practice: {sessionId:'fake'}}}, 'PC01', 'player'));
   assert.throws(() => validateTemplate({...profile, sessions: {official: {...profile.sessions.official, dayNo:'1'}}}, 'PC01', 'player'));
 });

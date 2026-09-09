@@ -63,7 +63,7 @@ export function validateTemplate(value: any, deviceId: string, role: string) {
   for (const key of ['sessionId','dayNo','roundNo']) assert.equal(value.sessions.official[key], required[key as keyof typeof required]);
   const candidate = structuredClone(value);
   candidate.apiBaseUrl = 'https://127.0.0.1:9443';
-  candidate.sessions.official = {sessionId:'r7-synthetic-official', dayNo:1, roundNo:1};
+  candidate.sessions.official = {...candidate.sessions.official, sessionId:'r7-synthetic-official', dayNo:1, roundNo:1};
   validateDeviceProfile(candidate);
   return {deviceId, role, templateSchema:'PASS', numericSubstitutionSchema:'PASS', runtimeReady:false, actualNas:'NOT_RUN', pending:required};
 }

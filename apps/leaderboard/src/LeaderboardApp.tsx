@@ -311,11 +311,8 @@ export function LeaderboardApp({ bootstrap }: Props) {
   }
 
   function beginEdit(record: RecordRow) {
-    if (isGeumcheonBoard) {
-      setHighlightedId(resolveLeaderboardHighlight(highlightedId, record.record_id));
-      if (selectedId === record.record_id && highlightedId !== record.record_id) return;
-    }
-    const next = resolveLeaderboardEditSelection(selectedId, record);
+    const next = resolveLeaderboardRowClick({ selectedId, highlightedId, edit }, record, isGeumcheonBoard);
+    setHighlightedId(next.highlightedId);
     setSelectedId(next.selectedId);
     setEdit(next.edit);
   }
@@ -810,9 +807,24 @@ function normalizeFinalCpmForLeaderboard(record: RecordRow): RecordRow {
   };
 }
 
+type LeaderboardRowState = { selectedId: string; highlightedId: string; edit: EditState | null };
+type LeaderboardEditableRecord = Pick<RecordRow, "record_id" | keyof EditState>;
+
+export function resolveLeaderboardRowClick(
+  state: LeaderboardRowState,
+  record: LeaderboardEditableRecord,
+  geumcheon: boolean
+): LeaderboardRowState {
+  const highlightedId = geumcheon ? resolveLeaderboardHighlight(state.highlightedId, record.record_id) : state.highlightedId;
+  if (geumcheon && state.selectedId === record.record_id && state.edit !== null) {
+    return { ...state, highlightedId };
+  }
+  return { ...resolveLeaderboardEditSelection(geumcheon ? "" : state.selectedId, record), highlightedId };
+}
+
 export function resolveLeaderboardEditSelection(
   selectedId: string,
-  record: RecordRow
+  record: LeaderboardEditableRecord
 ): { selectedId: string; edit: EditState | null } {
   if (selectedId === record.record_id) {
     return { selectedId: "", edit: null };
