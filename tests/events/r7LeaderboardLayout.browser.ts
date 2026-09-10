@@ -17,10 +17,10 @@ import { buildRecordRow } from "../../shared/csv/fileStore";
 const references = [
   { width: 1280, height: 720, tolerance: 4, board: { x: 29, y: 113.234, width: 1224, height: 592.878 },
     inner: { x: 49, y: 134.599, width: 1183, height: 550.148 },
-    tableY: 231.810, logo: { x: 59, y: 22.433, width: 477, height: 87.596 }, controlsTop: 55.549, controlsRight: 1253 },
+    tableY: 231.810, controlsRight: 1253 },
   { width: 1920, height: 1080, tolerance: 6, board: { x: 43.5, y: 169.852, width: 1836, height: 889.318 },
     inner: { x: 73.5, y: 201.899, width: 1774.5, height: 825.223 },
-    tableY: 347.715, logo: { x: 88.5, y: 33.650, width: 715.5, height: 131.395 }, controlsTop: 83.323, controlsRight: 1879.5 }
+    tableY: 347.715, controlsRight: 1879.5 }
 ];
 
 async function measure(page: Page) {
@@ -36,7 +36,7 @@ async function measure(page: Page) {
     const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
     let left = canvas.width, top = canvas.height, right = 0, bottom = 0;
     for (let y = 0; y < canvas.height; y++) for (let x = 0; x < canvas.width; x++) {
-      if (pixels[(y * canvas.width + x) * 4 + 3] > 16) {
+      if (pixels[(y * canvas.width + x) * 4 + 3] >= 8) {
         left = Math.min(left, x); top = Math.min(top, y); right = Math.max(right, x + 1); bottom = Math.max(bottom, y + 1);
       }
     }
@@ -62,12 +62,12 @@ async function measure(page: Page) {
   });
 }
 
-test("PPT12 board and logo remain anchored with empty, populated and scrolled real React layout", { timeout: 120_000 }, async (t) => {
+test("PPT12 board anchors and sticky header remain unchanged with the UIV3 logo overlay", { timeout: 120_000 }, async (t) => {
   const evidenceBase = path.resolve("Codex/Evidence/R7/layout-correction-browser");
   fs.mkdirSync(evidenceBase, { recursive: true });
   const output = fs.mkdtempSync(path.join(evidenceBase, "run-"));
   const sourceHashes = Object.fromEntries(["apps/leaderboard/src/r7-geumcheon.css", "apps/leaderboard/src/LeaderboardApp.tsx",
-    "tests/events/r7LeaderboardLayout.browser.ts", "events/geumcheon-2026/assets/ai_타자왕_금나래의_도전.png",
+    "tests/events/r7LeaderboardLayout.browser.ts", "events/geumcheon-2026/assets/title_logo_062843.png",
     "Codex/Evidence/R7/layout-correction-reference/PPT12_LAYOUT_MEASUREMENTS.json"].map((file) =>
     [file, createHash("sha256").update(fs.readFileSync(file)).digest("hex")]));
   const server = await createServer({ configFile: false, root: process.cwd(), esbuild: { jsx: "automatic" },
@@ -168,17 +168,18 @@ test("PPT12 board and logo remain anchored with empty, populated and scrolled re
               differences.push(`board.${key}: ${actual.boxes[".leaderboard-board"][key]} expected ${reference.board[key]}`);
             if (Math.abs(actual.boxes[".ranking-table"][key] - reference.inner[key]) > reference.tolerance)
               differences.push(`inner.${key}: ${actual.boxes[".ranking-table"][key]} expected ${reference.inner[key]}`);
-            if (Math.abs(actual.logo[key] - reference.logo[key]) > reference.tolerance)
-              differences.push(`paintedLogo.${key}: ${actual.logo[key]} expected ${reference.logo[key]}`);
           }
           if (Math.abs(actual.boxes[".ranking-head"].y - reference.tableY) > reference.tolerance)
             differences.push(`tableHeader.y: ${actual.boxes[".ranking-head"].y} expected ${reference.tableY}`);
           assert.deepEqual(differences, [], differences.join("; "));
           assert.ok(Math.abs(actual.boxes[".leader-actions"].right - reference.controlsRight) <= reference.tolerance);
-          assert.ok(Math.abs(actual.boxes[".leader-actions"].top - reference.controlsTop) <= reference.tolerance);
+          // U10 replaces only the obsolete stretched/left logo target. U11 permits
+          // controls-only wrapping; original board/inner/header/rows remain checked.
           assert.ok(actual.logo.x + actual.logo.width < actual.boxes[".leader-actions"].left);
-          assert.ok(actual.logo.y >= actual.boxes[".leaderboard-header"].top && actual.logo.y + actual.logo.height <= actual.boxes[".leaderboard-header"].bottom,
-            "painted artwork must stay inside the reserved header slot");
+          assert.ok(Math.abs(actual.logo.x + actual.logo.width / 2 - actual.boxes[".leaderboard-board"].x - actual.boxes[".leaderboard-board"].width / 2) <= 2);
+          assert.ok(Math.abs(actual.logo.y + actual.logo.height / 2 - actual.boxes[".leaderboard-board"].top) <= 2);
+          assert.equal(actual.imageFit, "contain");
+          assert.ok(Math.abs(actual.imageBox.width / actual.imageBox.height / (2048 / 682) - 1) <= .005);
           assert.ok(actual.boxes[".leader-actions"].bottom <= actual.boxes[".leaderboard-board"].top,
             "unscaled controls must remain above the board");
           assert.equal(actual.appTransform, "none"); assert.equal(actual.appZoom, "1");

@@ -7,12 +7,22 @@
 
 .r7-geumcheon-leaderboard .leaderboard-header {
   position: relative;
-  overflow: hidden;
+  z-index: 3;
+  overflow: visible;
   align-items: center;
   gap: 24px;
   min-height: 0;
   /* PPT12 client crop is 1280 x 674; the board begins at client y=106. */
   flex: 0 0 15.727003dvh;
+  /* Preserve the before control region; U11 may arrange controls inside it. */
+  --uiv3-controls-width: clamp(416.71875px, 25.87483724vw, 496.796875px);
+  /* Largest uniform full-canvas fit: top >= 8, controls/header >= 12.
+     Board center X = 50.078125vw, top Y = 15.727003dvh. */
+  --uiv3-logo-width: min(
+    calc((15.727003dvh - 8px) * 2048 / 336.5),
+    calc(95.625vw - 2 * var(--uiv3-controls-width) - 24px),
+    calc((16.468843dvh - 12px) * 2048 / 345.5)
+  );
 }
 
 .r7-geumcheon-leaderboard .leaderboard-header > div:first-child {
@@ -21,16 +31,18 @@
 
 .r7-geumcheon-leaderboard .geumcheon-leaderboard-logo {
   position: absolute;
-  left: 4.609375vw;
-  top: 1.046038dvh;
+  left: calc(50.078125vw - var(--uiv3-logo-width) / 2);
+  top: calc(15.727003dvh - var(--uiv3-logo-width) * 336.5 / 2048);
+  z-index: 3;
   display: block;
-  width: 37.265625vw;
+  width: var(--uiv3-logo-width);
   max-height: none;
-  /* Original PNG is unchanged. Its alpha>16 bounds are y=115..791/941;
-     the permitted display ratio places that artwork at PPT12 y=21..103. */
-  height: 16.935456dvh;
-  object-fit: fill;
-  object-position: left center;
+  /* Original alpha>=8 bounds [21,66,2027,607] center at (1024,336.5).
+     Keep the entire 2048x682 PNG, including its faint outer glow. */
+  height: calc(var(--uiv3-logo-width) * 682 / 2048);
+  object-fit: contain;
+  object-position: center;
+  pointer-events: none;
 }
 
 .r7-geumcheon-leaderboard .leader-actions {
@@ -38,6 +50,41 @@
   top: 7.715134dvh;
   right: 2.109375vw;
   flex-shrink: 0;
+}
+
+html[data-event-profile="geumcheon-2026"] .r7-geumcheon-leaderboard .uiv3-search-controls {
+  top: max(8px, calc(7.715134dvh - clamp(46px, 5.8vh, 58px) - 8px));
+  z-index: 4;
+  width: var(--uiv3-controls-width);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.r7-geumcheon-leaderboard .uiv3-search-primary,
+.r7-geumcheon-leaderboard .uiv3-search-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.r7-geumcheon-leaderboard .uiv3-search-primary select {
+  flex: 0 0 100px;
+  min-width: 80px;
+  width: 100px;
+}
+
+.r7-geumcheon-leaderboard .uiv3-search-primary input {
+  flex: 1 1 160px;
+  min-width: 160px;
+  width: 160px;
+}
+
+.r7-geumcheon-leaderboard .uiv3-search-primary button {
+  min-width: 56px;
 }
 
 html[data-event-profile="geumcheon-2026"] .r7-geumcheon-leaderboard .leaderboard-board {

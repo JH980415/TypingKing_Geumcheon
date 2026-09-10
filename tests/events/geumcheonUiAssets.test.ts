@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
@@ -33,8 +34,8 @@ test("groups the approved Geumcheon title and exact subtitle in one centered lef
   );
 
   assert.match(html, /bg_leaderboard_03_typing_hall_of_fame\.png/);
-  assert.match(html, /ai_타자왕_금나래의_도전\.png/);
-  assert.match(html, /robot_03_speed_champion\.png/);
+  assert.match(html, /title_logo_062843\.png/);
+  assert.match(html, /geumnarae_main_052455_alpha\.png/);
   assert.doesNotMatch(html, /ai_title_(compact|oneline_trimmed)\.png|ai_challenge_title\.png/);
 
   const leftTitleGroup = html.match(/<div class="left-title-group">[\s\S]*?<\/div>/)?.[0];
@@ -52,7 +53,7 @@ test("replaces the Geumcheon right-panel mode card with one event copy above the
 
   const entryPanel = html.match(/<form class="entry-panel"[^>]*>[\s\S]*?<\/form>/)?.[0];
   assert.ok(entryPanel, "entry panel must render");
-  assert.match(entryPanel, /^<form class="entry-panel"[^>]*><div class="entry-event-copy">/);
+  assert.ok(entryPanel.indexOf('class="entry-event-copy"') < entryPanel.indexOf('class="entry-form-group"'), "event copy stays above the input group, including its fixed UIV3 flow slot");
   assert.equal((entryPanel.match(/class="entry-event-copy"/g) ?? []).length, 1);
   assert.match(entryPanel, /2026 G-Science Festival/);
   assert.match(entryPanel, /AI와 소통하는 활기찬 미래 금천/);
@@ -63,7 +64,7 @@ test("replaces the Geumcheon right-panel mode card with one event copy above the
 test("uses the user-approved Geumcheon title and refreshed stage badges", () => {
   assert.equal(
     geumcheonProfile.assets.eventTitle,
-    "assets/ai_타자왕_금나래의_도전.png"
+    "assets/title_logo_062843.png"
   );
   assert.deepEqual(geumcheonProfile.assets.stageBadges, [
     "assets/ai_challenge/stage_badge_1_r203.png",
@@ -73,15 +74,15 @@ test("uses the user-approved Geumcheon title and refreshed stage badges", () => 
 });
 
 test("maps the approved Geumcheon result art by winner and stage", () => {
-  assert.equal(resolveAiBossResultAsset(geumcheonProfile, "AI_WIN", 1), "assets/금나래 승리.png");
+  for (const stage of [1, 2, 3] as const) assert.equal(resolveAiBossResultAsset(geumcheonProfile, "AI_WIN", stage), "assets/금나래 승리.png");
   assert.deepEqual(geumcheonProfile.assets.aiBossDefeats, [
-    "assets/금나래패배_스테이지1_alpha_r7.png",
+    "assets/geumnarae_stage1_defeat_054108_alpha.png",
     "assets/금나래패배_스테이지2.png",
     "assets/금나래패배_스테이지3.png"
   ]);
   for (const stage of [1, 2, 3] as const) {
     assert.equal(resolveAiBossResultAsset(geumcheonProfile, "USER_WIN", stage), stage === 1
-      ? "assets/금나래패배_스테이지1_alpha_r7.png" : `assets/금나래패배_스테이지${stage}.png`);
+      ? "assets/geumnarae_stage1_defeat_054108_alpha.png" : `assets/금나래패배_스테이지${stage}.png`);
   }
 });
 
@@ -122,7 +123,7 @@ test("Geumcheon builders preserve art with R7 official and historical practice c
   assert.equal(configs.length, 8);
   for (const config of configs) {
     const source = fs.readFileSync(path.resolve(config), "utf8");
-    assert.match(source, config.includes('practice') ? /typingKingReleaseCandidate: R6-v2-20260908/ : /typingKingReleaseCandidate: R7-ppt-official-only-20260909/, config);
+    assert.match(source, config.includes('practice') ? /typingKingReleaseCandidate: R6-v2-20260908/ : /typingKingReleaseCandidate: UI-v3-20260910/, config);
     for (const asset of ["금나래 승리.png", "금나래패배_스테이지1.png", "금나래패배_스테이지2.png", "금나래패배_스테이지3.png"]) {
       assert.match(source, new RegExp(`assets/${asset.replace(".", "\\.")}`), `${config}: ${asset}`);
     }
@@ -138,7 +139,19 @@ test("renders the approved Geumcheon leaderboard background", () => {
 
   assert.match(html, /stage_01_03_science_classroom\.png/);
   assert.match(html, /geumcheon-leaderboard-logo/);
-  assert.match(html, /ai_타자왕_금나래의_도전\.png/);
+  assert.match(html, /title_logo_062843\.png/);
+});
+
+// Catches wrong active asset, byte mutation, and wrong winner/stage wiring.
+test("UIV3 active title, main and Stage 1 challenger-win assets are the supplied ready bytes", () => {
+  for (const [active, wanted] of [
+    [geumcheonProfile.assets.eventTitle, "eea89947c6ea42fc0dc6045c6398301d8e480dcb510de7a83f1db9766f0e22ee"],
+    [geumcheonProfile.assets.aiBossMain, "5d1367e6fb3d0c781959232e3fba4966cb4280b18da90d9464456c2af501b65c"],
+    [resolveAiBossResultAsset(geumcheonProfile, "USER_WIN", 1), "ee0406ac4ed72c9358022b485fdca942c0345008006c4ea1e93bd059634ad306"]
+  ]) {
+    const bytes = fs.readFileSync(path.resolve("events/geumcheon-2026", active!));
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), wanted, active);
+  }
 });
 
 test("uses the play background for every active or result game screen", () => {

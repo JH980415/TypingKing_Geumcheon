@@ -24,7 +24,7 @@ test("Geumcheon public board defaults to count only and places its only logo bef
   const header = html.match(/<header class="leaderboard-header">[\s\S]*?<\/header>/)?.[0] ?? "";
   assert.match(header, /geumcheon-leaderboard-logo/);
   assert.ok(header.indexOf("geumcheon-leaderboard-logo") < header.indexOf("search-input"));
-  assert.equal((html.match(/<img[^>]+ai_타자왕_금나래의_도전\.png/g) ?? []).length, 1);
+  assert.equal((html.match(/<img[^>]+title_logo_062843\.png/g) ?? []).length, 1);
 });
 
 test("day and round preference starts false, survives reload, and never shares values across variants", () => {
