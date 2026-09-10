@@ -38,7 +38,8 @@ async function mount(t: any, initialRows = fixtures()) {
   page.on("pageerror", (error) => errors.push(error.message));
   t.after(() => assert.deepEqual(errors, []));
   const state = { rows: initialRows, requests: [] as Array<RecordListRequest | undefined>, fail: false,
-    delayNext: false, release: undefined as (() => void) | undefined };
+    delayNext: false, release: undefined as (() => void) | undefined,
+    updates: [] as Array<{ recordId: string; patch: Partial<RecordRow>; adminName: string }> };
   await page.exposeFunction("__records", async (request?: RecordListRequest) => {
     state.requests.push(request);
     // Only unavailable Electron IPC is replaced. Both React and the protected snapshot matcher are real.
@@ -61,11 +62,18 @@ async function mount(t: any, initialRows = fixtures()) {
     'import React from "react"; import {createRoot} from "react-dom/client";',
     'import {LeaderboardApp} from "./apps/leaderboard/src/LeaderboardApp";',
     'window.__ticks=[];window.setInterval=(callback)=>{window.__ticks.push(callback);return window.__ticks.length};',
-    'window.typingKing={listRecords:window.__records,validateAdmin:async()=>({ok:true,data:{adminName:"synthetic"}})};',
+    'window.typingKing={listRecords:window.__records,validateAdmin:async()=>({ok:true,data:{adminName:"synthetic"}}),updateRecord:async(recordId,patch,adminName)=>window.__updateRecord(recordId,patch,adminName)};',
     'createRoot(document.getElementById("root")).render(React.createElement(LeaderboardApp,{bootstrap:' + JSON.stringify(bootstrap) + '}));'
   ].join("\n"), resolveDir: process.cwd(), loader: "tsx" }, bundle: true, write: false, platform: "browser",
     format: "iife", jsx: "automatic", define: { "process.env.NODE_ENV": '"test"' }, logLevel: "silent" });
   await page.setContent('<div id="root"></div>');
+  await page.exposeFunction("__updateRecord", async (recordId: string, patch: Partial<RecordRow>, adminName: string) => {
+    state.updates.push({ recordId, patch, adminName });
+    const index = state.rows.findIndex((row) => row.record_id === recordId);
+    if (index < 0) return { ok: false, error: "기록을 찾을 수 없습니다." };
+    state.rows[index] = { ...state.rows[index], ...patch };
+    return { ok: true, data: { ...state.rows[index] } };
+  });
   await page.addScriptTag({ content: source.outputFiles[0].text });
   await page.waitForFunction(() => document.querySelectorAll(".ai-row").length > 120);
   return { page, state };
@@ -198,4 +206,87 @@ test("changing field discards an older in-flight response without resetting best
   assert.deepEqual(await ids(page), original, "stale response cannot restore the old applied search");
   assert.equal(await page.getByRole("textbox", { name: "검색어" }).inputValue(), "");
   assert.deepEqual(state.requests.at(-1), { search: null });
+});
+test("admin edit waits for the refreshed snapshot before clearing stale editor state", async (t) => {
+  const { page, state } = await mount(t);
+  await page.getByRole("button", { name: "관리자", exact: true }).click();
+  await page.locator('input[type="password"]').fill("synthetic");
+  await page.getByRole("button", { name: "진입", exact: true }).click();
+  await page.locator('.admin-record-picker button[data-leaderboard-record="filler-0"]').click();
+  const nameInput = page.locator(".edit-grid input").first();
+  await nameInput.fill("수정된 도전자");
+  state.release = undefined;
+  state.delayNext = true;
+  await page.getByRole("button", { name: "수정 저장", exact: true }).click();
+  const deadline = Date.now() + 3000;
+  while (!state.release && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(state.release, "post-edit refresh reached delayed listRecords");
+  assert.equal(await page.locator(".edit-grid").count(), 1, "editor must stay open while the fresh snapshot is pending");
+  assert.equal(await nameInput.inputValue(), "수정된 도전자", "pending editor must keep the submitted draft");
+  state.release();
+  await page.waitForFunction(() => document.querySelector(".ranking-table.ai-ranking")?.getAttribute("aria-busy") === "false");
+  await page.waitForFunction(() => document.querySelector(".edit-grid") == null);
+  await page.locator('.admin-record-picker button[data-leaderboard-record="filler-0"]').click();
+  assert.equal(await page.locator(".edit-grid input").first().inputValue(), "수정된 도전자");
+});
+test("admin edit keeps the submitted draft when the post-save refresh fails", async (t) => {
+  const { page, state } = await mount(t);
+  await page.getByRole("button", { name: "관리자", exact: true }).click();
+  await page.locator('input[type="password"]').fill("synthetic");
+  await page.getByRole("button", { name: "진입", exact: true }).click();
+  await page.locator('.admin-record-picker button[data-leaderboard-record="filler-0"]').click();
+  const nameInput = page.locator(".edit-grid input").first();
+  await nameInput.fill("조회실패 도전자");
+  state.release = undefined;
+  state.delayNext = true;
+  state.fail = true;
+  await page.getByRole("button", { name: "수정 저장", exact: true }).click();
+  const deadline = Date.now() + 3000;
+  while (!state.release && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(state.release, "post-edit refresh reached delayed listRecords");
+  state.release();
+  await page.waitForFunction(() => document.querySelector(".ranking-table.ai-ranking")?.getAttribute("aria-busy") === "false");
+  assert.match(await page.locator(".leaderboard-alert").innerText(), /기록/);
+  assert.equal(await page.locator(".edit-grid").count(), 1, "failed refresh must not close the editor onto stale rendered rows");
+  assert.equal(await nameInput.inputValue(), "조회실패 도전자", "failed refresh keeps the submitted draft visible for retry/review");
+  assert.deepEqual(state.updates.map((update) => update.recordId), ["filler-0"]);
+});
+test("admin edit preserves a newer same-row draft while the post-save refresh is pending", async (t) => {
+  const { page, state } = await mount(t);
+  await page.getByRole("button", { name: "관리자", exact: true }).click();
+  await page.locator('input[type="password"]').fill("synthetic");
+  await page.getByRole("button", { name: "진입", exact: true }).click();
+  await page.locator('.admin-record-picker button[data-leaderboard-record="filler-0"]').click();
+  const nameInput = page.locator(".edit-grid input").first();
+  await nameInput.fill("저장 제출값");
+  state.release = undefined;
+  state.delayNext = true;
+  await page.getByRole("button", { name: "수정 저장", exact: true }).click();
+  const deadline = Date.now() + 3000;
+  while (!state.release && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(state.release, "post-edit refresh reached delayed listRecords");
+  await nameInput.fill("대기 중 추가수정");
+  state.release();
+  await page.waitForFunction(() => document.querySelector(".ranking-table.ai-ranking")?.getAttribute("aria-busy") === "false");
+  assert.equal(await page.locator(".edit-grid input").first().inputValue(), "대기 중 추가수정");
+});
+
+test("admin edit preserves another selected row while the post-save refresh is pending", async (t) => {
+  const { page, state } = await mount(t);
+  await page.getByRole("button", { name: "관리자", exact: true }).click();
+  await page.locator('input[type="password"]').fill("synthetic");
+  await page.getByRole("button", { name: "진입", exact: true }).click();
+  await page.locator('.admin-record-picker button[data-leaderboard-record="filler-0"]').click();
+  await page.locator(".edit-grid input").first().fill("저장 제출값");
+  state.release = undefined;
+  state.delayNext = true;
+  await page.getByRole("button", { name: "수정 저장", exact: true }).click();
+  const deadline = Date.now() + 3000;
+  while (!state.release && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.ok(state.release, "post-edit refresh reached delayed listRecords");
+  await page.locator('.admin-record-picker button[data-leaderboard-record="filler-1"]').click();
+  assert.equal(await page.locator(".edit-grid input").first().inputValue(), "합성기록1");
+  state.release();
+  await page.waitForFunction(() => document.querySelector(".ranking-table.ai-ranking")?.getAttribute("aria-busy") === "false");
+  assert.equal(await page.locator(".edit-grid input").first().inputValue(), "합성기록1");
 });

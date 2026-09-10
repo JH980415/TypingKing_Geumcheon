@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {assessControlPresentation, assessLogoGeometry, assessProcessAbsence, compareStableBoxes, observedRuntimeFailures, ReadOnlyRecordOracle, runtimeVerdicts, waitForCaptureLayout} from '../utils/uiv3RuntimeAssertions';
+import {spawnSync} from 'node:child_process';
+import {assessControlPresentation, assessLogoGeometry, assessProcessAbsence, compareStableBoxes, observedRuntimeFailures, ReadOnlyRecordOracle, runtimeVerdicts, utf8PowerShellJson, waitForCaptureLayout} from '../utils/uiv3RuntimeAssertions';
 
 // These literal fixtures are independent of the product's placement helpers.
+test('Windows process JSON stdout preserves exact Unicode paths used by the stop identity guard',{skip:process.platform!=='win32'},()=>{
+ const expected={pid:1234,path:'C:\\isolated\\한글 경로\\도움 프로세스.exe',startedAt:'2026-09-10T13:18:11.2755484Z'};
+ const command=utf8PowerShellJson("[pscustomobject]@{pid=1234;path=$env:TK_TEST_UNICODE_PATH;startedAt='2026-09-10T13:18:11.2755484Z'}|ConvertTo-Json -Compress");
+ const result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',command],{env:{...process.env,TK_TEST_UNICODE_PATH:expected.path},encoding:'utf8',windowsHide:true,timeout:10000});
+ assert.equal(result.status,0,String(result.error??result.stderr));assert.equal(result.stderr,'');
+ assert.deepEqual(JSON.parse(result.stdout),expected,'Default CP949 output decoded as UTF8 corrupts the path and makes a valid owned-process identity fail');
+});
 const board={x:29,y:113.25,width:1224,height:592.89};
 const canvas={x:333.8,y:5.57,width:614.4,height:204.6};
 const painted={x:340.1,y:25.37,width:601.8,height:162.3};

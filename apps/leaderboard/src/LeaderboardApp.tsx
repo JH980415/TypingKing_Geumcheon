@@ -289,8 +289,9 @@ export function LeaderboardApp({ bootstrap }: Props) {
     applySearch(term ? { field: searchField, term } : null);
   }
 
-  async function refresh(silent: boolean) {
-    if (silent && requestInFlightRef.current !== null) return;
+  async function refresh(silent: boolean): Promise<boolean> {
+    if (silent && requestInFlightRef.current !== null) return false;
+    let recordsRefreshed = false;
     const generation = ++requestGenerationRef.current;
     requestInFlightRef.current = generation;
     const requestedSearch = appliedSearchRef.current;
@@ -313,7 +314,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
           ? window.typingKing.getCsvBackupStatus()
           : Promise.resolve(null)
       ]);
-      if (generation !== requestGenerationRef.current) return;
+      if (generation !== requestGenerationRef.current) return false;
       if (shouldRefreshSlowStatus) lastSlowStatusRefreshAtRef.current = now;
       if (settingsResult?.ok && settingsResult.data) {
         setConfig((current) => (sameLeaderboardConfig(current, settingsResult.data!) ? current : settingsResult.data!));
@@ -323,13 +324,16 @@ export function LeaderboardApp({ bootstrap }: Props) {
         setSnapshot((current) => !isGeumcheonOfficialBoard && sameRecordSnapshot(current.rows, result.data!)
           ? current : { rows: result.data!, matchingRecordIds: isGeumcheonOfficialBoard ? result.matchingRecordIds ?? null : null });
         setRefreshError("");
+        recordsRefreshed = true;
       } else if (isGeumcheonOfficialBoard || !silent || result.code === "LOCKED") {
         setRefreshError(formatLeaderboardOperationError(result.error, "refresh"));
       }
       if (statusResult && statusResult.ok && statusResult.data) setSyncStatus(statusResult.data);
       if (backupResult && backupResult.ok && backupResult.data) setBackupStatus(backupResult.data);
+      return recordsRefreshed;
     } catch {
       if (generation === requestGenerationRef.current) setRefreshError(formatLeaderboardOperationError(undefined, "refresh"));
+      return false;
     } finally {
       if (generation === requestGenerationRef.current) {
         requestInFlightRef.current = null;
@@ -390,15 +394,21 @@ export function LeaderboardApp({ bootstrap }: Props) {
       setMessage("시간 기록은 숫자만 입력할 수 있습니다.");
       return;
     }
-    const result = await window.typingKing.updateRecord(selectedId, edit, adminName || "admin");
+    const submittedEdit = edit;
+    const result = await window.typingKing.updateRecord(selectedId, submittedEdit, adminName || "admin");
     setMessage(
       result.ok
         ? "기록을 수정했습니다. 원본 기록은 보존되고, 수정된 기록이 리더보드에 새로 표시됩니다."
         : formatLeaderboardOperationError(result.error, "edit")
     );
     if (result.ok) {
-      setEdit(null);
-      await refresh(false);
+      if (isGeumcheonOfficialBoard) {
+        const refreshed = await refresh(false);
+        if (refreshed) setEdit((current) => current === submittedEdit ? null : current);
+      } else {
+        setEdit(null);
+        await refresh(false);
+      }
     }
   }
 

@@ -1,4 +1,5 @@
 import {isDeepStrictEqual} from 'node:util';
+export function utf8PowerShellJson(command:string){return '[Console]::OutputEncoding=New-Object System.Text.UTF8Encoding($false);'+command;}
 type Rect=Record<string,any>;
 export class ReadOnlyRecordOracle<T>{
  private generation=0;
