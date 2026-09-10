@@ -11,7 +11,8 @@ import { loadEventProfile } from "../../shared/events/eventProfile";
 import { buildRecordRow } from "../../shared/csv/fileStore";
 
 // Breaks caught: stretched or off-center title, clipping/occlusion, moved board,
-// changed row metrics, and controls that expand beyond their original right area.
+// changed row metrics, controls that expand beyond their original right area,
+// and validation/transport alerts that reflow or cover the fixed ranking table.
 const references = [
   { width: 1280, height: 720, board: [29, 113.234375, 1224, 592.890625], inner: [49, 134.59375, 1184, 550.171875], headerY: 231.796875, controlsLeft: 836.28125, controlsRight: 1253, maxCanvasWidth: 366.5625 },
   { width: 1920, height: 1080, board: [43.5, 169.84375, 1836, 889.328125], inner: [73.5, 201.890625, 1776, 825.234375], headerY: 347.703125, controlsLeft: 1382.703125, controlsRight: 1879.5, maxCanvasWidth: 818.40625 }
@@ -20,7 +21,7 @@ const references = [
 async function measure(page: Page) {
   return page.evaluate(() => {
     const rect = (element: Element) => element.getBoundingClientRect().toJSON();
-    const boxes = Object.fromEntries([".leaderboard-header", ".leaderboard-board", ".ranking-table", ".ranking-head", ".ranking-body", ".leader-actions", ".session-count"].map(selector => [selector, rect(document.querySelector(selector)!)]));
+    const boxes = Object.fromEntries([".leaderboard-header", ".leaderboard-board", ".ranking-table", ".ranking-head", ".ranking-body", ".leaderboard-session", ".leader-actions", ".session-count"].map(selector => [selector, rect(document.querySelector(selector)!)]));
     const logo = document.querySelector<HTMLImageElement>(".geumcheon-leaderboard-logo")!;
     const imageBox = rect(logo), style = getComputedStyle(logo);
     const canvas = document.createElement("canvas"); canvas.width = logo.naturalWidth; canvas.height = logo.naturalHeight;
@@ -45,7 +46,12 @@ async function measure(page: Page) {
     const ancestors = []; for (let parent = logo.parentElement; parent; parent = parent.parentElement) {
       const css = getComputedStyle(parent); if ([css.overflowX, css.overflowY].some(value => ["hidden", "clip", "auto", "scroll"].includes(value))) ancestors.push(rect(parent));
     }
+    const alert = document.querySelector<HTMLElement>(".leaderboard-board > .leaderboard-alert");
+    const alertStyle = alert && getComputedStyle(alert);
     return { boxes, imageBox, visible, paintedWidth, paintedHeight, alphaBounds: [left, top, right, bottom], logoCount: document.querySelectorAll(".geumcheon-leaderboard-logo").length,
+      alert: alert && { rect: rect(alert), text: alert.textContent, role: alert.getAttribute("role"), font: alertStyle!.fontSize,
+        color: alertStyle!.color, background: alertStyle!.backgroundColor, padding: alertStyle!.padding, scrollHeight: alert.scrollHeight, clientHeight: alert.clientHeight,
+        onTop: document.elementFromPoint(alert.getBoundingClientRect().x + 8, alert.getBoundingClientRect().y + 8) === alert },
       natural: [canvas.width, canvas.height], pointerEvents: style.pointerEvents, opacity: style.opacity, onTop, clippingAncestors: ancestors,
       controls: Array.from(document.querySelectorAll(".uiv3-search-controls select, .uiv3-search-controls input, .uiv3-search-controls button")).map(element => ({ tag: element.tagName, text: element.textContent, rect: rect(element), font: getComputedStyle(element).fontSize })),
       rows: Array.from(document.querySelectorAll(".ai-ranking .ranking-row")).map(row => ({ height: rect(row).height, font: getComputedStyle(row.querySelector("span")!).fontSize })),
@@ -58,6 +64,7 @@ async function measure(page: Page) {
 test("UIV3 title preserves original canvas, alpha center, fixed board and bounded search at both viewports", { timeout: 120_000 }, async (t) => {
   const base = path.resolve("Codex/Evidence/UIV3_20260910/source-checks/leaderboard-layout"); fs.mkdirSync(base, { recursive: true });
   const output = fs.mkdtempSync(path.join(base, "run-"));
+  const sourceHashes = Object.fromEntries(["apps/leaderboard/src/LeaderboardApp.tsx", "apps/leaderboard/src/r7-geumcheon.css", "tests/events/uiv3LeaderboardLayout.browser.ts"].map(file => [file, createHash("sha256").update(fs.readFileSync(file)).digest("hex")]));
   const server = await createServer({ configFile: false, root: process.cwd(), esbuild: { jsx: "automatic" }, cacheDir: path.join(output, "vite-cache"), server: { host: "127.0.0.1", port: 0, open: false, watch: null }, clearScreen: false });
   const observations: unknown[] = [];
   let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
@@ -70,7 +77,7 @@ test("UIV3 title preserves original canvas, alpha center, fixed board and bounde
       const page = await browser.newPage({ viewport: { width: reference.width, height: reference.height }, deviceScaleFactor: 1 });
       const pageErrors: string[] = []; page.on("pageerror", error => pageErrors.push(error.message));
       // Only unavailable Electron IPC is substituted; actual React, CSS and assets run.
-      await page.addInitScript({ content: `window.__layoutRows=[];window.typingKing={getBootstrap:async()=>({ok:true,data:${JSON.stringify(bootstrap)}}),listRecords:async()=>({ok:true,data:window.__layoutRows})};` });
+      await page.addInitScript({ content: `window.__layoutRows=[];window.__layoutError="";window.typingKing={getBootstrap:async()=>({ok:true,data:${JSON.stringify(bootstrap)}}),listRecords:async()=>window.__layoutError?({ok:false,error:window.__layoutError}):({ok:true,data:window.__layoutRows})};` });
       await page.addInitScript("window.__name = (value) => value;");
       await page.goto(origin); await page.locator(".ranking-head").waitFor();
       await page.waitForFunction(() => Array.from(document.images).every(image => image.complete && image.naturalWidth > 0));
@@ -78,7 +85,8 @@ test("UIV3 title preserves original canvas, alpha center, fixed board and bounde
       const imageBytes = await (await page.request.get(new URL(imageUrl!, origin).href)).body();
       await t.test(`${reference.width} active title bytes`, () => assert.equal(createHash("sha256").update(imageBytes).digest("hex"), "eea89947c6ea42fc0dc6045c6398301d8e480dcb510de7a83f1db9766f0e22ee"));
       const record = buildRecordRow({ participant_name: "합성 검사", phone_part1: "010", phone_part2: "0000", phone_part3: "0001", birth_year: "2000", birth_month: "01", birth_day: "01", privacy_agreed: true, privacy_agreed_at: "2026-09-09T00:00:00.000Z", stageTexts: ["검사", "검사", "검사"], stageTimesMs: [1000, 1000, 1000], game_mode: "ai_challenge", final_accuracy: 100 });
-      for (const state of ["empty", "populated", "scrolled", "long-draft"] as const) {
+      let populatedBaseline: Awaited<ReturnType<typeof measure>> | undefined;
+      for (const state of ["empty", "populated", "scrolled", "long-draft", "invalid-abc", "invalid-010a", "transport-error", "long-error", "recovery"] as const) {
         if (state === "populated") {
           const records = Array.from({ length: 20 }, (_, index) => ({ ...record, record_id: `uiv3-layout-${index}`, participant_name: `합성검사${index}` }));
           await page.evaluate(value => { (window as any).__layoutRows = value; }, records);
@@ -87,7 +95,30 @@ test("UIV3 title preserves original canvas, alpha center, fixed board and bounde
         }
         if (state === "scrolled") await page.locator(".ai-ranking .ranking-row").last().scrollIntoViewIfNeeded();
         if (state === "long-draft") await page.getByRole("textbox", { name: "검색어", exact: true }).fill("합성긴검색어".repeat(40));
+        if (state === "invalid-abc" || state === "invalid-010a") {
+          await page.getByRole("combobox", { name: "검색 구분" }).selectOption("contact");
+          await page.getByRole("textbox", { name: "검색어", exact: true }).fill(state === "invalid-abc" ? "abc" : "010a");
+          await page.getByRole("button", { name: "검색", exact: true }).click();
+          await page.getByRole("alert").filter({ hasText: "연락처는 숫자, 하이픈, 공백만 입력해 주세요." }).waitFor();
+        }
+        if (state === "transport-error") {
+          await page.getByRole("combobox", { name: "검색 구분" }).selectOption("name");
+          await page.evaluate(() => { (window as any).__layoutError = "ETIMEDOUT synthetic transport"; });
+          await page.getByRole("button", { name: "새로고침", exact: true }).click();
+          await page.getByRole("alert").filter({ hasText: "NAS 기록을 읽을 수 없습니다." }).waitFor();
+        }
+        if (state === "long-error") {
+          await page.evaluate(() => { (window as any).__layoutError = "합성 조회 오류 안내입니다. ".repeat(120) + "안내 끝"; });
+          await page.getByRole("button", { name: "새로고침", exact: true }).click();
+          await page.getByRole("alert").filter({ hasText: "안내 끝" }).waitFor();
+        }
+        if (state === "recovery") {
+          await page.evaluate(() => { (window as any).__layoutError = ""; });
+          await page.getByRole("button", { name: "새로고침", exact: true }).click();
+          await page.getByRole("alert").waitFor({ state: "detached" });
+        }
         const actual = await measure(page); observations.push({ viewport: reference, state, actual });
+        if (state === "populated") populatedBaseline = actual;
         await page.screenshot({ path: path.join(output, `${reference.width}-${state}.png`) });
         await t.test(`${reference.width} ${state} fixed geometry`, () => {
           assert.deepEqual(pageErrors, []);
@@ -100,6 +131,13 @@ test("UIV3 title preserves original canvas, alpha center, fixed board and bounde
           assert.equal(actual.appTransform, "none"); assert.equal(actual.appZoom, "1");
           assert.deepEqual(actual.documentSize, [reference.width, reference.height]);
           if (state === "scrolled") assert.ok(actual.scrollTop > 0);
+          if (populatedBaseline) {
+            assert.equal(actual.rows.length, 20, "errors and recovery retain the existing row snapshot");
+            for (const selector of [".leaderboard-board", ".ranking-table", ".ranking-head", ".ranking-body", ".leaderboard-session", ".session-count", ".leader-actions"]) {
+              for (const key of ["x", "y", "width", "height"]) assert.ok(Math.abs(actual.boxes[selector][key] - populatedBaseline.boxes[selector][key]) <= 2, `${state} ${selector}.${key} must not reflow`);
+            }
+          }
+          if (state === "recovery") assert.equal(actual.alert, null);
         });
         await t.test(`${reference.width} ${state} U10 original ratio and alpha center`, () => {
           assert.deepEqual(actual.natural, [2048, 682]); assert.deepEqual(actual.alphaBounds, [21, 66, 2027, 607]);
@@ -136,11 +174,33 @@ test("UIV3 title preserves original canvas, alpha center, fixed board and bounde
           assert.ok(Math.abs(admin.rect.left - refresh.rect.right - 8) <= .1);
           assert.ok(Math.abs(refresh.rect.top - Math.max(select.rect.bottom, input.rect.bottom, search.rect.bottom) - 8) <= .1);
         });
+        if (["invalid-abc", "invalid-010a", "transport-error", "long-error"].includes(state)) {
+          await t.test(`${reference.width} ${state} alert is readable in unused space without covering fixed content`, async () => {
+            assert.ok(actual.alert); assert.equal(actual.alert.role, "alert"); assert.equal(actual.alert.font, "16px");
+            assert.equal(actual.alert.color, "rgb(196, 0, 128)"); assert.equal(actual.alert.background, "rgb(255, 244, 247)"); assert.equal(actual.alert.padding, "10px 14px");
+            if (state.startsWith("invalid-")) assert.equal(actual.alert.text, "연락처는 숫자, 하이픈, 공백만 입력해 주세요.");
+            if (state === "transport-error") assert.equal(actual.alert.text, "NAS 기록을 읽을 수 없습니다. NAS 연결과 조회 전용 권한을 확인해 주세요.");
+            const alert = actual.alert.rect;
+            assert.ok(Math.abs(alert.left - reference.controlsLeft) <= 2, "error uses the fixed right-side region");
+            assert.ok(Math.abs(alert.right - (reference.inner[0] + reference.inner[2])) <= 2, "error stays within the inner table edge");
+            assert.ok(Math.abs(alert.top - reference.inner[1]) <= 2, "error starts in the unused inner-table top band");
+            assert.equal(actual.alert.onTop, true, "error is visible above the table background");
+            for (const other of [actual.imageBox, actual.boxes[".session-count"], actual.boxes[".ranking-head"], actual.boxes[".leader-actions"]]) {
+              assert.ok(alert.right + 12 <= other.left || alert.left >= other.right + 12 || alert.bottom + 12 <= other.top || alert.top >= other.bottom + 12, "error clears full logo/count/header/buttons by 12px");
+            }
+            if (state === "long-error") {
+              assert.equal(actual.alert.text, "합성 조회 오류 안내입니다. ".repeat(120) + "안내 끝");
+              assert.ok(actual.alert.scrollHeight > actual.alert.clientHeight, "full long error remains in a bounded scroll area");
+              const alertElement = page.getByRole("alert"); await alertElement.focus(); await page.keyboard.press("End");
+              await page.waitForFunction(() => document.querySelector(".leaderboard-alert")!.scrollTop > 0);
+            }
+          });
+        }
       }
       await page.close();
     }
   } finally {
-    fs.writeFileSync(path.join(output, "geometry.json"), JSON.stringify({ method: "Actual source in headless Edge; synthetic IPC only; not packaged/native acceptance", observations }, null, 2));
+    fs.writeFileSync(path.join(output, "geometry.json"), JSON.stringify({ method: "Actual source in headless Edge; synthetic IPC only; not packaged/native acceptance", sourceHashes, observations }, null, 2));
     await browser?.close(); await server.close(); console.log(`UIV3 layout evidence: ${output}`);
   }
 });

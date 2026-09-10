@@ -96,6 +96,19 @@ html[data-event-profile="geumcheon-2026"] .r7-geumcheon-leaderboard .leaderboard
   padding: calc(2.967359dvh - 3px) calc(1.5625vw - 3px);
 }
 
+/* Official search/read errors use the spare upper-right table band. Taking the
+   alert out of flex flow keeps the session, header and row viewport unchanged. */
+.r7-geumcheon-leaderboard .leaderboard-board:not(.practice-board) > .leaderboard-alert {
+  position: absolute;
+  z-index: 2;
+  top: calc(2.967359dvh - 3px);
+  right: calc(1.5625vw - 3px);
+  width: calc(clamp(416.71875px, 25.87483724vw, 496.796875px) - 1.5625vw);
+  max-height: calc(13.501484dvh - 14px);
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
 .r7-geumcheon-leaderboard .leaderboard-session {
   position: static;
   /* Keep the column header at client y=217, independent of record count. */
