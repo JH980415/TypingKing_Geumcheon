@@ -4,10 +4,10 @@ extraMetadata:
   author:
     name: 제8회 금천과학축제
   typingKingEventProfile: geumcheon-2026
-  typingKingReleaseCandidate: R7-ppt-official-only-20260909
+  typingKingReleaseCandidate: UI-v3-20260910
   typingKingVariant: ai-leaderboard
 directories:
-  output: release-build/geumcheon/ai-leaderboard
+  output: release-build/uiv3/geumcheon/ai-leaderboard
 files:
   - dist-renderer/**
   - dist-electron/**
@@ -31,6 +31,9 @@ extraResources:
     filter:
       - event.config.json
       - stage_texts.csv
+      - assets/title_logo_062843.png
+      - assets/geumnarae_main_052455_alpha.png
+      - assets/geumnarae_stage1_defeat_054108_alpha.png
       - assets/event-title.png
       - assets/key-visual.png
       - assets/bg_leaderboard_03_typing_hall_of_fame.png

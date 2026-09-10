@@ -18,6 +18,12 @@ export const officialArtifacts = [
   ['geumcheon/ai', 'G-Science AI 타자왕.exe'],
   ['geumcheon/ai-leaderboard', 'G-Science AI 타자왕 리더보드.exe'],
 ] as const;
+type ReleaseFlavor = 'R7' | 'UIV3';
+export function officialExecutableEntries(projectRoot: string, flavor: ReleaseFlavor) {
+  assert.ok(flavor === 'R7' || flavor === 'UIV3', 'Unsupported release flavor');
+  return officialArtifacts.map(([folder, name]) => ({ name,
+    source: path.join(projectRoot, 'release-build', flavor === 'UIV3' ? 'uiv3' : '', folder, name) }));
+}
 function assertSourceAncestors(source: string) {
   for (let current = path.resolve(source); ; current = path.dirname(current)) {
     if (fs.lstatSync(current).isSymbolicLink()) throw new Error(`Unsafe source ancestor: ${current}`);
@@ -262,18 +268,29 @@ export function serverReleaseManifest(projectRoot: string, sourceCommit: string)
   };
 }
 
-export async function packageRelease(relative = 'delivery') {
-  const output = safeNewOutput(path.join(root, 'Codex/Outputs/R7'), relative);
+export async function packageRelease(relative = 'delivery', flavor: ReleaseFlavor = 'R7') {
+  assert.ok(flavor === 'R7' || flavor === 'UIV3', 'Unsupported release flavor');
+  const prefix = flavor === 'UIV3' ? 'UIV3' : 'R7';
+  const releaseCandidate = flavor === 'UIV3' ? 'UI-v3-20260910' : 'R7-ppt-official-only-20260909';
+  const output = safeNewOutput(path.join(root, flavor === 'UIV3' ? 'Codex/Outputs/UIV3_20260910' : 'Codex/Outputs/R7'), relative);
   const git = (args: string[]) => {
     const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true });
     assert.equal(result.status, 0, result.stderr);
     return result.stdout.trim();
   };
   const sourceCommit = git(['rev-parse', 'HEAD']);
-  assert.equal(git(['status', '--porcelain', '--untracked-files=normal', '--', 'apps', 'electron', 'shared', 'events', 'services/nas-record-api', 'scripts/r7-package-release.ts', 'deployment/nas-production', 'package.json', 'package-lock.json']), '', 'Freeze and commit the client/server source before creating delivery packages');
+  assert.equal(git(['status', '--porcelain', '--untracked-files=normal', '--', 'apps', 'electron', 'shared', 'events', 'services/nas-record-api', 'scripts/r7-package-release.ts', 'deployment/nas-production', 'package.json', 'package-lock.json', 'electron-builder.geumcheon-*.yml']), '', 'Freeze and commit the client/server source before creating delivery packages');
   const serverEntries = [...serverRuntimeEntries(root), ...serverTemplateEntries(root)];
   const serverManifest = serverReleaseManifest(root, sourceCommit);
-  const exeEntries = officialArtifacts.map(([folder,name]) => ({name, source:path.join(root,'release-build',folder,name)}));
+  const exeEntries = officialExecutableEntries(root, flavor);
+  const yaml = createRequire(import.meta.url)('js-yaml');
+  const builders = ['electron-builder.geumcheon-ai-review.yml', 'electron-builder.geumcheon-ai-leaderboard-review.yml',
+    'electron-builder.geumcheon-ai.yml', 'electron-builder.geumcheon-ai-leaderboard.yml'];
+  builders.forEach((name, index) => {
+    const config = yaml.load(fs.readFileSync(path.join(root, name), 'utf8'));
+    assert.equal(config.extraMetadata.typingKingReleaseCandidate, releaseCandidate, 'Builder candidate differs from package flavor');
+    assert.equal(path.resolve(root, config.directories.output), path.dirname(exeEntries[index].source), 'Builder output differs from package input');
+  });
   for (const e of exeEntries) assert.ok(fs.statSync(e.source).size > 0);
   const resources = publicResources(root).map(name => ({name, source:path.join(root,name)}));
   const config = JSON.parse(fs.readFileSync(path.join(root,'events/geumcheon-2026/event.config.json'),'utf8'));
@@ -295,10 +312,10 @@ export async function packageRelease(relative = 'delivery') {
   fs.writeFileSync(path.join(generated,'VALIDATION.json'), JSON.stringify(profiles.map(p => p.validation), null, 2)+'\n');
   fs.writeFileSync(path.join(generated,'README.md'), '# R7 공식 전용 장치 프로필 5개\n\n기존 운영 설정을 백업한 뒤 해당 장치 파일을 적용하세요. 이번 패키지는 자동 적용하지 않습니다. endpoint, 공식 sessionId, dayNo, roundNo 및 별도 인증정보가 미확정입니다. dayNo/roundNo는 JSON 숫자로 입력한 뒤 실제 스키마로 재검사하세요. 토큰·비밀번호·개인키는 별도 안전한 기존 인증 절차로 설정하며 ZIP에 넣지 않습니다.\n\nNAS 실행본은 EXE와 동봉 부속파일의 폴더 구조 전체를 유지합니다. 검토 EXE는 단독 실행용입니다. 실제 NAS/물리 5대 적용·저장 검증은 NOT_RUN, PRODUCTION_RELEASE=HOLD입니다. Container Manager Record API 배포는 후속 미확정 단계이며 현재 설치 완료가 아닙니다.\n');
   const groups = [
-    {name:'R7_OFFICIAL_REVIEW_EXE_2종.zip', entries:exeEntries.slice(0,2)},
-    {name:'R7_OFFICIAL_NAS_CLIENT_RELEASE.zip', entries:[...exeEntries.slice(2),...resources,{name:marker,source:path.join(generated,marker)}]},
-    {name:'R7_OFFICIAL_DEVICE_PROFILES.zip', entries:[...profiles.map(({name,source}) => ({name,source})), ...['README.md','VALIDATION.json'].map(name => ({name,source:path.join(generated,name)}))]},
-    {name:'R7_OFFICIAL_NAS_SERVER_RELEASE.zip', entries:[...serverEntries,{name:'SERVER_RELEASE_MANIFEST.json',source:serverManifestPath}]},
+    {name:`${prefix}_OFFICIAL_REVIEW_EXE_2종.zip`, entries:exeEntries.slice(0,2)},
+    {name:`${prefix}_OFFICIAL_NAS_CLIENT_RELEASE.zip`, entries:[...exeEntries.slice(2),...resources,{name:marker,source:path.join(generated,marker)}]},
+    {name:`${prefix}_OFFICIAL_DEVICE_PROFILES.zip`, entries:[...profiles.map(({name,source}) => ({name,source})), ...['README.md','VALIDATION.json'].map(name => ({name,source:path.join(generated,name)}))]},
+    {name:`${prefix}_OFFICIAL_NAS_SERVER_RELEASE.zip`, entries:[...serverEntries,{name:'SERVER_RELEASE_MANIFEST.json',source:serverManifestPath}]},
   ];
   const manifest = [];
   for (const group of groups) {
@@ -306,7 +323,7 @@ export async function packageRelease(relative = 'delivery') {
     const files = await writeZip(target,group.entries);
     manifest.push({name:group.name,bytes:fs.statSync(target).size,sha256:digest(target),files});
   }
-  fs.writeFileSync(path.join(output,'R7_PACKAGE_MANIFEST.json'), JSON.stringify({releaseCandidate:'R7-ppt-official-only-20260909', sourceCommit, productionRelease:'HOLD', packages:manifest},null,2)+'\n');
+  fs.writeFileSync(path.join(output,`${prefix}_PACKAGE_MANIFEST.json`), JSON.stringify({releaseCandidate, sourceCommit, productionRelease:'HOLD', packages:manifest},null,2)+'\n');
   return output;
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) packageRelease(process.argv[2]).then(console.log).catch(error => {console.error(error);process.exitCode=1;});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) packageRelease(process.argv[2], (process.argv[3] ?? 'R7') as ReleaseFlavor).then(console.log).catch(error => {console.error(error);process.exitCode=1;});
