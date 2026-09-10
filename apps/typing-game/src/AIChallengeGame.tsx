@@ -1020,7 +1020,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
       <section className={eventProfile.profileId === "geumcheon-2026" ? "challenge-result-panel r7-final-victory" : "challenge-result-panel"}>
         {eventProfile.profileId !== "geumcheon-2026" && <AiTitle assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} className="challenge-result-title" />}
         {eventProfile.profileId !== "geumcheon-2026" && <p className="eyebrow">AI 챌린지 성공</p>}
-        <h1>{eventProfile.profileId === "geumcheon-2026" ? <>참여자 승리.<br />금나래보다 빠르고 정확하게 완주했습니다.</> : "참여자 승리. 금나래보다 빠르고 정확하게 완주했습니다."}</h1>
+        <h1>{eventProfile.profileId === "geumcheon-2026" ? <>도전자 승리.<br />AI 금나래보다 빠르고 정확하게 완성했습니다.</> : "참여자 승리. 금나래보다 빠르고 정확하게 완주했습니다."}</h1>
         {debugModeType === "ai_challenge_debug" && (
           <p className="notice-text debug-result-note">디버그 모드 기록은 리더보드에 반영되지 않습니다.</p>
         )}
@@ -1069,7 +1069,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
       </div>
       <div className="challenge-layout">
         <DuelPanel
-          title="참여자"
+          title={eventProfile.profileId === "geumcheon-2026" ? "도전자" : "참여자"}
           target={target}
           input={input}
           cpm={userCpm}
@@ -1142,6 +1142,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
       {pendingControlAction && (
       <ChallengeControlConfirmModal
         action={pendingControlAction}
+        isGeumcheon={eventProfile.profileId === "geumcheon-2026"}
         saving={controlSaving}
         error={controlSaveError}
         onCancel={cancelChallengeControl}
@@ -1474,9 +1475,9 @@ export function BattlePopup({
           </div>
         </div>
         <div className="battle-stats">
-          <span>{eventProfile.profileId === "geumcheon-2026" ? "참여자" : "사용자"} 기록 <strong>{formatRecordDisplay(battle.userTimeMs, battleUserCharCount(battle))}</strong></span>
+          <span>{eventProfile.profileId === "geumcheon-2026" ? "도전자" : "사용자"} 기록 <strong>{formatRecordDisplay(battle.userTimeMs, battleUserCharCount(battle))}</strong></span>
           <span>금나래 기록 <strong>{formatRecordDisplay(battle.aiElapsedMs, battleAiCharCount(battle))}</strong></span>
-          <span>{eventProfile.profileId === "geumcheon-2026" ? "참여자" : "사용자"}{userWin ? " 타수" : " 현재 타수"} <strong>{formatDisplayNumber(battle.userCpm, 2)}타/분</strong></span>
+          <span>{eventProfile.profileId === "geumcheon-2026" ? "도전자" : "사용자"}{userWin ? " 타수" : " 현재 타수"} <strong>{formatDisplayNumber(battle.userCpm, 2)}타/분</strong></span>
           <span>금나래 평균 타수 <strong>{formatDisplayNumber(battle.aiCpm, 2)}타/분</strong></span>
         </div>
         {isDebug && <p className="notice-text debug-result-note">디버그 모드 기록은 리더보드에 반영되지 않습니다.</p>}
@@ -1499,12 +1500,14 @@ export function BattlePopup({
 
 function ChallengeControlConfirmModal({
   action,
+  isGeumcheon,
   saving,
   error,
   onCancel,
   onConfirm
 }: {
   action: ChallengeControlAction;
+  isGeumcheon: boolean;
   saving: boolean;
   error: string;
   onCancel: () => void;
@@ -1514,7 +1517,7 @@ function ChallengeControlConfirmModal({
     <div className="modal-backdrop game-confirm-backdrop">
       <section className="modal game-confirm-modal">
         <h2>{action === "home" ? "메인으로 이동" : "다시하기"}</h2>
-        <p>{action === "home" ? MAIN_CONFIRM_MESSAGE : RETRY_CONFIRM_MESSAGE}</p>
+        <p>{isGeumcheon ? (action === "home" ? MAIN_CONFIRM_MESSAGE : RETRY_CONFIRM_MESSAGE).replace("참여자", "도전자") : action === "home" ? MAIN_CONFIRM_MESSAGE : RETRY_CONFIRM_MESSAGE}</p>
         {error && <p className="error-text">{error}</p>}
         <div className="button-row">
           <button className="primary-button" onClick={onConfirm} disabled={saving}>{saving ? "기록 저장 중..." : "확인"}</button>
@@ -1549,7 +1552,7 @@ export function ChallengeSummary({
   return (
     <div className={isGeumcheon ? "challenge-summary r7-victory-summary" : "challenge-summary"}>
       <div className="summary-identity">
-        <span>참여자 <strong>{participant.name}</strong></span>
+        <span>{isGeumcheon ? "도전자" : "참여자"} <strong>{participant.name}</strong></span>
         <span>휴대폰번호 <strong>{phone.replace(/-(\d{3,4})-/, "-****-")}</strong></span>
         <span>생년월일 <strong>{birth.replace(/-\d{2}-\d{2}$/, "-**-**")}</strong></span>
       </div>
@@ -1557,7 +1560,7 @@ export function ChallengeSummary({
         <div key={battle.stage} className={isGeumcheon ? "r7-stage-result-card" : undefined}>
           <StageBadge assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} assetPath={eventProfile.assets.stageBadges[battle.stage - 1]} stage={battle.stage} state="complete" compact />
           {isGeumcheon ? <>
-            <strong>참여자 : {(battle.userTimeMs / 1000).toFixed(2)}초｜{battleUserCharCount(battle)}글자｜{formatDisplayNumber(battle.userCpm, 2)}타</strong>
+            <strong>도전자 : {(battle.userTimeMs / 1000).toFixed(2)}초｜{battleUserCharCount(battle)}글자｜{formatDisplayNumber(battle.userCpm, 2)}타</strong>
             <strong>금나래 : {(battle.aiElapsedMs / 1000).toFixed(2)}초｜{battleAiCharCount(battle)}글자｜{formatDisplayNumber(battle.aiCpm, 2)}타</strong>
           </> : <strong>
             사용자 {formatRecordDisplay(battle.userTimeMs, battleUserCharCount(battle))} / 금나래 {formatRecordDisplay(battle.aiElapsedMs, battleAiCharCount(battle))} / 금나래 평균 {formatDisplayNumber(battle.aiCpm, 2)}타

@@ -47,7 +47,7 @@ for (const stage of [1, 2, 3]) for (const result of ["USER_WIN", "AI_WIN"] as co
     const html = renderToStaticMarkup(createElement(BattlePopup, { battle: { ...battle, stage, result }, isFinalWin: stage === 3 && result === "USER_WIN", onNext() {}, onRetry() {}, onHome() {}, saveError: "", assetBaseUrl, eventProfile, isDebug: false }));
     assert.doesNotMatch(html, /<p class="eyebrow">Stage [123]<\/p>/);
     assert.match(html, new RegExp(`alt="Stage ${stage}"`));
-    assert.match(html, /참여자 기록/);
+    assert.match(html, /도전자 기록/);
     assert.match(html, /class="challenge-modal-message"/);
     assert.doesNotMatch(html, /사용자/);
     if (result === "USER_WIN") assert.match(html, /승리했습니다\.<br\/>금나래보다 빠르게 입력했습니다\./);
@@ -57,9 +57,9 @@ for (const stage of [1, 2, 3]) for (const result of ["USER_WIN", "AI_WIN"] as co
 
 test("victory cards display each stage's actual participant and AI metrics and retain masked identity", () => {
   const html = renderToStaticMarkup(createElement(ChallengeSummary, { battles: [battle, { ...battle, stage: 2, userTimeMs: 12000, userCpm: 50, aiElapsedMs: 12000, aiCpm: 35, aiTypedChars: 7 }], row: null, participant, assetBaseUrl, eventProfile }));
-  assert.match(html, /참여자 : 8\.40초｜10글자｜71\.43타/);
+  assert.match(html, /도전자 : 8\.40초｜10글자｜71\.43타/);
   assert.match(html, /금나래 : 8\.40초｜6글자｜42\.86타/);
-  assert.match(html, /참여자 : 12\.00초｜10글자｜50타/);
+  assert.match(html, /도전자 : 12\.00초｜10글자｜50타/);
   assert.match(html, /금나래 : 12\.00초｜7글자｜35타/);
   assert.match(html, /010-\*\*\*\*-5678/);
   assert.doesNotMatch(html, /총 기록|최종 타수|최종 시간 차이/);

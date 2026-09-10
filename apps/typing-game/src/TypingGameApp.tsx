@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type {
   ApiResult,
@@ -184,6 +184,23 @@ export function TypingGameApp({ bootstrap }: Props) {
   const gameControlPausedAtRef = useRef(0);
   const gameControlWasRunningRef = useRef(false);
   const gameControlSavingRef = useRef(false);
+  const entryPanelRef = useRef<HTMLFormElement | null>(null);
+
+  useLayoutEffect(() => {
+    if (!isGeumcheon || screen !== "start") return;
+    const panel = entryPanelRef.current;
+    const form = panel?.querySelector<HTMLElement>(".entry-form-group");
+    if (!panel || !form) return;
+    const centerEventCopy = () => {
+      const innerTop = panel.getBoundingClientRect().top + parseFloat(getComputedStyle(panel).borderTopWidth);
+      panel.style.setProperty("--entry-copy-center-y", `${(form.getBoundingClientRect().top - innerTop) / 2}px`);
+    };
+    const observer = new ResizeObserver(centerEventCopy);
+    observer.observe(panel);
+    observer.observe(form);
+    centerEventCopy();
+    return () => observer.disconnect();
+  }, [isGeumcheon, screen, startFormKey]);
 
   useEffect(() => {
     // 게임 중 회차가 원격으로 바뀌어도 현재 참가자의 기록은 시작했던 회차에 저장한다.
@@ -911,8 +928,9 @@ export function TypingGameApp({ bootstrap }: Props) {
             </ol>
           </section>
         </div>
-        <form className="entry-panel" onSubmit={(event) => event.preventDefault()}>
+        <form ref={entryPanelRef} className="entry-panel" onSubmit={(event) => event.preventDefault()}>
           {isGeumcheon ? (
+            <div className="entry-event-copy-slot">
             <div className="entry-event-copy">
               <strong>{bootstrap.eventProfile.eventNameEn}</strong>
               <span>{bootstrap.eventProfile.slogan}</span>
@@ -921,6 +939,7 @@ export function TypingGameApp({ bootstrap }: Props) {
                   지금은 자유 연습회차입니다. <small>※ 공식 순위 및 사은품 집계 제외</small>
                 </p>
               )}
+            </div>
             </div>
           ) : (
             <div className="field">
@@ -975,7 +994,7 @@ export function TypingGameApp({ bootstrap }: Props) {
           <div className="entry-form-group">
           <label className="field">
             <span>이름</span>
-            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="참여자 이름" />
+            <input value={name} onChange={(event) => setName(event.target.value)} placeholder={isGeumcheon ? "도전자 이름" : "참여자 이름"} />
           </label>
           <div className="field">
             <span>휴대폰번호</span>
@@ -1060,7 +1079,7 @@ export function TypingGameApp({ bootstrap }: Props) {
               <h2>개인정보 수집·이용 동의</h2>
               <button className="icon-button" onClick={() => setShowPrivacy(false)} aria-label="닫기">×</button>
             </header>
-            <pre className="privacy-text">{config.privacyConsentText}</pre>
+            <pre className="privacy-text">{isGeumcheon ? config.privacyConsentText.replace(/(이용 목적[^\r\n]*), 경품 지급 및 본인 확인/, "$1") : config.privacyConsentText}</pre>
             <button className="primary-button" onClick={() => setShowPrivacy(false)}>확인</button>
           </section>
         </div>

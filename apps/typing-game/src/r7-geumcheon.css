@@ -5,13 +5,43 @@ html[data-event-profile="geumcheon-2026"] .game-app .hero-panel {
   padding-top: calc(clamp(28px, 5.2vh, 76px) - 24px);
 }
 
+/* Keep the original grid allocation so the enlarged copy cannot move the form. */
+html[data-event-profile="geumcheon-2026"] .game-app .entry-event-copy-slot {
+  height: calc(clamp(18px, 1.45vw, 25px) * 2.5 + 4px);
+}
+
+html[data-event-profile="geumcheon-2026"] .game-app .entry-panel {
+  position: relative;
+}
+
 html[data-event-profile="geumcheon-2026"] .game-app .entry-event-copy {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: var(--entry-copy-center-y);
+  transform: translateY(-50%);
   flex-direction: column;
   flex-wrap: nowrap;
   align-items: center;
   gap: 4px;
   text-align: center;
-  font-size: clamp(18px, 1.45vw, 25px);
+  font-size: calc(clamp(18px, 1.45vw, 25px) * 1.3);
+  letter-spacing: 0.02em;
+}
+
+/* Preserve the old title slot even when the new full canvas has a wider ratio. */
+html[data-event-profile="geumcheon-2026"] .game-app .geumcheon-main-title-image {
+  height: 280px;
+}
+
+html[data-event-profile="geumcheon-2026"] .game-app .challenge-guide {
+  transform: translateY(4px);
+}
+
+@media (max-width: 1400px), (max-height: 800px) {
+  html[data-event-profile="geumcheon-2026"] .game-app .geumcheon-main-title-image {
+    height: 180px;
+  }
 }
 
 html[data-event-profile="geumcheon-2026"] .game-app .entry-event-copy > strong,
