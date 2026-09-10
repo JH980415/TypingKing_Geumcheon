@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {assessControlPresentation, assessLogoGeometry, compareStableBoxes, observedRuntimeFailures, runtimeVerdicts} from '../utils/uiv3RuntimeAssertions';
+import {assessControlPresentation, assessLogoGeometry, assessProcessAbsence, compareStableBoxes, observedRuntimeFailures, ReadOnlyRecordOracle, runtimeVerdicts, waitForCaptureLayout} from '../utils/uiv3RuntimeAssertions';
 
 // These literal fixtures are independent of the product's placement helpers.
 const board={x:29,y:113.25,width:1224,height:592.89};
@@ -63,4 +63,54 @@ for(const [name,details]of Object.entries({
 }
 test('successful cleanup keeps unrun limitations partial without inventing an automated failure',()=>{
  assert.deepEqual(runtimeVerdicts({checks:[],limitations:['Native F11 NOT_RUN'],apps:[{cleanup:{postExit:{allObservedAbsent:true}}}]}),{overall:'PARTIAL',automatedSubset:'PASS'});
+});
+test('waits for foreground fonts and deferred ResizeObserver geometry before capture measurement',async()=>{
+ const events:string[]=[];let frame=0;
+ const result=await waitForCaptureLayout({
+  foreground:async()=>{events.push('foreground');},
+  ready:async()=>{events.push('fonts-ready');},
+  frame:async()=>{frame++;events.push('frame');},
+  sample:async()=>{events.push('sample');return {centerOffset:frame<2?80.59375:113.421875};}
+ });
+ assert.deepEqual(result.layout,{centerOffset:113.421875});
+ assert.deepEqual(events.slice(0,4),['foreground','fonts-ready','frame','frame']);
+ assert.ok(result.frameCount>=4&&result.stableSamples>=3);
+});
+test('stable-layout wait accepts stable wrong coordinates so geometry assertions can fail them independently',async()=>{
+ const result=await waitForCaptureLayout({foreground:async()=>{},ready:async()=>{},frame:async()=>{},sample:async()=>({centerOffset:-27})});
+ assert.deepEqual(result.layout,{centerOffset:-27});
+});
+test('unstable layout stops at its frame bound instead of producing a premature capture',async()=>{
+ let frame=0;
+ await assert.rejects(waitForCaptureLayout({foreground:async()=>{},ready:async()=>{},frame:async()=>{frame++;},sample:async()=>({x:frame})},6),/CAPTURE_LAYOUT_DID_NOT_SETTLE/);
+});
+test('a failed or incomplete process probe cannot claim absence from an empty list',()=>{
+ assert.equal(assessProcessAbsence([69520],[],'probe failed').allObservedAbsent,false);
+ assert.equal(assessProcessAbsence([69520],[]).allObservedAbsent,false);
+ assert.equal(assessProcessAbsence([69520],[{pid:69520,exists:null,error:'Access denied'}]).allObservedAbsent,false);
+});
+test('explicit per-PID absence proves cleanup while an alive extracted child fails it',()=>{
+ assert.equal(assessProcessAbsence([69520],[{pid:69520,exists:false}]).allObservedAbsent,true);
+ assert.equal(assessProcessAbsence([69520,68764],[{pid:69520,exists:false},{pid:68764,exists:true}]).allObservedAbsent,false);
+});
+test('read-only label oracle reuses stored-row evidence until a write invalidates it',async()=>{
+ const oracle=new ReadOnlyRecordOracle<string[]>();let reads=0;let current=['saved-before'];
+ const fetch=async()=>{reads++;return [...current];};
+ assert.deepEqual(await oracle.read(fetch),['saved-before']);
+ assert.deepEqual(await oracle.read(fetch),['saved-before']);assert.equal(reads,1);
+ current=['saved-after'];oracle.invalidate();
+ assert.deepEqual(await oracle.read(fetch),['saved-after']);assert.equal(reads,2);
+});
+test('invalidation during a pending oracle read prevents the stale reply from becoming cached evidence',async()=>{
+ const oracle=new ReadOnlyRecordOracle<string[]>();let release:(rows:string[])=>void=()=>{};
+ const pending=oracle.read(()=>new Promise<string[]>(resolve=>{release=resolve;}));
+ oracle.invalidate();release(['old']);await pending;
+ assert.deepEqual(await oracle.read(async()=>['fresh']),['fresh']);
+});
+test('label oracle does not retain failed reads or let a caller change its stored evidence',async()=>{
+ const oracle=new ReadOnlyRecordOracle<string[]>();
+ await assert.rejects(oracle.read(async()=>{throw Error('429');}),/429/);
+ const first=await oracle.read(async()=>['saved']);first.push('mutated');
+ const second=await oracle.read(async()=>['wrong']);assert.deepEqual(second,['saved']);second.push('mutated-again');
+ assert.deepEqual(await oracle.read(async()=>['wrong']),['saved']);
 });

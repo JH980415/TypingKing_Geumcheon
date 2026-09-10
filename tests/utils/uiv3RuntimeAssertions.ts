@@ -1,4 +1,35 @@
+import {isDeepStrictEqual} from 'node:util';
 type Rect=Record<string,any>;
+export class ReadOnlyRecordOracle<T>{
+ private generation=0;
+ private cached:{generation:number;value:T}|undefined;
+ async read(fetchFresh:()=>Promise<T>):Promise<T>{
+  if(this.cached?.generation===this.generation)return structuredClone(this.cached.value);
+  const generation=this.generation,value=await fetchFresh();
+  if(generation===this.generation)this.cached={generation,value:structuredClone(value)};
+  return value;
+ }
+ invalidate(){this.generation++;this.cached=undefined;}
+}
+export function assessProcessAbsence(expectedIds:number[],observations:{pid:number;exists:boolean|null;error?:string}[],probeError?:string){
+ const remainingIds=observations.filter(p=>p.exists===true).map(p=>p.pid);
+ const complete=expectedIds.length>0&&expectedIds.every(id=>observations.filter(p=>p.pid===id).length===1)&&observations.every(p=>expectedIds.includes(p.pid));
+ const errors=[...(probeError?[probeError]:[]),...observations.flatMap(p=>p.error?[p.error]:[])];
+ return {checkedIds:expectedIds,remainingIds,allObservedAbsent:complete&&errors.length===0&&observations.every(p=>p.exists===false),error:errors.length?errors.join('; '):complete?undefined:'INCOMPLETE_PROCESS_PROBE'};
+}
+export type CaptureLayoutDriver={foreground:()=>Promise<void>;ready:()=>Promise<void>;frame:()=>Promise<void>;sample:()=>Promise<unknown>};
+export async function waitForCaptureLayout(driver:CaptureLayoutDriver,maxFrames=120){
+ await driver.foreground();
+ await driver.ready();
+ await driver.frame();await driver.frame();
+ let frameCount=2,stableSamples=1,layout=await driver.sample();
+ while(frameCount<maxFrames){
+  await driver.frame();frameCount++;
+  const next=await driver.sample();stableSamples=isDeepStrictEqual(layout,next)?stableSamples+1:1;layout=next;
+  if(stableSamples>=3)return {frameCount,stableSamples,layout};
+ }
+ throw Error('CAPTURE_LAYOUT_DID_NOT_SETTLE:'+frameCount);
+}
 export function assessControlPresentation(controls:Rect[],width:number):string[]{
  // Independent measured baselines: uiv3LeaderboardLayout.browser.ts control observations, 720 and 1080.
  const baseline=width===1280?{fieldHeight:44,buttonHeight:46,fieldFont:'16px',buttonFont:'14px'}:width===1920?{fieldHeight:58,buttonHeight:56,fieldFont:'16px',buttonFont:'16px'}:null;
