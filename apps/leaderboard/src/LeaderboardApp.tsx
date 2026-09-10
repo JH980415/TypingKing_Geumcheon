@@ -601,7 +601,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
           )}
 
           {showAiLeaderboard && (
-            <div className="ranking-table compact-ranking ai-ranking">
+            <div className="ranking-table compact-ranking ai-ranking" aria-busy={isGeumcheonOfficialBoard && searchLoading}>
               <SessionSummary
                 config={config}
                 participantCount={aiPlayCount}

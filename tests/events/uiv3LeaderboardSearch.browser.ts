@@ -77,6 +77,33 @@ async function waitIds(page: Page, want: string[]) {
 }
 async function tick(page: Page) { await page.evaluate(() => (window as any).__ticks.forEach((callback: () => void) => callback())); }
 
+test("busy indicator spans pending explicit and manual refresh until success or error settles", { timeout: 30_000 }, async (t) => {
+  const { page, state } = await mount(t);
+  const table = page.locator(".ranking-table.ai-ranking");
+  await page.getByRole("textbox", { name: "검색어" }).fill("찾는");
+  for (const phase of ["explicit", "manual", "error"] as const) {
+    state.release = undefined;
+    state.delayNext = true;
+    state.fail = phase === "error";
+    await page.getByRole("button", { name: phase === "explicit" ? "검색" : "새로고침", exact: true }).click();
+    const deadline = Date.now() + 3000;
+    while (!state.release && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.ok(state.release, phase + " request reached the delayed IPC boundary");
+    try {
+      assert.equal(await table.getAttribute("aria-busy"), "true", phase + " must remain busy while its response is pending");
+    } finally {
+      state.release();
+    }
+    await page.waitForFunction(() => document.querySelector(".ranking-table.ai-ranking")?.getAttribute("aria-busy") === "false");
+    if (phase === "error") {
+      assert.ok(await page.locator(".leaderboard-alert").isVisible());
+    } else {
+      assert.deepEqual(await ids(page), ["target-best"]);
+    }
+  }
+});
+
+
 test("other-event leaderboard retains existing labels and live-search controls", () => {
   const bootstrap = createBootstrapData({ config: DEFAULT_CONFIG, assetBaseUrl: "https://assets.invalid", notices: [],
     mode: "leaderboard", variant: "ai-leaderboard", eventProfile: loadEventProfile(path.resolve("events/skillup-2026/event.config.json")) });
