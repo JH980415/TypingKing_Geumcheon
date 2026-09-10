@@ -1,6 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { AppConfig, BootstrapData, CsvBackupStatus, LeaderboardSyncStatus, RecordRow } from "../../../shared/types";
+import type { AppConfig, BootstrapData, CsvBackupStatus, LeaderboardSyncStatus, RecordListSearch, RecordRow } from "../../../shared/types";
 import {
   bestRecordOnly,
   compareCanonicalAiDisplayOrder,
@@ -68,7 +68,6 @@ type AiLeaderboardCandidate = {
   attempt?: NonNullable<RecordRow["canonicalAttempt"]>;
 };
 
-let leaderboardRefreshInFlight = false;
 const SLOW_STATUS_REFRESH_MS = 8000;
 
 type LeaderboardOperation =
@@ -131,10 +130,19 @@ export function LeaderboardApp({ bootstrap }: Props) {
   const eventAsset = (configuredPath: string) => {
     return resolveEventAssetUrl(assetBaseUrl, bootstrap.eventProfile, configuredPath);
   };
-  const [records, setRecords] = useState<RecordRow[]>([]);
+  const [snapshot, setSnapshot] = useState<{ rows: RecordRow[]; matchingRecordIds: string[] | null }>({ rows: [], matchingRecordIds: null });
+  const records = snapshot.rows;
   const [message, setMessage] = useState("");
   const [refreshError, setRefreshError] = useState("");
   const [search, setSearch] = useState("");
+  const [searchField, setSearchField] = useState<RecordListSearch["field"]>("name");
+  const [appliedSearch, setAppliedSearch] = useState<RecordListSearch | null>(null);
+  const appliedSearchRef = useRef<RecordListSearch | null>(null);
+  const [searchInputError, setSearchInputError] = useState("");
+  const [searchLoading, setSearchLoading] = useState(false);
+  const composingRef = useRef(false);
+  const requestGenerationRef = useRef(0);
+  const requestInFlightRef = useRef<number | null>(null);
   const [adminOpen, setAdminOpen] = useState(false);
   const [authorized, setAuthorized] = useState(false);
   const [password, setPassword] = useState("");
@@ -170,7 +178,11 @@ export function LeaderboardApp({ bootstrap }: Props) {
       () => void refresh(true),
       refreshSeconds * 1000
     );
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(interval);
+      requestGenerationRef.current += 1;
+      requestInFlightRef.current = null;
+    };
   }, [config.leaderboardRefreshSeconds]);
 
   const normalRecords = useMemo(() => {
@@ -181,6 +193,10 @@ export function LeaderboardApp({ bootstrap }: Props) {
         record.game_mode !== "ai_challenge"
     ).map(normalizeFinalCpmForLeaderboard);
     const ranked = viewMode === "best" ? bestRecordOnly(source) : sortRecords(source);
+    if (isGeumcheonOfficialBoard) {
+      const matches = snapshot.matchingRecordIds === null ? null : new Set(snapshot.matchingRecordIds);
+      return matches === null ? ranked : ranked.filter((record) => matches.has(record.record_id));
+    }
     const needle = search.trim().toLowerCase();
     if (!needle) return ranked;
     return ranked.filter((record) =>
@@ -194,7 +210,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
         .toLowerCase()
         .includes(needle)
     );
-  }, [authorized, includeDebug, includeTest, records, search, viewMode]);
+  }, [authorized, includeDebug, includeTest, isGeumcheonOfficialBoard, records, snapshot.matchingRecordIds, search, viewMode]);
 
   const aiRecords = useMemo(() => {
     const source = records.filter(
@@ -211,6 +227,10 @@ export function LeaderboardApp({ bootstrap }: Props) {
       isGeumcheonPracticeBoard,
       viewMode
     });
+    if (isGeumcheonOfficialBoard) {
+      const matches = snapshot.matchingRecordIds === null ? null : new Set(snapshot.matchingRecordIds);
+      return matches === null ? visibleRanked : visibleRanked.filter(({ record }) => matches.has(record.record_id));
+    }
     const needle = search.trim().toLowerCase();
     if (!needle) return visibleRanked;
     return visibleRanked.filter(({ record, display }) =>
@@ -230,7 +250,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
         .toLowerCase()
         .includes(needle)
     );
-  }, [authorized, includeDebug, includeTest, isGeumcheonOfficialBoard, isGeumcheonPracticeBoard, records, search, viewMode]);
+  }, [authorized, includeDebug, includeTest, isGeumcheonOfficialBoard, isGeumcheonPracticeBoard, records, snapshot.matchingRecordIds, search, viewMode]);
 
   const selected = records.find((record) => record.record_id === selectedId);
 
@@ -252,9 +272,29 @@ export function LeaderboardApp({ bootstrap }: Props) {
     [aiRecords, normalRecords, showAiLeaderboard, showNormalLeaderboard]
   );
 
+  function applySearch(next: RecordListSearch | null) {
+    appliedSearchRef.current = next;
+    setAppliedSearch(next);
+    setSearchInputError("");
+    void refresh(false);
+  }
+
+  function submitSearch() {
+    if (composingRef.current) return;
+    const term = search.trim();
+    if (searchField === "contact" && term && (/[^0-9\s-]/.test(term) || !/[0-9]/.test(term))) {
+      setSearchInputError("연락처는 숫자, 하이픈, 공백만 입력해 주세요.");
+      return;
+    }
+    applySearch(term ? { field: searchField, term } : null);
+  }
+
   async function refresh(silent: boolean) {
-    if (leaderboardRefreshInFlight) return;
-    leaderboardRefreshInFlight = true;
+    if (silent && requestInFlightRef.current !== null) return;
+    const generation = ++requestGenerationRef.current;
+    requestInFlightRef.current = generation;
+    const requestedSearch = appliedSearchRef.current;
+    if (isGeumcheonOfficialBoard) setSearchLoading(true);
     try {
       const now = Date.now();
       const shouldRefreshSlowStatus =
@@ -263,7 +303,9 @@ export function LeaderboardApp({ bootstrap }: Props) {
         supportsLegacyStorageTools
           ? window.typingKing.getOneDriveSettings()
           : Promise.resolve(null),
-        window.typingKing.listRecords(),
+        isGeumcheonOfficialBoard
+          ? window.typingKing.listRecords({ search: requestedSearch })
+          : window.typingKing.listRecords(),
         shouldRefreshSlowStatus && supportsLegacyStorageTools
           ? window.typingKing.getLeaderboardSyncStatus()
           : Promise.resolve(null),
@@ -271,20 +313,28 @@ export function LeaderboardApp({ bootstrap }: Props) {
           ? window.typingKing.getCsvBackupStatus()
           : Promise.resolve(null)
       ]);
+      if (generation !== requestGenerationRef.current) return;
       if (shouldRefreshSlowStatus) lastSlowStatusRefreshAtRef.current = now;
       if (settingsResult?.ok && settingsResult.data) {
         setConfig((current) => (sameLeaderboardConfig(current, settingsResult.data!) ? current : settingsResult.data!));
       }
-      if (result.ok && result.data) {
-        setRecords((current) => (sameRecordSnapshot(current, result.data!) ? current : result.data!));
+      if (result.ok && result.data && (!isGeumcheonOfficialBoard || !requestedSearch || Array.isArray(result.matchingRecordIds))) {
+        // Search IDs and all row fields are one fresh snapshot, including edits hidden by display masking.
+        setSnapshot((current) => !isGeumcheonOfficialBoard && sameRecordSnapshot(current.rows, result.data!)
+          ? current : { rows: result.data!, matchingRecordIds: isGeumcheonOfficialBoard ? result.matchingRecordIds ?? null : null });
         setRefreshError("");
-      } else if (!silent || result.code === "LOCKED") {
+      } else if (isGeumcheonOfficialBoard || !silent || result.code === "LOCKED") {
         setRefreshError(formatLeaderboardOperationError(result.error, "refresh"));
       }
       if (statusResult && statusResult.ok && statusResult.data) setSyncStatus(statusResult.data);
       if (backupResult && backupResult.ok && backupResult.data) setBackupStatus(backupResult.data);
+    } catch {
+      if (generation === requestGenerationRef.current) setRefreshError(formatLeaderboardOperationError(undefined, "refresh"));
     } finally {
-      leaderboardRefreshInFlight = false;
+      if (generation === requestGenerationRef.current) {
+        requestInFlightRef.current = null;
+        setSearchLoading(false);
+      }
     }
   }
 
@@ -460,7 +510,35 @@ export function LeaderboardApp({ bootstrap }: Props) {
             {bootstrap.variantPolicy.displayName}
           </h1>
         </div>
-        <div className="leader-actions">
+        {isGeumcheonOfficialBoard ? <div className="leader-actions uiv3-search-controls">
+          <div className="uiv3-search-primary">
+            <select aria-label="검색 구분" value={searchField} onChange={(event) => {
+              setSearchField(event.target.value as RecordListSearch["field"]);
+              setSearch("");
+              composingRef.current = false;
+              applySearch(null);
+            }}>
+              <option value="name">성명</option>
+              <option value="contact">연락처</option>
+            </select>
+            <input className="search-input" aria-label="검색어" value={search}
+              placeholder={searchField === "name" ? "성명을 입력하세요" : "연락처 일부를 입력하세요"}
+              onChange={(event) => setSearch(event.target.value)}
+              onCompositionStart={() => { composingRef.current = true; }}
+              onCompositionEnd={() => { composingRef.current = false; }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.nativeEvent.isComposing && event.nativeEvent.keyCode !== 229 && !composingRef.current) {
+                  event.preventDefault();
+                  submitSearch();
+                }
+              }} />
+            <button className="secondary-button" onClick={submitSearch}>검색</button>
+          </div>
+          <div className="uiv3-search-secondary">
+            <button className="secondary-button" onClick={() => void refresh(false)}>새로고침</button>
+            <button className="primary-button" onClick={() => setAdminOpen(true)}>관리자</button>
+          </div>
+        </div> : <div className="leader-actions">
           <input
             className="search-input"
             value={search}
@@ -469,11 +547,11 @@ export function LeaderboardApp({ bootstrap }: Props) {
           />
           <button className="secondary-button" onClick={() => void refresh(false)}>새로고침</button>
           <button className="primary-button" onClick={() => setAdminOpen(true)}>관리자</button>
-        </div>
+        </div>}
       </header>
 
       <section className={isPracticeBoard ? "leaderboard-board split-board practice-board" : "leaderboard-board split-board"}>
-        {refreshError && <div className="leaderboard-alert">{refreshError}</div>}
+        {(searchInputError || refreshError) && <div className="leaderboard-alert" role="alert">{searchInputError || refreshError}</div>}
         <div className={isDualPracticeBoard ? "dual-leaderboards" : "dual-leaderboards single-leaderboard"}>
           {showNormalLeaderboard && (
             <div className="ranking-table compact-ranking">
@@ -497,7 +575,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
               <div className="ranking-body">
                 <div className="ranking-head normal-head">
                   <span>순위</span>
-                  <span>참여자명</span>
+                  <span>{isGeumcheonBoard ? "도전자명" : "참여자명"}</span>
                   <span>휴대폰번호</span>
                   <span>{isPracticeBoard ? "기록" : "최종 기록"}</span>
                   <span>{isPracticeBoard ? "타수" : "최종 타수"}</span>
@@ -548,11 +626,11 @@ export function LeaderboardApp({ bootstrap }: Props) {
               <div className="ranking-body">
                 <div className="ranking-head ai-head">
                   <span>순위</span>
-                  <span>참여자명</span>
+                  <span>{isGeumcheonBoard ? "도전자명" : "참여자명"}</span>
                   <span>휴대폰번호</span>
                   <span>결과</span>
                   <span>{isPracticeBoard ? "스테이지" : "종료 지점"}</span>
-                  <span>{isPracticeBoard ? "참여자" : "참여자 기록"}</span>
+                  <span>{isGeumcheonBoard ? (isPracticeBoard ? "도전자" : "도전자 기록") : (isPracticeBoard ? "참여자" : "참여자 기록")}</span>
                   <span>{isPracticeBoard ? "금나래" : "금나래 기록"}</span>
                   <span>{isPracticeBoard ? "시간" : "총 대결시간"}</span>
                 </div>
@@ -566,7 +644,9 @@ export function LeaderboardApp({ bootstrap }: Props) {
                     <span className="rank-number">{rank}위</span>
                     <span>{maskParticipantName(record.participant_name)}</span>
                     <span>{record.phone_masked}</span>
-                    <span className={display.resultLabel === "참여자 승리" ? "result-win" : "result-lose"}>{display.resultLabel}</span>
+                    <span className={display.resultLabel === "참여자 승리" ? "result-win" : "result-lose"}>{isGeumcheonBoard
+                      ? display.resultLabel === "참여자 승리" ? "도전자 승리" : display.resultLabel === "금나래 승리" ? "AI 금나래 승리" : display.resultLabel
+                      : display.resultLabel}</span>
                     <span>{display.resultStageText}</span>
                     <span className="status-cell">
                       <strong>{display.participantProgressText}</strong>
@@ -579,6 +659,8 @@ export function LeaderboardApp({ bootstrap }: Props) {
                     <span className="time-cell">{display.duelRecordText}</span>
                   </button>
                 ))}
+                {isGeumcheonOfficialBoard && appliedSearch && !searchLoading && !refreshError && !searchInputError && aiRecords.length === 0
+                  && <div className="ranking-empty" role="status">검색 결과가 없습니다.</div>}
               </div>
             </div>
           )}
@@ -694,7 +776,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
                           원본 기록은 보존되고, 수정된 기록이 리더보드에 새로 표시됩니다.
                         </p>
                         <label className="field">
-                          <span>참여자 이름</span>
+                          <span>{isGeumcheonBoard ? "도전자 이름" : "참여자 이름"}</span>
                           <input value={edit.participant_name} onChange={(event) => setEdit({ ...edit, participant_name: event.target.value })} />
                         </label>
                         <label className="field">

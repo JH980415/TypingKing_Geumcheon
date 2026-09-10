@@ -15,6 +15,7 @@ import type { FetchLike } from "../../electron/nas/apiClient";
 import { createChallengeSaveInput } from "../../apps/typing-game/src/AIChallengeGame";
 import { buildRecordRow } from "../../shared/csv/fileStore";
 import { RecordStore } from "../../services/nas-record-api/src/recordStore";
+import { listGeumcheonRecords } from "../../electron/geumcheonConnection";
 
 const recordId = "gsc26-pc01-123e4567-e89b-42d3-a456-426614174000";
 const attemptId = "gsc26-attempt-123e4567-e89b-42d3-a456-426614174000";
@@ -249,6 +250,8 @@ test("leaderboard reads only NAS full RecordRow snapshot and falls back to last-
 
   const live = await runtime.loadRecords();
   const cached = await runtime.loadRecords();
+  // Search must report the fresh-read failure; the no-argument fallback above remains intact.
+  await assert.rejects((runtime.loadRecords as (options?: { freshOnly: boolean }) => Promise<unknown>)({ freshOnly: true }));
 
   assert.equal(live.rows[0].phone_full, "01000000001");
   assert.deepEqual(cached, live);
@@ -262,6 +265,50 @@ test("leaderboard reads only NAS full RecordRow snapshot and falls back to last-
   await assert.rejects(() => access(path.join(runtimeRoot, "nas", "device-token.bin")), (error: NodeJS.ErrnoException) => error.code === "ENOENT");
   await assert.rejects(() => runtime.checkpoint(input()), /NAS_ROLE_FORBIDDEN/);
 });
+
+for (const failure of ["authorization", "identity", "records", "malformed"] as const) {
+  test("fresh protected search rejects " + failure + " after a cached success without query metadata on the NAS wire", async (context) => {
+    const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "uiv3-search-nas-"));
+    context.after(() => rm(runtimeRoot, { recursive: true, force: true }));
+    let failing = false;
+    const requests: Array<{ url: string; method: string | undefined; authorization: string | null; body: unknown }> = [];
+    const session = { kind: "official", session_id: "official-1", day_no: 1, round_no: 2 };
+    const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+    const runtime = createGeumcheonNasRuntime({ event: event(), device: device("leaderboard"), sessionKind: "official",
+      runtimeRoot, safeStorage: safeStorage(), local: localCallbacks(async () => { throw Error("must not persist"); }).callbacks,
+      fetch: async (url, init) => {
+        requests.push({ url: String(url), method: init?.method, authorization: new Headers(init?.headers).get("authorization"), body: init?.body });
+        if (String(url).includes("/ready?")) {
+          if (failing && failure === "authorization") return response({ error: "private body must not escape" }, 401);
+          return response({ schema_version: 1, status: "ready", event_id: "geumcheon-science-festival-2026",
+            device_id: "LEADERBOARD01", role: failing && failure === "identity" ? "operator" : "leaderboard", session });
+        }
+        if (failing && failure === "records") return response({ error: "private body must not escape" }, 500);
+        if (failing && failure === "malformed") return response({ rows: "invalid" });
+        return response({ schema_version: 1, event_id: "geumcheon-science-festival-2026", session,
+          generated_at: "2026-09-10T00:00:00.000Z", rows: [row()] });
+      } });
+    const listOptions = { connection: { source: "production" as const, runtime }, role: "leaderboard" as const,
+      eventProfileId: "geumcheon-2026", sessionKind: "official", readLegacy: () => { throw Error("must not read legacy"); },
+      request: { search: { field: "contact", term: "0000" } } };
+    await assert.rejects(listGeumcheonRecords(listOptions), /^Error: NAS_CREDENTIAL_MISSING$/);
+    assert.equal(requests.length, 0, "missing credential must prevent any request");
+    await runtime.importLeaderboardToken("c".repeat(64));
+    const live = await listGeumcheonRecords(listOptions);
+    assert.deepEqual(live.matchingRecordIds, [recordId]);
+    assert.equal(requests.length, 2, "one readiness probe and one full records fetch supply the atomic result");
+    failing = true;
+    await assert.rejects(listGeumcheonRecords(listOptions));
+    assert.deepEqual((await runtime.loadRecords()).rows, live.rows, "legacy fallback stays available");
+    for (const request of requests) {
+      assert.equal(request.authorization, "Bearer " + "c".repeat(64));
+      assert.equal(request.body, undefined);
+      assert.doesNotMatch(request.url, /search|contact|0000|participant|phone|operator/);
+      const keys = [...new URL(request.url).searchParams.keys()];
+      assert.equal(keys.some((key) => /term|search|field|name|phone/.test(key)), false);
+    }
+  });
+}
 
 test("operator sends replacement edit, hide and current-session reset only to NAS", async (context) => {
   const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "typingking-nas-runtime-"));

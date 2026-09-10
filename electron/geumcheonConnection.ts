@@ -5,6 +5,7 @@ import type { DeviceProfile } from "../shared/events/types";
 import type {
   GameStartReadiness,
   PcRole,
+  RecordListSearch,
   RecordRow,
   ReviewRuntimeContext,
   ReviewStorageValidation,
@@ -93,15 +94,51 @@ export async function validateReviewStorage(options: {
 export type GeumcheonRecordListConnection = {
   source: "production" | "review";
   runtime: {
-    loadRecords(): Promise<{ rows: RecordRow[] }>;
+    loadRecords(options?: { freshOnly?: boolean }): Promise<{ rows: RecordRow[] }>;
   };
 };
 
-export async function listGeumcheonRecords(options: {
+type RecordListOptions = {
   connection: GeumcheonRecordListConnection | null;
   role: "player" | "leaderboard";
   readLegacy(): Promise<RecordRow[]> | RecordRow[];
-}): Promise<RecordRow[]> {
+};
+type SearchRecordListOptions = RecordListOptions & { request: unknown; eventProfileId: string; sessionKind: string };
+type SearchRecordSnapshot = { rows: RecordRow[]; matchingRecordIds: string[] | null };
+
+function parseRecordSearch(request: unknown): RecordListSearch | null {
+  if (!request || typeof request !== "object" || Array.isArray(request)
+    || Object.keys(request).length !== 1 || !Object.hasOwn(request, "search")) throw new Error("RECORD_SEARCH_INVALID");
+  const search = (request as { search: unknown }).search;
+  if (search === null) return null;
+  if (!search || typeof search !== "object" || Array.isArray(search)
+    || Object.keys(search).length !== 2 || !Object.hasOwn(search, "field") || !Object.hasOwn(search, "term")) {
+    throw new Error("RECORD_SEARCH_INVALID");
+  }
+  const { field, term } = search as RecordListSearch;
+  if ((field !== "name" && field !== "contact") || typeof term !== "string") throw new Error("RECORD_SEARCH_INVALID");
+  const trimmed = term.trim();
+  if (!trimmed) return null;
+  if (field === "contact" && (/[^0-9\s-]/.test(trimmed) || !/[0-9]/.test(trimmed))) throw new Error("RECORD_SEARCH_INVALID");
+  return { field, term: field === "contact" ? trimmed.replace(/[\s-]/g, "") : trimmed };
+}
+
+export function listGeumcheonRecords(options: SearchRecordListOptions): Promise<SearchRecordSnapshot>;
+export function listGeumcheonRecords(options: RecordListOptions): Promise<RecordRow[]>;
+export async function listGeumcheonRecords(options: RecordListOptions | SearchRecordListOptions): Promise<RecordRow[] | SearchRecordSnapshot> {
+  if ("request" in options) {
+    if (options.eventProfileId !== "geumcheon-2026" || options.sessionKind !== "official"
+      || options.role !== "leaderboard" || !options.connection) throw new Error("RECORD_SEARCH_UNAVAILABLE");
+    const search = parseRecordSearch(options.request);
+    const { rows } = await options.connection.runtime.loadRecords({ freshOnly: true });
+    return {
+      rows: rows.map(toGeumcheonPublicRecordRow),
+      matchingRecordIds: search === null ? null : rows.filter((row) => {
+        const value = search.field === "name" ? row.participant_name : row.phone_full?.replace(/[\s-]/g, "");
+        return typeof value === "string" && value.includes(search.term);
+      }).map((row) => row.record_id)
+    };
+  }
   if (options.connection?.source === "review" || (options.connection && options.role === "leaderboard")) {
     return (await options.connection.runtime.loadRecords()).rows.map(toGeumcheonPublicRecordRow);
   }

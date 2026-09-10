@@ -401,6 +401,10 @@ export type ApiResult<T = unknown> = {
   notices?: string[];
 };
 
+export type RecordListSearch = { field: "name" | "contact"; term: string };
+export type RecordListRequest = { search: RecordListSearch | null };
+export type RecordListResult = ApiResult<RecordRow[]> & { matchingRecordIds?: string[] | null };
+
 export type LeaderboardSyncStatus = {
   sessionName: string;
   dayNo: number;

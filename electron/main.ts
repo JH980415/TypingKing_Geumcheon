@@ -668,15 +668,27 @@ async function registerIpc(
       return geumcheonNas.checkReadiness();
     })
   );
-  ipcMain.handle("records:list", () =>
-    safeAsync(async () => {
+  ipcMain.handle("records:list", async (_event, request: unknown) => {
+    if (request !== undefined) {
+      const result = await safeAsync(() => listGeumcheonRecords({
+        connection: geumcheonNas,
+        role: variantPolicy.role,
+        eventProfileId: eventProfile.profileId,
+        sessionKind: variantPolicy.sessionKind,
+        request,
+        readLegacy: () => readRecords(ctx)
+      }), "기록을 조회할 수 없습니다. 검색 입력과 연결 상태를 확인해 주세요.");
+      if (!result.ok || !("data" in result)) return result;
+      return { ok: true, data: result.data.rows, matchingRecordIds: result.data.matchingRecordIds };
+    }
+    return safeAsync(async () => {
       return listGeumcheonRecords({
         connection: geumcheonNas,
         role: variantPolicy.role,
         readLegacy: () => readRecords(ctx)
       });
     }, "기록 파일을 읽을 수 없습니다. 파일이 열려 있거나 손상되었을 수 있습니다.")
-  );
+  });
   ipcMain.handle(
     "records:update",
     (event, recordId: string, patch: Partial<RecordRow>) =>

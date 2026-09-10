@@ -67,7 +67,7 @@ export type GeumcheonNasRuntime = {
   recover(): Promise<RecordRow | null>;
   flush(): Promise<RetryFlushResult>;
   queueStatus(): Promise<{ pending: number; blocked: number }>;
-  loadRecords(): ReturnType<NasLeaderboardClient["load"]>;
+  loadRecords(options?: { freshOnly?: boolean }): ReturnType<NasLeaderboardClient["load"]>;
   edit(recordId: string, replacement: RecordRow, adminName: string): Promise<unknown>;
   hide(recordId: string, hidden: boolean, adminName: string): Promise<unknown>;
   resetSession(adminName: string): Promise<unknown>;
@@ -203,14 +203,14 @@ export function createGeumcheonNasRuntime(options: GeumcheonNasRuntimeOptions): 
       const [pending, blocked] = await Promise.all([outbox.list(options.sessionKind), outbox.listBlocked(options.sessionKind)]);
       return { pending: pending.length, blocked: blocked.length };
     },
-    loadRecords: async () => {
+    loadRecords: async (readOptions) => {
       requireRole("leaderboard");
       try {
         await leaderboardApi.getReady(session, { eventId: NAS_EVENT_ID, role: "leaderboard" });
         lastKnownGood = await leaderboard.load(session);
         return lastKnownGood;
       } catch (error) {
-        if (lastKnownGood != null) return lastKnownGood;
+        if (!readOptions?.freshOnly && lastKnownGood != null) return lastKnownGood;
         throw error;
       }
     },

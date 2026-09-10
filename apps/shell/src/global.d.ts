@@ -9,6 +9,8 @@ import type {
   OneDriveCleanupResult,
   QueuedRecordFlushResult,
   RecordRow,
+  RecordListRequest,
+  RecordListResult,
   ReviewStorageValidation,
   SaveRecordInput,
   StageText,
@@ -34,7 +36,7 @@ declare global {
       checkpointActiveAttempt(input: SaveRecordInput, closeRequestId?: string): Promise<ApiResult<void>>;
       saveRecord(input: SaveRecordInput): Promise<ApiResult<RecordRow>>;
       checkGameStartReadiness(gameMode: "normal" | "ai_challenge"): Promise<ApiResult<GameStartReadiness>>;
-      listRecords(): Promise<ApiResult<RecordRow[]>>;
+      listRecords(request?: RecordListRequest): Promise<RecordListResult>;
       updateRecord(recordId: string, patch: Partial<RecordRow>, adminName: string): Promise<ApiResult<RecordRow>>;
       deleteRecord(recordId: string, adminName: string): Promise<ApiResult<void>>;
       clearRecords(adminName: string): Promise<ApiResult<void>>;

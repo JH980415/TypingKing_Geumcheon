@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
-import type { AppConfig, DrawStageTextsInput, RecordRow, SaveRecordInput, StageText } from "../shared/types";
+import type { AppConfig, DrawStageTextsInput, RecordListRequest, RecordRow, SaveRecordInput, StageText } from "../shared/types";
 
 const ACTIVE_ATTEMPT_CHECKPOINT_REQUEST_CHANNEL =
   "records:requestActiveAttemptCheckpoint";
@@ -44,7 +44,8 @@ contextBridge.exposeInMainWorld("typingKing", {
   saveRecord: (input: SaveRecordInput) => ipcRenderer.invoke("records:save", input),
   checkGameStartReadiness: (gameMode: "normal" | "ai_challenge") =>
     ipcRenderer.invoke("records:checkStartReady", gameMode),
-  listRecords: () => ipcRenderer.invoke("records:list"),
+  listRecords: (request?: RecordListRequest) => request === undefined
+    ? ipcRenderer.invoke("records:list") : ipcRenderer.invoke("records:list", request),
   updateRecord: (recordId: string, patch: Partial<RecordRow>, adminName: string) =>
     ipcRenderer.invoke("records:update", recordId, patch, adminName),
   deleteRecord: (recordId: string, adminName: string) =>
