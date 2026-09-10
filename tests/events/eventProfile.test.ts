@@ -53,15 +53,15 @@ test("loads the approved Geumcheon screen assets and preserves SkillUp fallbacks
       vsBadge: geumcheonAssets.vsBadge
     },
     {
-      eventTitle: "assets/ai_타자왕_금나래의_도전.png",
+      eventTitle: "assets/title_logo_062843.png",
       startBackground: "assets/bg_leaderboard_03_typing_hall_of_fame.png",
       playBackground: "assets/bg_main_03_geumcheon_data_city.png",
       leaderboardBackground: "assets/stage_01_03_science_classroom.png",
-      aiBossMain: "assets/robot_03_speed_champion.png",
+      aiBossMain: "assets/geumnarae_main_052455_alpha.png",
       aiBossTyping: "assets/robot_04_science_lab.png",
       aiBossVictory: "assets/금나래 승리.png",
       aiBossDefeat: "assets/금나래패배_스테이지3.png",
-      aiBossDefeats: ["assets/금나래패배_스테이지1_alpha_r7.png", "assets/금나래패배_스테이지2.png", "assets/금나래패배_스테이지3.png"],
+      aiBossDefeats: ["assets/geumnarae_stage1_defeat_054108_alpha.png", "assets/금나래패배_스테이지2.png", "assets/금나래패배_스테이지3.png"],
       vsBadge: "assets/vs_03_science_portal.png"
     }
   );

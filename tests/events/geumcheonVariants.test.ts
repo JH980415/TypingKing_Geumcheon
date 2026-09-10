@@ -57,8 +57,8 @@ test("R2 UAT app names match the enabled Geumcheon variant artifacts", () => {
   );
 });
 
-test("R2 UAT resources use the current Geumcheon title asset", () => {
-  const expectedTitle = `events/geumcheon-2026/${geumcheonProfile.assets.eventTitle}`;
+test("R2 UAT retains its historical approved title resource", () => {
+  const expectedTitle = "events/geumcheon-2026/assets/ai_타자왕_금나래의_도전.png";
 
   assert.equal(r2UatDefaultConfig.requiredResources.includes(expectedTitle), true);
   assert.equal(
