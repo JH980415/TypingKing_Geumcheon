@@ -1,4 +1,24 @@
 type Rect=Record<string,any>;
+export function assessControlPresentation(controls:Rect[],width:number):string[]{
+ // Independent measured baselines: uiv3LeaderboardLayout.browser.ts control observations, 720 and 1080.
+ const baseline=width===1280?{fieldHeight:44,buttonHeight:46,fieldFont:'16px',buttonFont:'14px'}:width===1920?{fieldHeight:58,buttonHeight:56,fieldFont:'16px',buttonFont:'16px'}:null;
+ if(!baseline)return ['CONTROL_VIEWPORT_UNMEASURED'];
+ const failures:string[]=[];
+ if(controls.map(c=>c.tag==='BUTTON'?c.text:c.tag).join('|')!=='SELECT|INPUT|검색|새로고침|관리자')failures.push('CONTROL_ORDER');
+ for(const control of controls){
+  const button=control.tag==='BUTTON',name=button?control.text:control.tag;
+  const minimum=control.tag==='SELECT'?80:control.tag==='INPUT'?160:control.text==='검색'?56:0;
+  if(!Number.isFinite(control.width)||control.width<minimum)failures.push('CONTROL_WIDTH:'+name);
+  if(control.height!==(button?baseline.buttonHeight:baseline.fieldHeight))failures.push('CONTROL_HEIGHT:'+name);
+  if(control.fontSize!==(button?baseline.buttonFont:baseline.fieldFont))failures.push('CONTROL_FONT:'+name);
+ }
+ return failures;
+}
+export function runtimeVerdicts(value:any):{overall:'FAIL'|'PARTIAL'|'PASS';automatedSubset:'FAIL'|'PASS'}{
+ const exits=[...(value.apps??[]).flatMap((a:any)=>[a.cleanup?.postExit,a.pendingCleanup?.postExit]),...(value.ordinaryNoArgument??[]).map((a:any)=>a.postExit)].filter(Boolean);
+ const failed=Boolean(value.error)||observedRuntimeFailures(value).length>0||value.checks.some((c:any)=>c.passed===false)||exits.some((e:any)=>e.allObservedAbsent!==true);
+ return {overall:failed?'FAIL':value.limitations.length||value.checks.some((c:any)=>c.status==='PARTIAL'||c.status==='NOT_RUN'||c.status==='HOLD')?'PARTIAL':'PASS',automatedSubset:failed?'FAIL':'PASS'};
+}
 export function assessLogoGeometry(canvas:Rect,painted:Rect,board:Rect):string[]{
  const failures:string[]=[];
  if(!canvas||!painted||!board||[canvas,painted,board].some(r=>['x','y','width','height'].some(k=>!Number.isFinite(r[k]))||r.width<=0||r.height<=0))return ['LOGO_GEOMETRY_MISSING'];

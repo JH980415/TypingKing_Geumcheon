@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
-import {assessLogoGeometry,compareStableBoxes,observedRuntimeFailures} from '../tests/utils/uiv3RuntimeAssertions';
+import {assessControlPresentation,assessLogoGeometry,compareStableBoxes,observedRuntimeFailures,runtimeVerdicts} from '../tests/utils/uiv3RuntimeAssertions';
 import https from 'node:https';
 import {fileURLToPath} from 'node:url';
 import {spawn,spawnSync} from 'node:child_process';
@@ -28,7 +28,7 @@ const hash=(s:Buffer|string)=>crypto.createHash('sha256').update(s).digest('hex'
 const sha=(p:string)=>hash(fs.readFileSync(p));
 function json(p:string,v:any){fs.mkdirSync(path.dirname(p),{recursive:true});fs.writeFileSync(p,JSON.stringify(v,null,2)+'\n');}
 function flush(){if(runClaimed)json(path.join(output,'index.json'),report);}
-function overallStatus(value:any){const exits=[...(value.apps??[]).map((a:any)=>a.cleanup?.postExit??a.pendingCleanup?.postExit),...(value.ordinaryNoArgument??[]).map((a:any)=>a.postExit)].filter(Boolean);return value.error||observedRuntimeFailures(value).length>0||value.checks.some((c:any)=>c.passed===false)||exits.some((e:any)=>e.allObservedAbsent!==true)?'FAIL':value.limitations.length||value.checks.some((c:any)=>c.status==='PARTIAL'||c.status==='NOT_RUN'||c.status==='HOLD')?'PARTIAL':'PASS';}
+function overallStatus(value:any){return runtimeVerdicts(value).overall;}
 function certificateFailure(value:any){return ['UNABLE_TO_VERIFY_LEAF_SIGNATURE','SELF_SIGNED_CERT_IN_CHAIN','DEPTH_ZERO_SELF_SIGNED_CERT','CERT_HAS_EXPIRED','ERR_TLS_CERT_ALTNAME_INVALID','UNABLE_TO_GET_ISSUER_CERT_LOCALLY'].includes(value.code);}
 function check(name:string,passed:boolean,actual?:any){report.checks.push({name,passed,actual});flush();return passed;}
 async function until(name:string,fn:()=>Promise<boolean>|boolean,ms=20000){const end=Date.now()+ms;let last:any;do{try{if(await fn())return;}catch(e){last=e;}await new Promise(r=>setTimeout(r,100));}while(Date.now()<end);throw Error(name+' timed out '+String(last??''));}
@@ -280,7 +280,7 @@ async function main(){
  }finally{for(const a of [...owned])await close(a);await cleanupPending();report.completedAt=new Date().toISOString();report.status='PARTIAL';flush();}
  if(modes.includes('review'))for(const role of ['game','leaderboard'] as Role[])await ordinaryLifecycle(role,opts.get('--review-'+role)!);
  const profileRoot=path.resolve('deployment/nas-production/device-profiles');const profiles=fs.readdirSync(profileRoot).filter(n=>n.endsWith('.device-profile.json')).map(n=>({file:n,sha256:sha(path.join(profileRoot,n)),profile:JSON.parse(fs.readFileSync(path.join(profileRoot,n),'utf8'))}));report.profileMapping={method:'source profile configuration check, not five physical PCs',profiles};check('five unique official-only device profiles',profiles.length===5&&new Set(profiles.map(p=>p.profile.deviceId)).size===5&&profiles.every(p=>p.profile.sessions.official&&!p.profile.sessions.practice));
- const runtimeErrors=observedRuntimeFailures(report);check('no unhandled renderer errors or unintended runtime closure',runtimeErrors.length===0,runtimeErrors);report.status=overallStatus(report);report.automatedSubset=report.checks.some((c:any)=>c.passed===false)?'FAIL':'PASS';report.completedAt=new Date().toISOString();flush();
+ const runtimeErrors=observedRuntimeFailures(report);check('no unhandled renderer errors or unintended runtime closure',runtimeErrors.length===0,runtimeErrors);const verdicts=runtimeVerdicts(report);report.status=verdicts.overall;report.automatedSubset=verdicts.automatedSubset;report.completedAt=new Date().toISOString();flush();
  console.log(JSON.stringify({output,status:report.status,captures:report.captures.length,failed:report.checks.filter((c:any)=>c.passed===false).map((c:any)=>c.name)}));
 }
 
@@ -583,7 +583,7 @@ async function presentationChecks(a:Running,name:string,width:number,height:numb
   check(label+' U10 full canvas and controls fit content without page scroll',fit(canvas)&&fit(board)&&o.controls.length===5&&o.controls.every(fit)&&o.documentScroll.width<=width&&o.documentScroll.height<=height,{canvas,board,controls:o.controls,documentScroll:o.documentScroll});
   const clearance=(r:any)=>!painted||!r?-Infinity:Math.max(r.left-painted.right,painted.left-r.right,r.top-painted.bottom,painted.top-r.bottom);
   const targets=[g['.ai-head'],g['.session-count'],...o.controls].filter(Boolean);check(label+' U10 logo has 12px header count control clearance',targets.length>=7&&targets.every(r=>clearance(r)>=12),targets.map(r=>({rect:r,clearance:clearance(r)})));
-  const dropdown=o.controls.find((c:any)=>c.tag==='SELECT'),input=o.controls.find((c:any)=>c.tag==='INPUT');check(label+' U11 original style minimum control sizes and order',dropdown?.width>=80&&input?.width>=160&&o.controls.map((c:any)=>c.tag==='BUTTON'?c.text:c.tag).join('|')==='SELECT|INPUT|검색|새로고침|관리자'&&o.controls.every((c:any)=>c.height>=46&&c.fontSize===input.fontSize),o.controls);
+  const controlFailures=assessControlPresentation(o.controls,width);check(label+' U11 original style minimum control sizes and order',controlFailures.length===0,{controls:o.controls,failures:controlFailures,viewportWidth:width});
   if(o.legacyRows.length){check(label+' legacy row height and cell font preserved',o.legacyRows.every((r:any)=>Math.abs(r.height-76)<=1&&r.minHeight==='76px'&&r.cellFontSizes.length===8&&r.cellFontSizes.every((v:string)=>v==='14px')),o.legacyRows);}else report.checks.push({name:label+' legacy row height and cell font preserved',status:'NOT_RUN',reason:'Empty table; populated row geometry observed separately'});
   observeLeaderboardMatrix(a,name,width,height,o);
   const loaded=hashVisibleMappedImages(o.logo?[o.logo]:[],{[APPROVED_TITLE.fileName]:APPROVED_TITLE.sha256});check(label+' U02 exact v3 title bytes and dimensions',o.logo?.complete&&o.logo.naturalWidth===2048&&o.logo.naturalHeight===682&&loaded.images[0]?.approvedBytesMatch===true,{logo:o.logo,loaded,approved:APPROVED_TITLE});
