@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
+import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { createInflateRaw } from 'node:zlib';
@@ -147,16 +149,98 @@ function assertNewDirectory(output:string){
   }
   if(fs.existsSync(output))throw new Error('OUTPUT_EXISTS');
 }
+type RuntimePackage={name:string;directory:string;metadata:any;files:string[]};
+function rentalRuntimePackages(projectRoot:string):RuntimePackage[]{
+  const manifest=JSON.parse(fs.readFileSync(path.join(projectRoot,'package.json'),'utf8'));
+  const lock=JSON.parse(fs.readFileSync(path.join(projectRoot,'package-lock.json'),'utf8'));
+  assert.equal(lock.lockfileVersion,3,'RUNTIME_LOCK_VERSION');
+  assert.deepEqual(manifest.dependencies??{},lock.packages['']?.dependencies??{},'RUNTIME_LOCK_DEPENDENCIES');
+  const modulesRoot=fs.realpathSync(path.join(projectRoot,'node_modules'));
+  const files=(directory:string):string[]=>fs.readdirSync(directory,{withFileTypes:true}).flatMap(entry=>{
+    const file=path.join(directory,entry.name);
+    if(entry.isSymbolicLink())throw new Error('RUNTIME_SOURCE_LINK_UNSAFE');
+    if(entry.isDirectory())return entry.name==='node_modules'?[]:files(file);
+    if(!entry.isFile())throw new Error('RUNTIME_SOURCE_NOT_FILE');
+    return [file];
+  });
+  const packages=Object.entries(lock.packages).flatMap(([name,metadata]:[string,any])=>{
+    if(!name||metadata.dev)return [];
+    if(!/^(?:node_modules\/(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+)(?:\/node_modules\/(?:@[a-z0-9._-]+\/)?[a-z0-9._-]+)*$/.test(name)||
+      metadata.link||metadata.os||metadata.cpu||metadata.hasInstallScript)throw new Error('RUNTIME_LOCK_PACKAGE_UNSUPPORTED');
+    const directory=path.join(modulesRoot,name.slice('node_modules/'.length));
+    for(let current=directory;current!==modulesRoot;current=path.dirname(current)){
+      if(current===path.dirname(current)||!fs.existsSync(current))throw new Error('RUNTIME_PACKAGE_MISSING');
+      if(fs.lstatSync(current).isSymbolicLink())throw new Error('RUNTIME_SOURCE_LINK_UNSAFE');
+    }
+    const installed=JSON.parse(fs.readFileSync(path.join(directory,'package.json'),'utf8'));
+    assert.equal(installed.version,metadata.version,'RUNTIME_VERSION_MISMATCH');
+    assert.deepEqual(installed.dependencies??{},metadata.dependencies??{},'RUNTIME_DEPENDENCY_MISMATCH');
+    assert.deepEqual(installed.optionalDependencies??{},metadata.optionalDependencies??{},'RUNTIME_DEPENDENCY_MISMATCH');
+    return [{name,directory,metadata:installed,files:files(directory)}];
+  });
+  const selected=new Set(packages.flatMap(p=>p.files));
+  const owners=[{file:path.join(projectRoot,'package.json'),metadata:manifest},...packages.map(p=>({file:path.join(p.directory,'package.json'),metadata:p.metadata}))];
+  for(const owner of owners)for(const dependency of Object.keys(owner.metadata.dependencies??{})){
+    if(!selected.has(createRequire(owner.file).resolve(dependency)))throw new Error('RUNTIME_DEPENDENCY_OUTSIDE_LOCK');
+  }
+  return packages;
+}
+/** A physical, locked app tree avoids npm's missing transitive dependencies through a node_modules junction. */
+export function stageRentalApplication(projectRoot:string,appRoot:string){
+  assertNewDirectory(appRoot);
+  const packages=rentalRuntimePackages(projectRoot);
+  fs.mkdirSync(appRoot,{recursive:true});
+  for(const name of ['package.json','package-lock.json','dist-electron','dist-renderer']){
+    fs.cpSync(path.join(projectRoot,name),path.join(appRoot,name),{recursive:true,errorOnExist:true,force:false,
+      filter:source=>{if(fs.lstatSync(source).isSymbolicLink())throw new Error('RUNTIME_SOURCE_LINK_UNSAFE');return true;}});
+  }
+  for(const pkg of packages)for(const source of pkg.files){
+    const target=path.join(appRoot,pkg.name,path.relative(pkg.directory,source));
+    fs.mkdirSync(path.dirname(target),{recursive:true});fs.copyFileSync(source,target,fs.constants.COPYFILE_EXCL);
+  }
+}
+/** Read the actual archive, then load its production modules with all host/global resolution denied. */
+export function verifyRentalRuntimeArchive(projectRoot:string,archive:string){
+  const packages=rentalRuntimePackages(projectRoot),asar=createRequire(import.meta.url)('@electron/asar');
+  const names=asar.listPackage(archive).map((name:string)=>name.slice(1).replaceAll('\\','/'));
+  for(const name of names){
+    safeEntryName(name);
+    if(asar.statFile(archive,path.normalize(name)).link)throw new Error('RUNTIME_ARCHIVE_LINK_UNSAFE');
+  }
+  for(const pkg of packages){
+    const name=pkg.name+'/package.json';
+    if(!names.includes(name))throw new Error('RUNTIME_PACKAGE_MISSING: '+pkg.name);
+    const metadata=JSON.parse(asar.extractFile(archive,path.normalize(name)).toString('utf8'));
+    assert.equal(metadata.version,pkg.metadata.version,'RUNTIME_ARCHIVE_VERSION_MISMATCH');
+    assert.deepEqual(metadata.dependencies??{},pkg.metadata.dependencies??{},'RUNTIME_ARCHIVE_DEPENDENCY_MISMATCH');
+  }
+  const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'typingking-runtime-check-'));
+  try{
+    asar.extractAll(archive,temporary);
+    const probe=[
+      "const fs=require('node:fs'),path=require('node:path'),Module=require('node:module');",
+      "const root=fs.realpathSync(process.argv[1]),original=Module._resolveFilename;",
+      "Module._resolveFilename=function(...args){const file=original.apply(this,args);if(!Module.isBuiltin(file)&&!fs.realpathSync(file).startsWith(root+path.sep))throw Error('RUNTIME_RESOLUTION_ESCAPED');return file;};",
+      "const owners=JSON.parse(process.argv[2]);for(const owner of owners){const file=path.join(root,owner,'package.json'),meta=JSON.parse(fs.readFileSync(file,'utf8')),req=Module.createRequire(file);for(const name of Object.keys(meta.dependencies||{}))req(name);}",
+    ].join('');
+    const result=spawnSync(process.execPath,['--no-global-search-paths','-e',probe,temporary,JSON.stringify(['',...packages.map(p=>p.name)])],
+      {cwd:temporary,encoding:'utf8',windowsHide:true,timeout:30000,env:{...process.env,NODE_PATH:'',NODE_OPTIONS:''}});
+    if(result.status!==0)throw new Error('RUNTIME_REQUIRE_FAILED: '+(result.error?.message??result.stderr.slice(-2000)));
+    return {packages:packages.length,hostModuleResolution:'BLOCKED',isolatedRequire:'PASS'};
+  }finally{fs.rmSync(temporary,{recursive:true,force:true});}
+}
 export function buildRentalClient(projectRoot:string){
   const root=path.resolve(projectRoot),evidence=sourceEvidence(root),buildRoot=path.join(root,'release-build','rental-v4');
   assertNewDirectory(buildRoot);
   command(root,process.execPath,[path.join(root,'node_modules/vite/bin/vite.js'),'build']);
   command(root,process.execPath,[path.join(root,'node_modules/typescript/bin/tsc'),'-p','tsconfig.node.json']);
+  const appRoot=path.join(buildRoot,'application');stageRentalApplication(root,appRoot);
   for(const [index,variant] of ['ai','ai-leaderboard'].entries()){
     command(root,process.execPath,[path.join(root,'node_modules/electron-builder/cli.js'),'--config','electron-builder.geumcheon-'+variant+'.yml','--publish=never',
       '--config.extraMetadata.typingKingReleaseCandidate='+RENTAL_V4_CANDIDATE,'--config.extraMetadata.typingKingDeploymentProfileVersion=2',
-      '--config.directories.output='+path.join('release-build','rental-v4','geumcheon',variant)]);
+      '--config.directories.app='+appRoot,'--config.directories.output='+path.join('release-build','rental-v4','geumcheon',variant)]);
     if(!fs.existsSync(path.join(buildRoot,'geumcheon',variant,EXES[index]!)))throw new Error('BUILT_EXE_MISSING');
+    verifyRentalRuntimeArchive(root,path.join(buildRoot,'geumcheon',variant,'win-unpacked','resources','app.asar'));
   }
   const after=sourceEvidence(root);
   assert.deepEqual(after,evidence,'Build source changed during generation');
@@ -174,6 +258,7 @@ export async function packageRentalClient({projectRoot,deliveryRoot}:{projectRoo
   assert.equal(provenance.releaseCandidate,RENTAL_V4_CANDIDATE);
   assert.equal(provenance.deploymentProfileVersion,2);
   verifyBuildArtifacts(buildRoot,provenance.artifacts);
+  for(const variant of ['ai','ai-leaderboard'])verifyRentalRuntimeArchive(root,path.join(buildRoot,'geumcheon',variant,'win-unpacked','resources','app.asar'));
   assert.equal(provenance.sourceCommit,evidence.sourceCommit);
   assert.deepEqual(provenance.sourceFiles,evidence.sourceFiles,'Package source differs from build source');
   const files:Entry[]=EXES.map((name,index)=>({name,source:path.join(buildRoot,'geumcheon',index?'ai-leaderboard':'ai',name)}));
