@@ -130,7 +130,7 @@ export class DeploymentProfileStore {
   private decryptValue(): unknown {
     this.available();
     try { return JSON.parse(this.safeStorage.decryptString(fs.readFileSync(this.filePath))); }
-    catch { fail("PROFILE_CACHE_UNREADABLE"); }
+    catch (error) { if (error instanceof Error && (error.message === "DPAPI_LEGACY_STORAGE_UNSUPPORTED" || error.message === "DPAPI_STORAGE_FAILED")) throw error; fail("PROFILE_CACHE_UNREADABLE"); }
   }
   assertLocalIdentity():void {
     if(this.fingerprint && profileFingerprint(this.inspectForRecovery())!==this.fingerprint)fail("PROFILE_CONFIGURATION_CHANGED");
@@ -152,7 +152,7 @@ export function readDeploymentSelection(filePath: string, directory: string, sto
   if (!fs.existsSync(filePath)) return undefined;
   if (!storage.isEncryptionAvailable()) fail("SAFE_STORAGE_UNAVAILABLE");
   let saved: SavedDeploymentSelection;
-  try { saved = JSON.parse(storage.decryptString(fs.readFileSync(filePath))); } catch { fail("PROFILE_CACHE_UNREADABLE"); }
+  try { saved = JSON.parse(storage.decryptString(fs.readFileSync(filePath))); } catch (error) { if (error instanceof Error && (error.message === "DPAPI_LEGACY_STORAGE_UNSUPPORTED" || error.message === "DPAPI_STORAGE_FAILED")) throw error; fail("PROFILE_CACHE_UNREADABLE"); }
   const profile = parseDeploymentProfile(saved.profile);
   const current=deploymentFolderFingerprint(directory);
   if(current!==null && current!==saved.folderFingerprint) fail("PROFILE_CACHE_CONFLICT");
@@ -170,6 +170,8 @@ export function saveDeploymentSelection(filePath: string, directory: string, pro
 }
 
 const PROFILE_ERROR_MESSAGES: Record<string,string> = {
+ "DPAPI_LEGACY_STORAGE_UNSUPPORTED": "이전 버전의 보호 자료가 남아 있어 시작하지 않았습니다. 원본은 보존했습니다. 운영자가 자료 보존 및 이관을 확인해야 합니다.",
+ "DPAPI_STORAGE_FAILED": "보호 자료를 안전하게 확인하지 못해 시작하지 않았습니다. 원본은 보존했습니다. 운영자에게 확인을 요청해 주세요.",
   "PROFILE_FILE_MISSING": "해당 PC의 원래 이름 프로필 하나를 EXE 옆에 배치해 주세요.",
   "PROFILE_MULTIPLE_FILES": "프로필이 여러 개 있습니다. 해당 PC의 원래 이름 프로필 하나만 EXE 옆에 남겨 주세요.",
   "PROFILE_ORIGINAL_NAME_REQUIRED": "프로필 파일 이름이 맞지 않습니다. 운영자가 발급한 원래 이름을 유지해 주세요.",

@@ -53,6 +53,8 @@ extraResources:
       - assets/ai_challenge/stage_badge_1_r203.png
       - assets/ai_challenge/stage_badge_2_r203.png
       - assets/ai_challenge/stage_badge_3_r203.png
+  - from: release-build/rental-v4/support/security/TypingKingDpapiBridge.exe
+    to: security/TypingKingDpapiBridge.exe
 asar: true
 win:
   icon: assets/icons/typing_app_icon.ico

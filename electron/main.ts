@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import type { IpcMainInvokeEvent, OpenDialogOptions } from "electron";
-import { safeStorage } from "electron";
+import { safeStorage as electronSafeStorage } from "electron";
+import { assertSharedWindowsDpapiStateReadable, selectDeploymentStorage } from "./security/windowsDpapiStorage";
 import { createHash, randomUUID } from "node:crypto";
 import { DeploymentProfileStore, loadDeploymentProfile, profileFingerprint, profilePreview, withDeploymentLocks, replaceDeploymentSelection, assertSafeDeploymentApplication, deploymentErrorForDisplay, readDeploymentSelection, saveDeploymentSelection, type DeploymentProfileV2 } from "./deploymentProfile";
 import fs from "node:fs";
@@ -98,6 +99,8 @@ const variant = resolveVariant(metadata.variant, metadata.reviewContext !== unde
 const selectedEventProfileId = app.isPackaged
   ? metadata.eventProfileId
   : process.env.EVENT_PROFILE;
+const usesSharedWindowsDpapi = metadata.deploymentProfileVersion === 2 && selectedEventProfileId === "geumcheon-2026" && metadata.reviewContext === undefined;
+const safeStorage = selectDeploymentStorage({ deploymentProfileVersion: metadata.deploymentProfileVersion, eventProfileId: selectedEventProfileId, hasReviewContext: metadata.reviewContext !== undefined, resourcesPath: process.resourcesPath, legacy: electronSafeStorage });
 const requiresSingleInstanceLock = metadata.reviewContext !== undefined || selectedEventProfileId === "geumcheon-2026";
 if (selectedEventProfileId === "geumcheon-2026" && !metadata.reviewContext) {
   const installId = createHash("sha256").update(path.resolve(process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath))).digest("hex").slice(0,20);
@@ -571,7 +574,7 @@ async function registerIpc(
     allowUnavailable: eventProfile.profileId === "geumcheon-2026" && !startup?.reviewContext,
     ttlMs: 15 * 60 * 1000
   });
-  if(activeProfile)saveRecoveryAuthorization(path.join(path.dirname(selectionPath()),"administrator-recovery.bin"),ctx.config.adminPassword,activeProfile,runtimeRoot);
+  if(activeProfile)saveRecoveryAuthorization(path.join(path.dirname(selectionPath()),"administrator-recovery.bin"),ctx.config.adminPassword,activeProfile,runtimeRoot,safeStorage);
   ipcMain.handle("app:getBootstrap", () => ({
     ok: true,
     data: createBootstrapData({
@@ -623,6 +626,7 @@ async function registerIpc(
     const targetRoot=path.join(process.env.LOCALAPPDATA || process.env.APPDATA!, "ThePMD","TypingKing2026",profile.device.eventProfileId,profile.device.deviceId);
     const selectedPath=profileCandidate.filePath;
     await withDeploymentLocks([runtimeRoot,targetRoot],async()=>{
+      if (usesSharedWindowsDpapi) for (const root of new Set([runtimeRoot,targetRoot])) assertSharedWindowsDpapiStateReadable({ runtimeRoot: root, installationRoot: path.dirname(selectionPath()), storage: safeStorage });
       await assertSafeDeploymentApplication({currentRuntimeRoot:runtimeRoot,targetRuntimeRoot:targetRoot,replacement:profile,safeStorage});
       replaceDeploymentSelection(path.join(targetRoot,"nas","deployment-profile.bin"),selectionPath(),deploymentDirectory(),profile,selectedPath,safeStorage);
     });
@@ -1060,6 +1064,7 @@ async function initializeDeployment(): Promise<void> {
   if (!startup?.deploymentProfile) return;
   const initialStartup=startup;
   await withDeploymentLocks([initialStartup.runtimeRoot],async()=>{
+  if (usesSharedWindowsDpapi) assertSharedWindowsDpapiStateReadable({ runtimeRoot: initialStartup.runtimeRoot, installationRoot: path.dirname(selectionPath()), storage: safeStorage });
   activeProfile = initialStartup.deploymentProfile!;
   activeProfilePath = initialStartup.profileFilePath!;
   protectedProfile = new DeploymentProfileStore(path.join(initialStartup.runtimeRoot, "nas", "deployment-profile.bin"), safeStorage);
@@ -1149,7 +1154,7 @@ if (mayStartApplication) void app.whenReady().then(async () => {
     await initializeDeployment();
   } catch (error) {
     appendStartupLog(`Startup profile initialization failed: ${errorMessage(error)}`);
-    if(await openProfileRecovery({error,authorizationPath:path.join(path.dirname(selectionPath()),"administrator-recovery.bin"),selectionPath:selectionPath(),directory:deploymentDirectory(),variant,localAppData:process.env.LOCALAPPDATA || process.env.APPDATA!}))return;
+    if(await openProfileRecovery({error,authorizationPath:path.join(path.dirname(selectionPath()),"administrator-recovery.bin"),selectionPath:selectionPath(),directory:deploymentDirectory(),variant,localAppData:process.env.LOCALAPPDATA || process.env.APPDATA!,storage:safeStorage,sharedWindowsDpapi:usesSharedWindowsDpapi}))return;
     if (shouldShowStartupErrorDialog(process.env, app.isPackaged)) {
       dialog.showErrorBox("시작할 수 없습니다", formatStartupErrorForDisplay(error));
     }

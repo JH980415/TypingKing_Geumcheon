@@ -229,11 +229,67 @@ export function verifyRentalRuntimeArchive(projectRoot:string,archive:string){
     return {packages:packages.length,hostModuleResolution:'BLOCKED',isolatedRequire:'PASS'};
   }finally{fs.rmSync(temporary,{recursive:true,force:true});}
 }
+export const PROTECTION_BRIDGE_SOURCE='electron/security/TypingKingDpapiBridge.cs';
+export const PROTECTION_BRIDGE_RESOURCE='security/TypingKingDpapiBridge.exe';
+export type ProtectionBridgeManifest={
+  source:{name:string;sha256:string};
+  compiler:{path:string;sha256:string};
+  artifact:ManifestEntry;
+  mode:'CurrentUserDPAPI';
+  probe:'PASS';
+};
+function protectedBridgeFile(file:string){
+  if(!fs.existsSync(file))throw new Error('PROTECTION_BRIDGE_MISSING');
+  for(let current=path.resolve(file);;current=path.dirname(current)){
+    if(fs.lstatSync(current).isSymbolicLink())throw new Error('PROTECTION_BRIDGE_LINK');
+    if(current===path.dirname(current))break;
+  }
+  const stat=fs.statSync(file);
+  if(!stat.isFile()||!stat.size)throw new Error('PROTECTION_BRIDGE_MISSING');
+  return {bytes:stat.size,sha256:sha(fs.readFileSync(file))};
+}
+function probeProtectionBridge(file:string):void{
+  const probe=spawnSync(file,['probe'],{input:Buffer.alloc(0),encoding:'utf8',windowsHide:true,shell:false,timeout:5000,maxBuffer:65536});
+  if(probe.status!==0||probe.stdout!=='TKDPAPI_OK_V1'||probe.stderr!=='')throw new Error('PROTECTION_BRIDGE_PROBE_FAILED');
+}
+/** Compile only with an existing Windows Framework compiler; no downloaded runtime or field installation. */
+export function compileRentalProtectionBridge(projectRoot:string,supportRoot:string):ProtectionBridgeManifest{
+  if(process.platform!=='win32')throw new Error('PROTECTION_BRIDGE_WINDOWS_REQUIRED');
+  assertNewDirectory(supportRoot);
+  const source=path.join(projectRoot,PROTECTION_BRIDGE_SOURCE);
+  const sourceFile=protectedBridgeFile(source);
+  const compiler=[
+    'C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe',
+    'C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe',
+  ].find(file=>fs.existsSync(file));
+  if(!compiler)throw new Error('PROTECTION_BRIDGE_COMPILER_MISSING');
+  const compilerFile=protectedBridgeFile(compiler);
+  const output=path.join(supportRoot,PROTECTION_BRIDGE_RESOURCE);
+  fs.mkdirSync(path.dirname(output),{recursive:true});
+  command(projectRoot,compiler,['/nologo','/optimize+','/target:exe','/platform:anycpu','/out:'+output,source]);
+  const artifact={name:PROTECTION_BRIDGE_RESOURCE,...protectedBridgeFile(output)};
+  probeProtectionBridge(output);
+  if(protectedBridgeFile(source).sha256!==sourceFile.sha256)throw new Error('PROTECTION_BRIDGE_SOURCE_CHANGED');
+  return {source:{name:PROTECTION_BRIDGE_SOURCE,sha256:sourceFile.sha256},compiler:{path:compiler,sha256:compilerFile.sha256},
+    artifact,mode:'CurrentUserDPAPI',probe:'PASS'};
+}
+/** Fixed resource path and compiled-source/hash binding are checked before executing the harmless probe. */
+export function verifyPackagedProtectionBridge(projectRoot:string,resourcesRoot:string,expected:ProtectionBridgeManifest){
+  if(expected?.source?.name!==PROTECTION_BRIDGE_SOURCE||expected?.artifact?.name!==PROTECTION_BRIDGE_RESOURCE
+    ||expected?.mode!=='CurrentUserDPAPI'||expected?.probe!=='PASS')throw new Error('PROTECTION_BRIDGE_MANIFEST_INVALID');
+  if(protectedBridgeFile(path.join(projectRoot,PROTECTION_BRIDGE_SOURCE)).sha256!==expected.source.sha256)throw new Error('PROTECTION_BRIDGE_SOURCE_CHANGED');
+  const file=path.join(resourcesRoot,PROTECTION_BRIDGE_RESOURCE),actual=protectedBridgeFile(file);
+  if(actual.bytes!==expected.artifact.bytes||actual.sha256!==expected.artifact.sha256)throw new Error('PROTECTION_BRIDGE_HASH_MISMATCH');
+  probeProtectionBridge(file);
+  return {resourcePath:PROTECTION_BRIDGE_RESOURCE,...actual,mode:'CurrentUserDPAPI',probe:'PASS'};
+}
+
 export function buildRentalClient(projectRoot:string){
   const root=path.resolve(projectRoot),evidence=sourceEvidence(root),buildRoot=path.join(root,'release-build','rental-v4');
   assertNewDirectory(buildRoot);
   command(root,process.execPath,[path.join(root,'node_modules/vite/bin/vite.js'),'build']);
   command(root,process.execPath,[path.join(root,'node_modules/typescript/bin/tsc'),'-p','tsconfig.node.json']);
+  const protectionBridge=compileRentalProtectionBridge(root,path.join(buildRoot,'support'));
   const appRoot=path.join(buildRoot,'application');stageRentalApplication(root,appRoot);
   for(const [index,variant] of ['ai','ai-leaderboard'].entries()){
     command(root,process.execPath,[path.join(root,'node_modules/electron-builder/cli.js'),'--config','electron-builder.geumcheon-'+variant+'.yml','--publish=never',
@@ -241,11 +297,12 @@ export function buildRentalClient(projectRoot:string){
       '--config.directories.app='+appRoot,'--config.directories.output='+path.join('release-build','rental-v4','geumcheon',variant)]);
     if(!fs.existsSync(path.join(buildRoot,'geumcheon',variant,EXES[index]!)))throw new Error('BUILT_EXE_MISSING');
     verifyRentalRuntimeArchive(root,path.join(buildRoot,'geumcheon',variant,'win-unpacked','resources','app.asar'));
+    verifyPackagedProtectionBridge(root,path.join(buildRoot,'geumcheon',variant,'win-unpacked','resources'),protectionBridge);
   }
   const after=sourceEvidence(root);
   assert.deepEqual(after,evidence,'Build source changed during generation');
   fs.writeFileSync(path.join(buildRoot,'BUILD_PROVENANCE.json'),JSON.stringify({...evidence,releaseCandidate:RENTAL_V4_CANDIDATE,
-    builtAt:new Date().toISOString(),node:process.version,deploymentProfileVersion:2,artifacts:buildArtifactManifest(buildRoot),productionRelease:'HOLD'},null,2)+'\n',{flag:'wx'});
+    builtAt:new Date().toISOString(),node:process.version,deploymentProfileVersion:2,protectionBridge,artifacts:buildArtifactManifest(buildRoot),productionRelease:'HOLD'},null,2)+'\n',{flag:'wx'});
   return buildRoot;
 }
 export async function packageRentalClient({projectRoot,deliveryRoot}:{projectRoot:string;deliveryRoot:string}){
@@ -258,7 +315,10 @@ export async function packageRentalClient({projectRoot,deliveryRoot}:{projectRoo
   assert.equal(provenance.releaseCandidate,RENTAL_V4_CANDIDATE);
   assert.equal(provenance.deploymentProfileVersion,2);
   verifyBuildArtifacts(buildRoot,provenance.artifacts);
-  for(const variant of ['ai','ai-leaderboard'])verifyRentalRuntimeArchive(root,path.join(buildRoot,'geumcheon',variant,'win-unpacked','resources','app.asar'));
+  for(const variant of ['ai','ai-leaderboard']){
+    verifyRentalRuntimeArchive(root,path.join(buildRoot,'geumcheon',variant,'win-unpacked','resources','app.asar'));
+    verifyPackagedProtectionBridge(root,path.join(buildRoot,'geumcheon',variant,'win-unpacked','resources'),provenance.protectionBridge);
+  }
   assert.equal(provenance.sourceCommit,evidence.sourceCommit);
   assert.deepEqual(provenance.sourceFiles,evidence.sourceFiles,'Package source differs from build source');
   const files:Entry[]=EXES.map((name,index)=>({name,source:path.join(buildRoot,'geumcheon',index?'ai-leaderboard':'ai',name)}));
