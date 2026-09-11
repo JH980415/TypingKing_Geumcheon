@@ -8,6 +8,11 @@ const ACTIVE_ATTEMPT_CHECKPOINT_ACK_CHANNEL =
 
 contextBridge.exposeInMainWorld("typingKing", {
   getBootstrap: () => ipcRenderer.invoke("app:getBootstrap"),
+  getDeploymentStatus: () => ipcRenderer.invoke("deployment:status"),
+  chooseDeploymentProfile: () => ipcRenderer.invoke("deployment:choose"),
+  cancelDeploymentProfile: () => ipcRenderer.invoke("deployment:cancel"),
+  applyDeploymentProfile: () => ipcRenderer.invoke("deployment:apply"),
+  setDeploymentSession: (dayNo:number, roundNo:number) => ipcRenderer.invoke("deployment:setSession",dayNo,roundNo),
   validateAdmin: (password: string, adminName?: string) =>
     ipcRenderer.invoke("admin:validate", password, adminName),
   validateReviewStorage: () => ipcRenderer.invoke("review:validateStorage"),

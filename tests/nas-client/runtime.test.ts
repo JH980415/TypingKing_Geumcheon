@@ -479,3 +479,39 @@ test("admin edit rejects malformed public values and unknown keys before sending
   }
   assert.equal(requests, 0);
 });
+
+test("v4 physical player can launch reader without writer recovery authority", async context => {
+  const runtimeRoot=await mkdtemp(path.join(os.tmpdir(),"typingking-v4-role-"));context.after(()=>rm(runtimeRoot,{recursive:true,force:true}));
+  const runtime=createGeumcheonNasRuntime({event:event(),device:device("player"),executionRole:"leaderboard",sessionKind:"official",runtimeRoot,safeStorage:safeStorage(),fetch:async()=>new Response("{}",{status:503}),local:localCallbacks().callbacks});
+  await assert.doesNotReject(()=>runtime.importLeaderboardToken("b".repeat(64)));
+  await assert.rejects(()=>runtime.recover(),/NAS_ROLE_FORBIDDEN/);
+  await assert.rejects(()=>runtime.flush(),/NAS_ROLE_FORBIDDEN/);
+  assert.equal(typeof runtime.checkLeaderboardReady,"function");
+});
+
+test("v4 game admin reads with reader token and cannot inherit operator authority",async context=>{
+ const runtimeRoot=await mkdtemp(path.join(os.tmpdir(),"typingking-v4-reader-"));context.after(()=>rm(runtimeRoot,{recursive:true,force:true}));const requests:string[]=[];
+ const fetch:FetchLike=async(url,init)=>{requests.push(String(new Headers(init?.headers).get("authorization")));const session={kind:"official",session_id:"official-1",day_no:1,round_no:2};const body=String(url).includes("/ready?")?{schema_version:1,status:"ready",event_id:"geumcheon-science-festival-2026",device_id:"PC01",role:"leaderboard",session}:{schema_version:1,event_id:"geumcheon-science-festival-2026",session,generated_at:"2026-09-18T01:03:00.000Z",rows:[]};return new Response(JSON.stringify(body),{status:200,headers:{"content-type":"application/json"}});};
+ const runtime=createGeumcheonNasRuntime({event:event(),device:device("player"),executionRole:"player",sessionKind:"official",runtimeRoot,safeStorage:safeStorage(),fetch,local:localCallbacks().callbacks,credentials:{getToken:role=>role==="leaderboard"?"b".repeat(64):"a".repeat(64),assertCurrent:()=>{}}});
+ assert.deepEqual((await runtime.loadRecords({freshOnly:true})).rows,[]);assert.ok(requests.every(value=>value==="Bearer "+"b".repeat(64)));
+ await assert.rejects(async()=>runtime.checkOperatorReady(),/NAS_ROLE_FORBIDDEN|NAS_OPERATOR_NOT_PROVISIONED/);
+});
+
+test("v4 expiry during an existing game preserves local progress and queue while new readiness and network remain blocked",async context=>{
+ const runtimeRoot=await mkdtemp(path.join(os.tmpdir(),"typingking-v4-expiry-"));context.after(()=>rm(runtimeRoot,{recursive:true,force:true}));let expired=false,fetchCalls=0;
+ const runtime=createGeumcheonNasRuntime({event:event(),device:device("player"),executionRole:"player",sessionKind:"official",runtimeRoot,safeStorage:safeStorage(),fetch:async()=>{fetchCalls++;throw new Error("NETWORK_MUST_NOT_RUN");},local:localCallbacks(async(_input,id)=>row(id)).callbacks,credentials:{getToken:()=>{if(expired)throw new Error("PROFILE_EXPIRED");return "a".repeat(64);},assertCurrent:()=>{if(expired)throw new Error("PROFILE_EXPIRED");},assertLocalIdentity:()=>{}},sleep:async()=>{}});
+ const initial=await runtime.checkpoint(input());expired=true;const continued=await runtime.checkpoint(input());assert.equal(continued.recordId,initial.recordId);const saved=await runtime.save(input());assert.equal(saved.record_id,initial.recordId);assert.equal((await runtime.queueStatus()).pending,1);
+ await assert.rejects(async()=>runtime.checkpoint(input()),/PROFILE_EXPIRED/);
+ await assert.rejects(async()=>runtime.save(input()),/PROFILE_EXPIRED/);
+ await assert.rejects(async()=>runtime.checkReady(),/PROFILE_EXPIRED/);await runtime.flush();assert.equal(fetchCalls,0);assert.equal((await runtime.queueStatus()).pending,1);
+});
+test("v4 cold expired checkpoint can renew same scope without rewriting checkpoint and recovers original identity",async context=>{
+ const {profileFixture}=await import("../events/rentalV4Fixture");const {assertSafeDeploymentApplication,DeploymentProfileStore,parseDeploymentProfile,replaceDeploymentSelection,withDeploymentLocks}=await import("../../electron/deploymentProfile");
+ const runtimeRoot=await mkdtemp(path.join(os.tmpdir(),"typingking-v4-cold-expiry-"));context.after(()=>rm(runtimeRoot,{recursive:true,force:true}));const encryption=safeStorage();const raw:any=profileFixture();raw.device.sessions.official={sessionId:"official-1",dayNo:1,roundNo:2};raw.allowedSessions=[raw.device.sessions.official];const profile=parseDeploymentProfile(raw);let sent:any;
+ const makeRuntime=(credentials:any)=>createGeumcheonNasRuntime({event:event(),device:profile.device,executionRole:"player",sessionKind:"official",runtimeRoot,safeStorage:encryption,fetch:async(_url,init)=>{sent=JSON.parse(String(init?.body));const hash=payloadSha256(sent);return new Response(JSON.stringify({schema_version:1,disposition:"stored",record_id:sent.row.record_id,payload_sha256:hash,stored_sha256:hash,received_at:"2026-09-18T01:03:00.000Z"}),{status:201,headers:{"content-type":"application/json"}});},local:localCallbacks(async(_input,id)=>row(id)).callbacks,credentials,sleep:async()=>{}});
+ const initial=makeRuntime({getToken:()=>profile.credentials.writer!.token,assertCurrent:()=>{},assertLocalIdentity:()=>{}});const checkpoint=await initial.checkpoint(input());const checkpointPath=path.join(runtimeRoot,"nas","active-attempt-official.bin"),before=await readFile(checkpointPath);
+ const fs=await import("node:fs");const expired={...profile,issuedAt:"2026-01-01T00:00:00.000Z",notBefore:"2026-01-01T00:00:00.000Z",expiresAt:"2026-02-01T00:00:00.000Z"};const storePath=path.join(runtimeRoot,"nas","deployment-profile.bin");fs.writeFileSync(storePath,encryption.encryptString(JSON.stringify(expired)));const next={...profile,deploymentId:"cold-renewed"};
+ await assert.rejects(()=>assertSafeDeploymentApplication({currentRuntimeRoot:runtimeRoot,targetRuntimeRoot:runtimeRoot,replacement:next,safeStorage:encryption}),/PROFILE_BUSY_RECORDS/);
+ await withDeploymentLocks([runtimeRoot],async()=>{assert.equal(await assertSafeDeploymentApplication({currentRuntimeRoot:runtimeRoot,targetRuntimeRoot:runtimeRoot,replacement:next,safeStorage:encryption,coldRecovery:true}),"credential-renewal");const directory=path.join(runtimeRoot,"client");fs.mkdirSync(directory);const source=path.join(directory,"player_01.device-profile.json");fs.writeFileSync(source,JSON.stringify(next));replaceDeploymentSelection(storePath,path.join(runtimeRoot,"selected.bin"),directory,next,source,encryption);});
+ assert.deepEqual(await readFile(checkpointPath),before);const store=new DeploymentProfileStore(storePath,encryption);store.activate(next);const resumed=makeRuntime({getToken:(role:any)=>store.token(role),assertCurrent:()=>store.assertCurrent(),assertLocalIdentity:()=>store.assertLocalIdentity()});const recovered=await resumed.recover();assert.equal(recovered?.record_id,checkpoint.recordId);assert.equal((await resumed.flush()).sent,1);assert.equal(sent.session.session_id,"official-1");assert.equal(sent.session.round_no,2);assert.equal(sent.row.record_id,checkpoint.recordId);
+});

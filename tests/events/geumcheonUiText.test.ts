@@ -78,7 +78,7 @@ test("Geumcheon challenge screen names the AI competitor as Geumnarae", () => {
   const html = renderChallengeMarkup();
 
   assert.match(html, /금나래 입력 대기 중/);
-  assert.match(html, /<h2>금나래<\/h2>/);
+  assert.match(html, /<h2>AI 금나래<\/h2>/);
   assert.match(html, /금나래보다 먼저 완성하세요/);
   assert.doesNotMatch(html, /AI 입력 대기 중/);
   assert.doesNotMatch(html, /AI보다 먼저/);
@@ -104,11 +104,11 @@ test("Geumcheon official leaderboard keeps the approved title in the upper-left 
 
   for (const label of [
     "순위",
-    "참여자명",
+    "도전자명",
     "휴대폰번호",
     "결과",
     "종료 지점",
-    "참여자 기록",
+    "도전자 기록",
     "금나래 기록",
     "총 대결시간",
     "현재 참여 기록 0건"
@@ -120,7 +120,7 @@ test("Geumcheon official leaderboard keeps the approved title in the upper-left 
   assert.doesNotMatch(outerHeader, /geumcheon-header-title|제8회 금천과학축제/);
   assert.match(outerHeader, /geumcheon-leaderboard-logo/);
   assert.doesNotMatch(html, /leaderboard-ai-title-img/);
-  assert.match(html, /ai_타자왕_금나래의_도전\.png/);
+  assert.match(html, /title_logo_062843\.png/);
   assert.doesNotMatch(html, /종료 스테이지/);
   assert.doesNotMatch(html, /참여자 점수/);
   assert.doesNotMatch(html, /AI 점수/);

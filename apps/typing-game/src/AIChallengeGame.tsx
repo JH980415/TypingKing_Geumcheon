@@ -1123,7 +1123,7 @@ export function AIChallengeGame({ config, participant, stageTexts, stageTextSele
         </div>
 
         <DuelPanel
-          title={eventProfile.profileId === "geumcheon-2026" ? "금나래" : "AI 타자왕"}
+          title={eventProfile.profileId === "geumcheon-2026" ? "AI 금나래" : "AI 타자왕"}
           target={target}
           input={aiInput}
           cpm={aiObservedCpm}
@@ -1476,9 +1476,9 @@ export function BattlePopup({
         </div>
         <div className="battle-stats">
           <span>{eventProfile.profileId === "geumcheon-2026" ? "도전자" : "사용자"} 기록 <strong>{formatRecordDisplay(battle.userTimeMs, battleUserCharCount(battle))}</strong></span>
-          <span>금나래 기록 <strong>{formatRecordDisplay(battle.aiElapsedMs, battleAiCharCount(battle))}</strong></span>
+          <span>{eventProfile.profileId === "geumcheon-2026" ? "AI 금나래" : "금나래"} 기록 <strong>{formatRecordDisplay(battle.aiElapsedMs, battleAiCharCount(battle))}</strong></span>
           <span>{eventProfile.profileId === "geumcheon-2026" ? "도전자" : "사용자"}{userWin ? " 타수" : " 현재 타수"} <strong>{formatDisplayNumber(battle.userCpm, 2)}타/분</strong></span>
-          <span>금나래 평균 타수 <strong>{formatDisplayNumber(battle.aiCpm, 2)}타/분</strong></span>
+          <span>{eventProfile.profileId === "geumcheon-2026" ? "AI 금나래" : "금나래"} 평균 타수 <strong>{formatDisplayNumber(battle.aiCpm, 2)}타/분</strong></span>
         </div>
         {isDebug && <p className="notice-text debug-result-note">디버그 모드 기록은 리더보드에 반영되지 않습니다.</p>}
         {saveError && <p className="error-text">{saveError}</p>}
@@ -1559,10 +1559,30 @@ export function ChallengeSummary({
       {battles.map((battle) => (
         <div key={battle.stage} className={isGeumcheon ? "r7-stage-result-card" : undefined}>
           <StageBadge assetBaseUrl={assetBaseUrl} eventProfile={eventProfile} assetPath={eventProfile.assets.stageBadges[battle.stage - 1]} stage={battle.stage} state="complete" compact />
-          {isGeumcheon ? <>
-            <strong>도전자 : {(battle.userTimeMs / 1000).toFixed(2)}초｜{battleUserCharCount(battle)}글자｜{formatDisplayNumber(battle.userCpm, 2)}타</strong>
-            <strong>금나래 : {(battle.aiElapsedMs / 1000).toFixed(2)}초｜{battleAiCharCount(battle)}글자｜{formatDisplayNumber(battle.aiCpm, 2)}타</strong>
-          </> : <strong>
+          {isGeumcheon ? <div className="r7-stage-metrics">
+            <strong className="r7-stage-metric-row">
+              <span className="r7-metric-label">도전자 :</span>
+              <span className="r7-metric-number">{(battle.userTimeMs / 1000).toFixed(2)}</span>
+              <span className="r7-metric-unit">초</span>
+              <span className="r7-metric-divider">｜</span>
+              <span className="r7-metric-number">{battleUserCharCount(battle)}</span>
+              <span className="r7-metric-unit">글자</span>
+              <span className="r7-metric-divider">｜</span>
+              <span className="r7-metric-number">{formatDisplayNumber(battle.userCpm, 2)}</span>
+              <span className="r7-metric-unit">타</span>
+            </strong>
+            <strong className="r7-stage-metric-row">
+              <span className="r7-metric-label">금나래 :</span>
+              <span className="r7-metric-number">{(battle.aiElapsedMs / 1000).toFixed(2)}</span>
+              <span className="r7-metric-unit">초</span>
+              <span className="r7-metric-divider">｜</span>
+              <span className="r7-metric-number">{battleAiCharCount(battle)}</span>
+              <span className="r7-metric-unit">글자</span>
+              <span className="r7-metric-divider">｜</span>
+              <span className="r7-metric-number">{formatDisplayNumber(battle.aiCpm, 2)}</span>
+              <span className="r7-metric-unit">타</span>
+            </strong>
+          </div> : <strong>
             사용자 {formatRecordDisplay(battle.userTimeMs, battleUserCharCount(battle))} / 금나래 {formatRecordDisplay(battle.aiElapsedMs, battleAiCharCount(battle))} / 금나래 평균 {formatDisplayNumber(battle.aiCpm, 2)}타
           </strong>}
         </div>

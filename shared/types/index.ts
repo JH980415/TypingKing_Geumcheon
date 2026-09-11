@@ -498,3 +498,9 @@ export type BootstrapData = {
   deviceProfile?: DeviceProfile;
   reviewContext?: ReviewRuntimeContext;
 };
+
+export type DeploymentProfilePreview = {
+  fileName: string; deploymentId: string; environment: "production" | "test"; deviceId: string; eventId: string; apiBaseUrl: string; role: "player" | "leaderboard";
+  session: {sessionId:string;dayNo:number;roundNo:number}; allowedSessions: {sessionId:string;dayNo:number;roundNo:number}[]; expiresAt:string;
+};
+export type DeploymentStatus = {profile:DeploymentProfilePreview;lastWriteSuccess?:string;lastReadSuccess?:string;pending:number;blocked:number};

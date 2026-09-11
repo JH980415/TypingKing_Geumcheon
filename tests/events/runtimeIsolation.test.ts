@@ -172,7 +172,7 @@ test("stops a packaged Geumcheon launch without its device profile", () => {
         executableDirectory: path.resolve("test_artifacts", "missing-device-profile"),
         localAppData: "C:\\Local"
       }),
-    /device profile/i
+    /PROFILE_FILE_MISSING|device profile/i
   );
 });
 

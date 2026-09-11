@@ -134,6 +134,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
   const records = snapshot.rows;
   const [message, setMessage] = useState("");
   const [refreshError, setRefreshError] = useState("");
+  const [lastSuccessfulReadAt, setLastSuccessfulReadAt] = useState<number | null>(null);
   const [search, setSearch] = useState("");
   const [searchField, setSearchField] = useState<RecordListSearch["field"]>("name");
   const [appliedSearch, setAppliedSearch] = useState<RecordListSearch | null>(null);
@@ -324,6 +325,7 @@ export function LeaderboardApp({ bootstrap }: Props) {
         setSnapshot((current) => !isGeumcheonOfficialBoard && sameRecordSnapshot(current.rows, result.data!)
           ? current : { rows: result.data!, matchingRecordIds: isGeumcheonOfficialBoard ? result.matchingRecordIds ?? null : null });
         setRefreshError("");
+        setLastSuccessfulReadAt(Date.now());
         recordsRefreshed = true;
       } else if (isGeumcheonOfficialBoard || !silent || result.code === "LOCKED") {
         setRefreshError(formatLeaderboardOperationError(result.error, "refresh"));
@@ -572,6 +574,8 @@ export function LeaderboardApp({ bootstrap }: Props) {
                 showDayRound={showDayRound}
                 forcePractice={isPracticeBoard}
                 compactPractice={isPracticeBoard}
+                lastSuccessfulReadAt={lastSuccessfulReadAt}
+                readFailed={Boolean(refreshError)}
               />
               <h2 className="leaderboard-mode-title">
                 <AssetImage
@@ -619,6 +623,8 @@ export function LeaderboardApp({ bootstrap }: Props) {
                 showDayRound={showDayRound}
                 forcePractice={isPracticeBoard}
                 compactPractice={isPracticeBoard}
+                lastSuccessfulReadAt={lastSuccessfulReadAt}
+                readFailed={Boolean(refreshError)}
               />
               {!isGeumcheonBoard && <h2 className="leaderboard-mode-title leaderboard-ai-title">
                 <AssetImage
@@ -1501,7 +1507,9 @@ export function SessionSummary({
   forcePractice = false,
   compactPractice = false,
   geumcheon = false,
-  showDayRound = false
+  showDayRound = false,
+  lastSuccessfulReadAt = null,
+  readFailed = false
 }: {
   config: AppConfig;
   participantCount?: number;
@@ -1509,6 +1517,8 @@ export function SessionSummary({
   compactPractice?: boolean;
   geumcheon?: boolean;
   showDayRound?: boolean;
+  lastSuccessfulReadAt?: number | null;
+  readFailed?: boolean;
 }) {
   const day = Number(config.dayNo) || 1;
   const round = Number(config.roundNo) || 1;
@@ -1516,7 +1526,15 @@ export function SessionSummary({
   const isPractice = forcePractice || Boolean(config.isPracticeSession);
   if (geumcheon && !isPractice) {
     return <div className="leaderboard-session">
-      <div className="session-top"><span className="session-count">현재 참여 기록 {count}건</span></div>
+      <div className="session-top">
+        <span className="session-count">현재 참여 기록 {count}건</span>
+        <span className="leaderboard-public-read-status"
+          data-public-read-state={readFailed ? "error" : lastSuccessfulReadAt === null ? "pending" : "connected"}
+          data-last-read-at={lastSuccessfulReadAt ?? ""}>
+          <span className="public-read-connection">{readFailed ? "조회 오류" : lastSuccessfulReadAt === null ? "연결 확인 중" : "연결 정상"}</span>
+          <span>마지막 조회 시각 <time>{lastSuccessfulReadAt === null ? "--:--:--" : new Date(lastSuccessfulReadAt).toLocaleTimeString("ko-KR", { hourCycle: "h23", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</time></span>
+        </span>
+      </div>
       {showDayRound && <div className="session-badges">
         <strong className="session-day">{day}일차</strong>
         <strong className="session-round">{round}회차</strong>

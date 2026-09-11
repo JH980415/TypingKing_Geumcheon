@@ -123,3 +123,32 @@ html[data-event-profile="geumcheon-2026"] .game-app .r7-stage-result-card strong
     height: calc(100dvh - 20px);
   }
 }
+
+/* Both result rows inherit the same nine columns within each stage card. */
+html[data-event-profile="geumcheon-2026"] .game-app .r7-stage-metrics {
+  display: grid;
+  grid-template-columns: max-content max-content 1em 1em max-content 2em 1em max-content 1em;
+  align-self: stretch;
+  justify-content: start;
+  font-size: clamp(16px, 1.35vw, 23px);
+}
+
+html[data-event-profile="geumcheon-2026"] .game-app .r7-stage-metric-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+
+html[data-event-profile="geumcheon-2026"] .game-app .r7-metric-label {
+  padding-right: 0.25em;
+}
+
+html[data-event-profile="geumcheon-2026"] .game-app .r7-metric-number {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+html[data-event-profile="geumcheon-2026"] .game-app .r7-metric-unit,
+html[data-event-profile="geumcheon-2026"] .game-app .r7-metric-divider {
+  text-align: center;
+}

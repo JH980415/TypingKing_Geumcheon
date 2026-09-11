@@ -1,3 +1,4 @@
+import { deploymentErrorForDisplay } from "../deploymentProfile";
 const LOG_FIELD_ALLOWLIST = new Set(["operation", "recordId", "status", "attempt"]);
 const SAFE_ERROR_CODES = new Set([
   "NAS_NETWORK_ERROR",
@@ -20,7 +21,7 @@ export function rendererSafeFailure(
 ): { ok: false; error: string } {
   return {
     ok: false,
-    error: fallback || "요청을 처리하지 못했습니다. 다시 시도해 주세요.",
+    error: deploymentErrorForDisplay(_error) || fallback || "요청을 처리하지 못했습니다. 다시 시도해 주세요.",
   };
 }
 

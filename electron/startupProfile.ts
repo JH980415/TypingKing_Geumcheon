@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { discoverDeploymentProfile, deploymentErrorForDisplay, loadDeploymentProfile, type DeploymentProfileV2 } from "./deploymentProfile";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { loadDeviceProfile, loadEventProfile } from "../shared/events/eventProfile";
@@ -9,6 +10,8 @@ import type { DeviceProfile, EventProfile, EventProfileId, EventVariantPolicy } 
 export type StartupProfile = {
   eventProfile: EventProfile;
   deviceProfile?: DeviceProfile;
+  deploymentProfile?: DeploymentProfileV2;
+  profileFilePath?: string;
   runtimeRoot: string;
   userDataPath?: string;
   reviewContext?: ReviewRuntimeContext;
@@ -24,10 +27,15 @@ export type StartupProfileOptions = {
   eventProfile?: string;
   packagedEventProfile?: string;
   runtimeRootOverride?: string;
+  profilePathOverride?: string;
+  requireDeploymentProfileV2?: boolean;
+  deploymentOverride?: {profile:DeploymentProfileV2;filePath:string};
+  variant?: AppVariant;
   reviewContext?: ReviewRuntimeContext;
 };
 
 export type PackagedMetadata = {
+  deploymentProfileVersion?: 2;
   eventProfileId?: EventProfileId;
   variant?: AppVariant;
   reviewContext?: ReviewRuntimeContext;
@@ -114,6 +122,7 @@ export function assertSafeTlsEnvironment(
 }
 
 export function formatStartupErrorForDisplay(error: unknown): string {
+  const profileError=deploymentErrorForDisplay(error);if(profileError)return profileError;
   if (error instanceof Error && error.message === "GEUMCHEON_CATALOG_UPDATE_REQUIRED") {
     return "저장된 문구 파일의 업데이트가 필요합니다. 프로그램을 종료하고 적용 안내문의 문구 파일 교체 절차를 따라 주세요. 기존 파일은 변경하지 않았습니다.";
   }
@@ -171,7 +180,7 @@ export function resolvePackagedMetadata(value: unknown): PackagedMetadata {
     ? metadata.typingKingVariant
     : undefined;
   const hasReviewMarker = metadata.typingKingEnvironment !== undefined || metadata.typingKingBuildId !== undefined;
-  if (!hasReviewMarker) return { eventProfileId, variant };
+  if (!hasReviewMarker) return { eventProfileId, variant, ...(metadata.typingKingDeploymentProfileVersion===2?{deploymentProfileVersion:2 as const}:{}) };
 
   const reviewContext = metadata.typingKingEnvironment === "review"
     && metadata.typingKingBuildId === REVIEW_BUILD_ID
@@ -322,10 +331,10 @@ export function resolveLaunchPolicy(startup: StartupProfile, variant: AppVariant
   }
   if (startup.eventProfile.profileId === "geumcheon-2026") {
     if (!startup.deviceProfile) throw new Error("Geumcheon launch requires a validated device profile");
-    if (startup.deviceProfile.role !== variantPolicy.role) {
+    if ((startup.deviceProfile.role === "leaderboard" && variantPolicy.role === "player") || (!startup.deploymentProfile && startup.deviceProfile.role !== variantPolicy.role)) {
       throw new Error(`Device role ${startup.deviceProfile.role} cannot launch ${variantPolicy.role} variant ${variant}`);
     }
-    return { pcRole: startup.deviceProfile.role };
+    return { pcRole: variantPolicy.role };
   }
   return { pcRole: variantPolicy.role };
 }
@@ -360,7 +369,13 @@ export function resolveStartupProfile(options: StartupProfileOptions): StartupPr
     };
   }
 
-  const deviceProfile = loadDeviceProfile(path.join(options.executableDirectory, "device-profile.json"));
+  const deployment = options.deploymentOverride ?? (options.profilePathOverride
+    ? {profile:loadDeploymentProfile(options.profilePathOverride),filePath:options.profilePathOverride}
+    : discoverDeploymentProfile(options.executableDirectory));
+  const legacyPath = path.join(options.executableDirectory, "device-profile.json");
+  if (!deployment && !fs.existsSync(legacyPath)) throw new Error("PROFILE_FILE_MISSING");
+  if (!deployment && options.requireDeploymentProfileV2)throw new Error("PROFILE_VERSION_INVALID");
+  const deviceProfile = deployment?.profile.device ?? loadDeviceProfile(legacyPath);
   if (deviceProfile.eventProfileId !== eventProfile.profileId || deviceProfile.eventId !== eventProfile.eventId) {
     throw new Error("Device profile does not match the selected Geumcheon event profile");
   }
@@ -373,6 +388,8 @@ export function resolveStartupProfile(options: StartupProfileOptions): StartupPr
     eventProfile,
     deviceProfile,
     runtimeRoot,
-    userDataPath: path.join(runtimeRoot, "electron-user-data")
+    deploymentProfile: deployment?.profile,
+    profileFilePath: deployment?.filePath,
+    userDataPath: path.join(runtimeRoot, `electron-user-data-${options.variant ?? deviceProfile.role}`)
   };
 }

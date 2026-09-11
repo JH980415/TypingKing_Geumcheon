@@ -1,5 +1,7 @@
 import type {
   ApiResult,
+  DeploymentStatus,
+  DeploymentProfilePreview,
   AppConfig,
   BootstrapData,
   CsvBackupExportResult,
@@ -22,6 +24,11 @@ declare global {
   interface Window {
     typingKing: {
       getBootstrap(): Promise<ApiResult<BootstrapData>>;
+      getDeploymentStatus(): Promise<ApiResult<DeploymentStatus>>;
+      chooseDeploymentProfile(): Promise<ApiResult<DeploymentProfilePreview|null>>;
+      cancelDeploymentProfile(): Promise<ApiResult<boolean>>;
+      applyDeploymentProfile(): Promise<ApiResult<boolean>>;
+      setDeploymentSession(dayNo:number,roundNo:number): Promise<ApiResult<BootstrapData>>;
       validateAdmin(password: string, adminName?: string): Promise<ApiResult<{ adminName: string }>>;
       validateReviewStorage(): Promise<ApiResult<ReviewStorageValidation>>;
       listStageTexts(): Promise<ApiResult<StageText[]>>;

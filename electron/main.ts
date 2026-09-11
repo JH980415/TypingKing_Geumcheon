@@ -1,10 +1,14 @@
-﻿import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import type { IpcMainInvokeEvent, OpenDialogOptions } from "electron";
 import { safeStorage } from "electron";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { DeploymentProfileStore, loadDeploymentProfile, profileFingerprint, profilePreview, withDeploymentLocks, replaceDeploymentSelection, assertSafeDeploymentApplication, deploymentErrorForDisplay, readDeploymentSelection, saveDeploymentSelection, type DeploymentProfileV2 } from "./deploymentProfile";
 import fs from "node:fs";
 import path from "node:path";
 import tls from "node:tls";
+import net from "node:net";
+import {appendDeploymentCsvContext} from "./deploymentCsv";
+import {saveRecoveryAuthorization,openProfileRecovery} from "./profileRecovery";
 import {
   addStageText,
   buildRecordRow,
@@ -82,14 +86,23 @@ import {
 
 let mainWindow: BrowserWindow | null = null;
 let startupRuntimeRoot: string | undefined;
+let profilePathOverride: string | undefined;
+let protectedProfile: DeploymentProfileStore | undefined;
+let activeProfile: DeploymentProfileV2 | undefined;
+let activeProfilePath: string | undefined;
+let lastWriteSuccess: string | undefined;
+let lastReadSuccess: string | undefined;
 
 const metadata = packagedMetadata();
 const variant = resolveVariant(metadata.variant, metadata.reviewContext !== undefined);
 const selectedEventProfileId = app.isPackaged
   ? metadata.eventProfileId
   : process.env.EVENT_PROFILE;
-const requiresSingleInstanceLock = metadata.reviewContext !== undefined || (selectedEventProfileId === "geumcheon-2026"
-  && (variant === "ai" || variant === "practice"));
+const requiresSingleInstanceLock = metadata.reviewContext !== undefined || selectedEventProfileId === "geumcheon-2026";
+if (selectedEventProfileId === "geumcheon-2026" && !metadata.reviewContext) {
+  const installId = createHash("sha256").update(path.resolve(process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath))).digest("hex").slice(0,20);
+  app.setPath("userData", path.join(process.env.LOCALAPPDATA || process.env.APPDATA || resolveRoot(), "ThePMD", "TypingKing2026", "launch", installId, variant));
+}
 if (metadata.reviewContext) {
   const localAppData = process.env.LOCALAPPDATA || process.env.APPDATA;
   if (!localAppData) throw new Error("REVIEW_LOCALAPPDATA_REQUIRED");
@@ -294,8 +307,11 @@ async function initializeGeumcheonNasConnection(
     event: eventProfile,
     device: deviceProfile,
     sessionKind,
+    executionRole: variant.endsWith("leaderboard") ? "leaderboard" : "player",
+    credentials: protectedProfile ? { getToken: role => protectedProfile!.token(role), assertCurrent: assertCurrentDeployment, assertLocalIdentity:()=>protectedProfile!.assertLocalIdentity() } : undefined,
     runtimeRoot,
     safeStorage,
+    onReadSuccess: () => {markDeploymentSuccess("read");},
     fetch: (input, init) => globalThis.fetch(input, init),
     local: {
       persist: (input, recordId) => saveRecord(localContext(), input, recordId),
@@ -308,7 +324,7 @@ async function initializeGeumcheonNasConnection(
     }
   });
   const executableDirectory = process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath);
-  for (const scope of resolveBootstrapCredentialScopes(deviceProfile.role)) {
+  for (const scope of protectedProfile ? [] : resolveBootstrapCredentialScopes(deviceProfile.role)) {
     const credentialStore = new NasCredentialStore({
       filePath: path.join(runtimeRoot, "nas", scope.encryptedFileName),
       safeStorage,
@@ -339,14 +355,15 @@ async function initializeGeumcheonNasConnection(
       checkAuthenticatedReady: () => runtime.checkReady()
     }),
     flush: () => {
+      if (variant.endsWith("leaderboard")) return Promise.resolve({attempted:0,sent:0,blocked:0,deferred:0,authRequired:false});
       if (flushInFlight) return flushInFlight;
-      flushInFlight = runtime.flush().finally(() => {
+      flushInFlight = runtime.flush().then(result=>{if(result.sent>0)markDeploymentSuccess("write");return result;}).finally(() => {
         flushInFlight = null;
       });
       return flushInFlight;
     }
   };
-  if (deviceProfile.role === "player") {
+  if (!variant.endsWith("leaderboard")) {
     try {
       await runtime.recover();
     } catch (error) {
@@ -519,6 +536,16 @@ async function registerIpc(
   const rendererAssetBaseUrl = eventProfile.profileId === "geumcheon-2026"
     ? applicationResources.rendererAssetBaseUrl
     : ctx.assetBaseUrl;
+  if(activeProfile && deviceProfile) {
+    const sessionPath=path.join(runtimeRoot,"nas",`session-${variant}.json`);
+    if(fs.existsSync(sessionPath)) {
+      const saved=JSON.parse(fs.readFileSync(sessionPath,"utf8"));
+      const selected=activeProfile.allowedSessions.find(s=>s.sessionId===saved.sessionId && s.dayNo===saved.dayNo && s.roundNo===saved.roundNo);
+      if(!selected)throw new Error("PROFILE_SESSION_NOT_ALLOWED");
+      deviceProfile={...deviceProfile,sessions:{official:{...selected}}};
+    }
+    ctx.config={...ctx.config,pcId:deviceProfile.deviceId,dayNo:deviceProfile.sessions.official.dayNo,roundNo:deviceProfile.sessions.official.roundNo};
+  }
   let geumcheonNas: GeumcheonConnection | null = null;
   if (eventProfile.profileId === "geumcheon-2026") {
     geumcheonNas = await initializeGeumcheonConnection({
@@ -540,8 +567,11 @@ async function registerIpc(
   }
   const adminAccessSessions = new AdminAccessSessions({
     password: resolveAdminPasswordForRuntime(ctx.config.adminPassword, startup?.reviewContext?.environment),
+    verifier: activeProfile?.administrator,
+    allowUnavailable: eventProfile.profileId === "geumcheon-2026" && !startup?.reviewContext,
     ttlMs: 15 * 60 * 1000
   });
+  if(activeProfile)saveRecoveryAuthorization(path.join(path.dirname(selectionPath()),"administrator-recovery.bin"),ctx.config.adminPassword,activeProfile,runtimeRoot);
   ipcMain.handle("app:getBootstrap", () => ({
     ok: true,
     data: createBootstrapData({
@@ -554,6 +584,63 @@ async function registerIpc(
         deviceProfile,
         reviewContext: startup?.reviewContext
       })
+  }));
+
+
+  let profileCandidate: {profile:DeploymentProfileV2;filePath:string;senderId:number;fingerprint:string} | undefined;
+  async function assertSafeProfileChange(allExecutables: boolean): Promise<void> {
+    if (!activeProfile || !geumcheonNas) throw new Error("PROFILE_MANAGEMENT_UNAVAILABLE");
+    const queue=await geumcheonNas.runtime.queueStatus();
+    if(queue.pending || queue.blocked || fs.existsSync(path.join(runtimeRoot,"nas","active-attempt-official.bin"))) throw new Error("PROFILE_BUSY_RECORDS");
+    if(allExecutables) {
+      const root=path.join(runtimeRoot,"nas","app-leases");
+      for(const entry of fs.readdirSync(root)) {
+        const pid=Number(fs.readFileSync(path.join(root,entry),"utf8"));
+        if(pid && pid!==process.pid) {try{process.kill(pid,0);}catch(error){if((error as NodeJS.ErrnoException).code==="ESRCH")continue;throw error;}throw new Error("PROFILE_OTHER_APP_RUNNING");}
+      }
+    }
+  }
+  ipcMain.handle("deployment:status", event=>safeAsync(async()=>{
+    adminAccessSessions.require(event.sender);assertCurrentDeployment();
+    if(!activeProfile || !geumcheonNas) throw new Error("PROFILE_MANAGEMENT_UNAVAILABLE");
+    const queue=await geumcheonNas.runtime.queueStatus();
+    return {profile:{...profilePreview(activeProfile,activeProfilePath!),session:deviceProfile!.sessions.official},lastWriteSuccess:readDeploymentSuccess("write"),lastReadSuccess:readDeploymentSuccess("read"),pending:queue.pending,blocked:queue.blocked};
+  }));
+  ipcMain.handle("deployment:choose", async event=>{
+    const access=safe(()=>adminAccessSessions.require(event.sender));if(!access.ok)return access;
+    const selected=await dialog.showOpenDialog({title:"관리자 PC 프로필 선택",properties:["openFile"],filters:[{name:"원래 이름 장치 프로필",extensions:["json"]}]});
+    if(selected.canceled || !selected.filePaths[0]){profileCandidate=undefined;return {ok:true,data:null};}
+    return safe(()=>{const filePath=selected.filePaths[0];const profile=loadDeploymentProfile(filePath);profileCandidate={profile,filePath,senderId:event.sender.id,fingerprint:profileFingerprint(profile)};return profilePreview(profile,filePath);});
+  });
+  ipcMain.handle("deployment:cancel", event=>safe(()=>{adminAccessSessions.require(event.sender);profileCandidate=undefined;return true;}));
+  ipcMain.handle("deployment:apply", event=>safeAsync(async()=>{
+    adminAccessSessions.require(event.sender);
+    if(!activeProfile || !geumcheonNas || geumcheonNas.source!=="production")throw new Error("PROFILE_MANAGEMENT_UNAVAILABLE");
+    if(!profileCandidate || profileCandidate.senderId!==event.sender.id) throw new Error("PROFILE_CANDIDATE_MISSING");
+    const profile=loadDeploymentProfile(profileCandidate.filePath);
+    if(profileFingerprint(profile)!==profileCandidate.fingerprint)throw new Error("PROFILE_CANDIDATE_CHANGED");
+    if(variantPolicy.role==="player" && profile.device.role!=="player")throw new Error("PROFILE_GAME_ROLE_INVALID");
+    const targetRoot=path.join(process.env.LOCALAPPDATA || process.env.APPDATA!, "ThePMD","TypingKing2026",profile.device.eventProfileId,profile.device.deviceId);
+    const selectedPath=profileCandidate.filePath;
+    await withDeploymentLocks([runtimeRoot,targetRoot],async()=>{
+      await assertSafeDeploymentApplication({currentRuntimeRoot:runtimeRoot,targetRuntimeRoot:targetRoot,replacement:profile,safeStorage});
+      replaceDeploymentSelection(path.join(targetRoot,"nas","deployment-profile.bin"),selectionPath(),deploymentDirectory(),profile,selectedPath,safeStorage);
+    });
+    profileCandidate=undefined;
+    setTimeout(()=>{app.relaunch();app.quit();},150);
+    return true;
+  }));
+  ipcMain.handle("deployment:setSession", (event, dayNo:unknown, roundNo:unknown)=>safeAsync(async()=>{
+    adminAccessSessions.require(event.sender);assertCurrentDeployment();
+    if(!Number.isSafeInteger(dayNo) || Number(dayNo)<1 || !Number.isSafeInteger(roundNo) || Number(roundNo)<1)throw new Error("PROFILE_SESSION_INPUT_INVALID");
+    const session=activeProfile?.allowedSessions.find(s=>s.dayNo===dayNo && s.roundNo===roundNo);
+    if(!session || !deviceProfile)throw new Error("PROFILE_SESSION_NOT_ALLOWED");
+    if(variantPolicy.role==="player") await assertSafeProfileChange(false);
+    deviceProfile={...deviceProfile,sessions:{official:{...session}}};
+    ctx.config={...ctx.config,dayNo:session.dayNo,roundNo:session.roundNo};
+    fs.writeFileSync(path.join(runtimeRoot,"nas",`session-${variant}.json`),JSON.stringify(session));
+    Object.assign(geumcheonNas!,await initializeGeumcheonNasConnection(eventProfile,deviceProfile,"official",ctx));
+    return createBootstrapData({config:ctx.config,assetBaseUrl:rendererAssetBaseUrl,notices:ctx.notices,mode,variant,eventProfile,deviceProfile});
   }));
 
   ipcMain.handle("admin:validate", (event, password: string, adminName?: string) => {
@@ -642,7 +729,7 @@ async function registerIpc(
       await geumcheonNas.checkpointFence.run(
         _event.sender.id,
         closeRequestId,
-        () => geumcheonNas.runtime.checkpoint(input)
+        () => geumcheonNas!.runtime.checkpoint(input)
       );
     })
   );
@@ -738,8 +825,21 @@ async function registerIpc(
     )
   );
   ipcMain.handle("records:export", (event, rows: RecordRow[], scope: "all" | "filtered" | "leaderboard") =>
-    safe(() => {
+    safeAsync(async () => {
       adminAccessSessions.require(event.sender);
+      if(geumcheonNas && activeProfile) {
+        assertCurrentDeployment();
+        if(!["all","filtered","leaderboard"].includes(scope) || !Array.isArray(rows))throw new Error("CSV_SCOPE_INVALID");
+        const full=(await geumcheonNas.runtime.loadRecords({freshOnly:true})).rows;
+        const ids=new Set(rows.map(row=>row.record_id));
+        const selected=scope==="all"?full:full.filter(row=>ids.has(row.record_id));
+        const generated=exportRecords({...ctx,config:{...ctx.config,syncMode:"local"}},selected,scope,scopedRecordMode);
+        const result=await dialog.showSaveDialog({title:"관리자 CSV 저장",defaultPath:path.join(app.getPath("documents"),path.basename(generated)),filters:[{name:"CSV",extensions:["csv"]}]});
+        if(result.canceled || !result.filePath)return "";
+        const generatedPath=path.join(ctx.paths.exportsDir,generated);
+        const csv=appendDeploymentCsvContext(fs.readFileSync(generatedPath,"utf8"),deviceProfile!.sessions.official);
+        fs.writeFileSync(result.filePath,csv,"utf8");return result.filePath;
+      }
       // 연습 리더보드는 일반+AI 두 보드를 표시하므로 CSV도 두 모드를 각각 내보낸다.
       // (OneDrive 모드의 exportRecords는 모드별 최신 기록으로 재구성하므로 단일 호출로는 한쪽이 유실됨)
       if (hasMultipleRecordModes) {
@@ -912,7 +1012,7 @@ async function registerIpc(
 }
 
 function errorMessage(error: unknown, fallback?: string): string {
-  void error;
+  const profileError=deploymentErrorForDisplay(error);if(profileError)return profileError;
   return fallback || "요청을 처리하지 못했습니다. 다시 시도해 주세요.";
 }
 
@@ -937,6 +1037,53 @@ let startup: ReturnType<typeof resolveStartupProfile> | undefined;
 let applicationResources: ApplicationResourcePaths | undefined;
 let startupInitializationError: unknown;
 
+
+function markDeploymentSuccess(kind:"write"|"read"):void {
+  const value=new Date().toISOString();
+  if(kind==="write")lastWriteSuccess=value;else lastReadSuccess=value;
+  try {const file=path.join(resolveRuntimeRoot(),"nas",`last-${kind}-success.txt`),tmp=file+"."+process.pid+".tmp";fs.writeFileSync(tmp,value,"utf8");fs.renameSync(tmp,file);}catch{}
+}
+function readDeploymentSuccess(kind:"write"|"read"):string|undefined {
+  try {const value=fs.readFileSync(path.join(resolveRuntimeRoot(),"nas",`last-${kind}-success.txt`),"utf8");return Number.isFinite(Date.parse(value))?value:undefined;}catch{return kind==="write"?lastWriteSuccess:lastReadSuccess;}
+}
+
+function deploymentDirectory(): string { return process.env.PORTABLE_EXECUTABLE_DIR || path.dirname(process.execPath); }
+function selectionPath(): string { return path.join(path.dirname(app.getPath("userData")), "selected-profile.bin"); }
+function assertCurrentDeployment(): void {
+  protectedProfile?.assertCurrent();
+  if (activeProfile) {
+    const selected = readDeploymentSelection(selectionPath(), deploymentDirectory(), safeStorage);
+    if (!selected || profileFingerprint(selected.profile) !== profileFingerprint(activeProfile)) throw new Error("PROFILE_CONFIGURATION_CHANGED");
+  }
+}
+async function initializeDeployment(): Promise<void> {
+  if (!startup?.deploymentProfile) return;
+  const initialStartup=startup;
+  await withDeploymentLocks([initialStartup.runtimeRoot],async()=>{
+  activeProfile = initialStartup.deploymentProfile!;
+  activeProfilePath = initialStartup.profileFilePath!;
+  protectedProfile = new DeploymentProfileStore(path.join(initialStartup.runtimeRoot, "nas", "deployment-profile.bin"), safeStorage);
+  protectedProfile.activate(activeProfile);
+  saveDeploymentSelection(selectionPath(), deploymentDirectory(), activeProfile, activeProfilePath, safeStorage);
+  if(process.platform==="win32") {
+    const pipe="\\\\.\\pipe\\typingking-v4-"+createHash("sha256").update(initialStartup.runtimeRoot+"|"+variant).digest("hex");
+    const mutex=net.createServer(socket=>socket.end());
+    await new Promise<void>((resolve,reject)=>{mutex.once("error",()=>reject(new Error("PROFILE_APP_ALREADY_RUNNING")));mutex.listen(pipe,()=>resolve());});
+    app.once("will-quit",()=>mutex.close());
+  }
+  const leaseRoot = path.join(initialStartup.runtimeRoot,"nas","app-leases");
+  fs.mkdirSync(leaseRoot,{recursive:true});
+  const leasePath = path.join(leaseRoot, variant + ".pid");
+  const previousPid = fs.existsSync(leasePath) ? Number(fs.readFileSync(leasePath,"utf8")) : 0;
+  if(previousPid && previousPid !== process.pid) {
+    try {process.kill(previousPid,0);throw new Error("PROFILE_APP_ALREADY_RUNNING");}
+    catch(error){if((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;}
+  }
+  fs.writeFileSync(leasePath,String(process.pid));
+  app.once("will-quit",()=>{try{if(fs.readFileSync(leasePath,"utf8")===String(process.pid))fs.unlinkSync(leasePath);}catch{}});
+  });
+}
+
 function initializeStartup(): void {
   const startupResources = resolveApplicationResourcePaths({
     isPackaged: app.isPackaged,
@@ -953,7 +1100,11 @@ function initializeStartup(): void {
     eventProfile: process.env.EVENT_PROFILE,
     packagedEventProfile: metadata.eventProfileId,
     runtimeRootOverride: process.env.TYPINGKING_RUNTIME_ROOT,
-    reviewContext: metadata.reviewContext
+    reviewContext: metadata.reviewContext,
+    profilePathOverride,
+    requireDeploymentProfileV2:metadata.deploymentProfileVersion===2,
+    deploymentOverride: app.isReady() && !profilePathOverride ? (()=>{const saved=readDeploymentSelection(selectionPath(),deploymentDirectory(),safeStorage);return saved?{profile:saved.profile,filePath:saved.selectedFilePath}:undefined;})() : undefined,
+    variant
   });
   assertSafeTlsEnvironment(
     process.env,
@@ -965,7 +1116,7 @@ function initializeStartup(): void {
   );
   installConfiguredExtraCa();
   startupRuntimeRoot = startup.runtimeRoot;
-  if (startup.userDataPath) app.setPath("userData", startup.userDataPath);
+  if (startup.userDataPath && selectedEventProfileId !== "geumcheon-2026") app.setPath("userData", startup.userDataPath);
   launchPolicy = resolveLaunchPolicy(startup, variant);
   applicationResources = resolveApplicationResourcePaths({
     isPackaged: app.isPackaged,
@@ -986,10 +1137,19 @@ if (mayStartApplication && app.isPackaged && selectedEventProfileId === "geumche
 
 if (mayStartApplication) void app.whenReady().then(async () => {
   try {
-    if (startupInitializationError) throw startupInitializationError;
-    if (!launchPolicy || !startup || !applicationResources) initializeStartup();
+    try { initializeStartup(); }
+    catch(error) {
+      if (!(error instanceof Error) || error.message !== "PROFILE_FILE_MISSING") throw error;
+      const choice=await dialog.showMessageBox({type:"warning",title:"PC 프로필이 필요합니다",message:"해당 PC의 원래 이름 프로필 하나를 EXE 옆에 배치해 주세요.",detail:"처음 복구하는 경우 프로필 선택으로 가져올 수 있습니다.",buttons:["프로필 선택","종료"],defaultId:0,cancelId:1});
+      if(choice.response!==0){app.exit(1);return;}
+      const selected=await dialog.showOpenDialog({title:"PC 프로필 선택",properties:["openFile"],filters:[{name:"장치 프로필",extensions:["json"]}]});
+      if(selected.canceled || !selected.filePaths[0]){app.exit(1);return;}
+      profilePathOverride=selected.filePaths[0];initializeStartup();
+    }
+    await initializeDeployment();
   } catch (error) {
     appendStartupLog(`Startup profile initialization failed: ${errorMessage(error)}`);
+    if(await openProfileRecovery({error,authorizationPath:path.join(path.dirname(selectionPath()),"administrator-recovery.bin"),selectionPath:selectionPath(),directory:deploymentDirectory(),variant,localAppData:process.env.LOCALAPPDATA || process.env.APPDATA!}))return;
     if (shouldShowStartupErrorDialog(process.env, app.isPackaged)) {
       dialog.showErrorBox("시작할 수 없습니다", formatStartupErrorForDisplay(error));
     }
@@ -1010,7 +1170,7 @@ if (mayStartApplication) void app.whenReady().then(async () => {
   } catch (error) {
     appendStartupLog(`Geumcheon NAS initialization failed: ${errorMessage(error)}`);
     if (shouldShowStartupErrorDialog(process.env, app.isPackaged)) {
-      dialog.showErrorBox("시작할 수 없습니다", errorMessage(error));
+      dialog.showErrorBox("시작할 수 없습니다", formatStartupErrorForDisplay(error));
     }
     app.exit(1);
     return;

@@ -1,4 +1,6 @@
-import { createHash, timingSafeEqual } from "node:crypto";
+import { createHash, scryptSync, timingSafeEqual } from "node:crypto";
+
+import type { AdministratorVerifier } from "./deploymentProfile";
 
 export const REVIEW_LOCAL_ADMIN_PASSWORD = "0208";
 
@@ -18,18 +20,19 @@ type AdminSession = { adminName: string; expiresAt: number };
 
 export class AdminAccessSessions {
   private readonly password: string;
+  private readonly verifier?: AdministratorVerifier;
   private readonly ttlMs: number;
   private readonly now: () => number;
   private readonly sessions = new Map<number, AdminSession>();
   private readonly observedSenders = new WeakSet<object>();
 
-  constructor(options: { password: string; ttlMs: number; now?: () => number }) {
+  constructor(options: { password: string; verifier?: AdministratorVerifier; allowUnavailable?: boolean; ttlMs: number; now?: () => number }) {
     const normalizedPassword = typeof options.password === "string"
       ? options.password.trim()
       : "";
     if (
-      normalizedPassword.length === 0
-      || normalizedPassword === "CHANGE_ME_BEFORE_EVENT"
+      (normalizedPassword.length === 0
+      || normalizedPassword === "CHANGE_ME_BEFORE_EVENT") && !options.verifier && !options.allowUnavailable
     ) {
       throw new Error("ADMIN_PASSWORD_INVALID");
     }
@@ -40,7 +43,8 @@ export class AdminAccessSessions {
     ) {
       throw new Error("ADMIN_SESSION_TTL_INVALID");
     }
-    this.password = options.password;
+    this.password = normalizedPassword === "CHANGE_ME_BEFORE_EVENT" ? "" : options.password;
+    this.verifier = this.password ? undefined : options.verifier;
     this.ttlMs = options.ttlMs;
     this.now = options.now ?? Date.now;
   }
@@ -51,7 +55,10 @@ export class AdminAccessSessions {
     adminName?: string
   ): { ok: true; adminName: string } | { ok: false } {
     const normalizedName = normalizeAdminName(adminName);
-    if (!secureEqual(password, this.password) || normalizedName == null) {
+    const matches = this.verifier
+      ? typeof password === "string" && password.length <= 1024 && timingSafeEqual(scryptSync(password, Buffer.from(this.verifier.salt, "hex"), 64), Buffer.from(this.verifier.hash, "hex"))
+      : this.password.length > 0 && secureEqual(password, this.password);
+    if (!matches || normalizedName == null) {
       this.sessions.delete(sender.id);
       return { ok: false };
     }

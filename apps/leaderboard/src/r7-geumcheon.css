@@ -136,3 +136,25 @@ html[data-event-profile="geumcheon-2026"] .r7-geumcheon-leaderboard [data-leader
   outline: 3px solid var(--primary);
   outline-offset: -3px;
 }
+
+/* Reuse the fixed summary line; polling status never changes board geometry. */
+.r7-geumcheon-leaderboard .leaderboard-public-read-status {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 12px;
+  margin-left: 12px;
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.r7-geumcheon-leaderboard .public-read-connection {
+  display: inline-block;
+  min-width: 6.5em;
+}
+
+.r7-geumcheon-leaderboard .leaderboard-public-read-status time {
+  display: inline-block;
+  min-width: 5.1em;
+  font-variant-numeric: tabular-nums;
+}

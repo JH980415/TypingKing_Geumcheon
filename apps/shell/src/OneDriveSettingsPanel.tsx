@@ -103,7 +103,7 @@ function formatSkillUpQueuedRecordFlushMessage(result: QueuedRecordFlushResult):
 
 export function formatQueuedRecordFlushMessage(result: QueuedRecordFlushResult): string {
   if (result.sent > 0 && result.failed === 0) {
-    return `누락 기록 ${result.sent}건을 NAS 기록 저장소에 반영했습니다.\n리더보드는 기록을 새로고침하면 반영됩니다.`;
+    return `누락 기록 ${result.sent}건을 NAS 기록 저장소에 반영했습니다.\n리더보드에 자동으로 반영됩니다.`;
   }
   if (result.sent > 0 && result.failed > 0) {
     return `누락 기록 ${result.sent}건을 NAS 기록 저장소에 반영했습니다.\n다만 ${result.failed}건은 반영하지 못했습니다. NAS 연결, 운영 폴더 검증 상태, 역할별 권한을 확인해 주세요.`;
@@ -220,9 +220,32 @@ function GeumcheonNasStatusPanel({
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [validated, setValidated] = useState(false);
+
+  const [status,setStatus]=useState<import("../../../shared/types").DeploymentStatus|null>(null);
+  const [candidate,setCandidate]=useState<import("../../../shared/types").DeploymentProfilePreview|null>(null);
+  const [dayNo,setDayNo]=useState(String(deviceProfile?.sessions.official.dayNo ?? 1));
+  const [roundNo,setRoundNo]=useState(String(deviceProfile?.sessions.official.roundNo ?? 1));
+  useEffect(()=>{
+    let disposed=false;
+    const update=async()=>{const result=await window.typingKing.getDeploymentStatus();if(!disposed && result.ok && result.data)setStatus(result.data);};
+    void update();const timer=window.setInterval(()=>void update(),3000);
+    return()=>{disposed=true;window.clearInterval(timer);};
+  },[]);
+  async function chooseProfile() {
+    setBusy(true);try{const result=await window.typingKing.chooseDeploymentProfile();if(result.ok)setCandidate(result.data ?? null);else setMessage(result.error || "프로필을 선택할 수 없습니다.");}finally{setBusy(false);}
+  }
+  async function applyProfile() {
+    setBusy(true);try{const result=await window.typingKing.applyDeploymentProfile();setMessage(result.ok?"프로필을 적용했습니다. 앱을 다시 시작합니다.":result.error || "프로필을 적용할 수 없습니다.");}finally{setBusy(false);}
+  }
+  async function cancelProfile() {await window.typingKing.cancelDeploymentProfile();setCandidate(null);}
+  async function applySession() {
+    if(!/^[1-9]\d*$/.test(dayNo) || !/^[1-9]\d*$/.test(roundNo)){setMessage("일차와 회차는 1 이상의 정수로 입력해 주세요.");return;}
+    setBusy(true);try{const result=await window.typingKing.setDeploymentSession(Number(dayNo),Number(roundNo));if(result.ok)window.location.reload();else setMessage(result.error || "회차를 적용할 수 없습니다.");}finally{setBusy(false);}
+  }
+
   const deviceMatches =
     deviceProfile?.eventProfileId === "geumcheon-2026" &&
-    deviceProfile.role === role;
+    (deviceProfile.role === "player" || role === "leaderboard");
   const sessionLabel = geumcheonSessionLabel(deviceProfile, sessionKind);
 
   async function validateConnection() {
@@ -282,14 +305,35 @@ function GeumcheonNasStatusPanel({
         <strong>{deviceMatches ? "행사 전용 장치 프로필 적용" : "장치 프로필 확인 필요"}</strong>
         <small>
           {role === "leaderboard"
-            ? "LEADERBOARD01 조회 전용 권한으로 현재 세션 기록을 확인합니다."
-            : "PC01~PC10 기록 제출 전용 권한으로 현재 세션을 확인합니다."}
+            ? "현재 PC의 조회 전용 권한으로 네 PC의 통합 기록을 확인합니다."
+            : "PC01~PC04의 기록 제출 권한으로 현재 세션을 확인합니다."}
         </small>
       </div>
 
-      <p className="settings-helper">
-        서버 주소와 인증 정보는 배포 시 고정되며 이 화면에서 변경하거나 표시하지 않습니다.
-      </p>
+
+      <div className="session-preview">
+        <span>현재 프로필: {status?.profile.fileName || "자동 적용"}</span>
+        <small>행사: {deviceProfile?.eventId}</small>
+        <small>마지막 저장 성공: {status?.lastWriteSuccess ? new Date(status.lastWriteSuccess).toLocaleString() : "확인 전"}</small>
+        <small>마지막 조회 성공: {status?.lastReadSuccess ? new Date(status.lastReadSuccess).toLocaleString() : "확인 전"}</small>
+        <small>미전송: {status ? status.pending + status.blocked : "확인 중"}건</small>
+      </div>
+      <div className="settings-grid">
+        <label>일차 직접 입력<input aria-label="일차 직접 입력" type="number" min="1" step="1" value={dayNo} onChange={event=>setDayNo(event.target.value)} /></label>
+        <label>회차 직접 입력<input aria-label="회차 직접 입력" type="number" min="1" step="1" value={roundNo} onChange={event=>setRoundNo(event.target.value)} /></label>
+      </div>
+      <p className="settings-helper">등록된 회차만 적용됩니다. 리더보드의 조회 회차와 표시 On/Off는 해당 앱에서 따로 유지됩니다.</p>
+      <div className="button-row">
+        <button className="primary-button" onClick={applySession} disabled={busy}>현재 회차 적용</button>
+        <button className="secondary-button" onClick={chooseProfile} disabled={busy}>관리자 프로필 선택</button>
+      </div>
+      {candidate && <div className="session-preview" role="region" aria-label="선택한 프로필 미리보기">
+        <strong>{candidate.fileName}</strong><span>{candidate.deviceId} / {candidate.eventId} / {candidate.role==="player"?"게임·조회":"조회 전용"}</span>
+        <span>{candidate.session.dayNo}일차 {candidate.session.roundNo}회차 / 만료 {candidate.expiresAt}</span>
+        <div className="button-row"><button className="primary-button" onClick={applyProfile} disabled={busy}>프로필 적용·재시작</button><button className="secondary-button" onClick={cancelProfile} disabled={busy}>프로필 선택 취소</button></div>
+      </div>}
+
+      <p className="settings-helper">서버 인증 정보는 운영자가 발급한 프로필에서 자동 적용됩니다.</p>
       <div className="button-row">
         <button className="primary-button" onClick={validateConnection} disabled={busy}>
           연결·장치 역할·세션 검증
