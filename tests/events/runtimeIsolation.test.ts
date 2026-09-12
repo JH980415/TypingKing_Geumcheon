@@ -7,6 +7,7 @@ import * as startupProfileModule from "../../electron/startupProfile";
 import { addStageText, ensureRuntime } from "../../shared/csv/fileStore";
 import { loadEventProfile } from "../../shared/events/eventProfile";
 import {
+  formatStartupErrorForDisplay,
   resolveDeviceRuntimeRoot,
   resolveLaunchPolicy,
   shouldShowStartupErrorDialog,
@@ -186,8 +187,21 @@ test("rejects a player device launching a leaderboard variant", () => {
   assert.throws(() => resolveLaunchPolicy(geumcheonStartup("player"), "ai-leaderboard"), /role/i);
 });
 
-test("rejects a leaderboard device launching a player variant", () => {
-  assert.throws(() => resolveLaunchPolicy(geumcheonStartup("leaderboard"), "ai"), /role/i);
+test("cold launch rejects a leaderboard device with its safe role-specific instruction", () => {
+  assert.throws(() => resolveLaunchPolicy(geumcheonStartup("leaderboard"), "ai"), (error: unknown) => {
+    assert.ok(error instanceof Error);
+    assert.equal(error.message, "PROFILE_GAME_ROLE_INVALID");
+    assert.equal(formatStartupErrorForDisplay(error), "조회 전용 프로필은 게임에 적용할 수 없습니다.");
+    return true;
+  });
+});
+
+test("cold launch keeps unregistered error details out of the displayed instruction", () => {
+  const privateDetail = "synthetic-private-credential-detail";
+  assert.equal(
+    formatStartupErrorForDisplay(new Error(privateDetail)),
+    "보안 설정을 확인할 수 없어 시작하지 못했습니다. 관리자에게 문의해 주세요."
+  );
 });
 
 test("returns the validated device role for allowed Geumcheon launches", () => {

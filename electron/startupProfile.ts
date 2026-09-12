@@ -332,7 +332,11 @@ export function resolveLaunchPolicy(startup: StartupProfile, variant: AppVariant
   if (startup.eventProfile.profileId === "geumcheon-2026") {
     if (!startup.deviceProfile) throw new Error("Geumcheon launch requires a validated device profile");
     if ((startup.deviceProfile.role === "leaderboard" && variantPolicy.role === "player") || (!startup.deploymentProfile && startup.deviceProfile.role !== variantPolicy.role)) {
-      throw new Error(`Device role ${startup.deviceProfile.role} cannot launch ${variantPolicy.role} variant ${variant}`);
+      throw new Error(
+        startup.deviceProfile.role === "leaderboard" && variantPolicy.role === "player"
+          ? "PROFILE_GAME_ROLE_INVALID"
+          : `Device role ${startup.deviceProfile.role} cannot launch ${variantPolicy.role} variant ${variant}`
+      );
     }
     return { pcRole: variantPolicy.role };
   }
