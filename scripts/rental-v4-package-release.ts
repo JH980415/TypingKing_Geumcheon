@@ -293,7 +293,7 @@ export function buildRentalClient(projectRoot:string){
   const appRoot=path.join(buildRoot,'application');stageRentalApplication(root,appRoot);
   for(const [index,variant] of ['ai','ai-leaderboard'].entries()){
     command(root,process.execPath,[path.join(root,'node_modules/electron-builder/cli.js'),'--config','electron-builder.geumcheon-'+variant+'.yml','--publish=never',
-      '--config.extraMetadata.typingKingReleaseCandidate='+RENTAL_V4_CANDIDATE,'--config.extraMetadata.typingKingDeploymentProfileVersion=2','--config.portable.unpackDirName=true',
+      '--config.extraMetadata.typingKingReleaseCandidate='+RENTAL_V4_CANDIDATE,'--config.extraMetadata.typingKingDeploymentProfileVersion=2','--config.portable.unpackDirName',
       '--config.directories.app='+appRoot,'--config.directories.output='+path.join('release-build','rental-v4','geumcheon',variant)]);
     if(!fs.existsSync(path.join(buildRoot,'geumcheon',variant,EXES[index]!)))throw new Error('BUILT_EXE_MISSING');
     verifyRentalRuntimeArchive(root,path.join(buildRoot,'geumcheon',variant,'win-unpacked','resources','app.asar'));

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import vm from "node:vm";
+import { createRequire } from "node:module";
 import ts from "typescript";
 import { prepareApplicationRelaunch } from "../../electron/applicationRelaunch";
 
@@ -53,7 +54,7 @@ test("a failed relaunch does not quit the app and restores its previous director
   assert.throws(restart, /SYNTHETIC_RELAUNCH/);
   assert.equal(quit, false); assert.equal(process.cwd(), cwd);
 });
-test("actual rental build command enables a separate extraction directory for each portable run", () => {
+test("actual rental CLI preserves boolean true through the installed parser, merged config and NSIS defines", async () => {
   const source = fs.readFileSync(path.join(process.cwd(), "scripts/rental-v4-package-release.ts"), "utf8");
   const start = source.indexOf("export function buildRentalClient("), end = source.indexOf("\nexport async function ", start + 1);
   assert.ok(start >= 0 && end > start);
@@ -68,8 +69,37 @@ test("actual rental build command enables a separate extraction directory for ea
   sandbox.exports.buildRentalClient(path.join(os.tmpdir(), "synthetic-not-built"));
   const builds = commands.filter(args => args.some(value => value.endsWith(path.join("electron-builder", "cli.js"))));
   assert.equal(builds.length, 2);
+  const installed = createRequire(import.meta.url);
+  const builder = installed("electron-builder/out/builder");
+  const { getConfig } = installed("app-builder-lib/out/util/config/config");
+  const nsisSource = fs.readFileSync(installed.resolve("app-builder-lib/out/targets/nsis/NsisTarget"), "utf8");
+  const defineStart = nsisSource.indexOf("const { unpackDirName, requestExecutionLevel, splashImage } = options;");
+  const defineEnd = nsisSource.indexOf("if (splashImage != null)", defineStart);
+  assert.ok(defineStart >= 0 && defineEnd > defineStart, "installed NSIS portable branch must be inspectable");
+  const nsisDefines = (options: unknown) => {
+    const defines: Record<string, unknown> = {};
+    vm.runInNewContext(nsisSource.slice(defineStart, defineEnd), {
+      options, defines, builder_util_1: { generateKsuid: () => "synthetic-shared-directory" }
+    });
+    return defines;
+  };
+  const normalize = (args: string[]) => builder.normalizeOptions(
+    builder.configureBuildCommand(builder.createYargs()).exitProcess(false).parse(args.slice(1))
+  );
+  // Reproduce the installed CLI contract that caused the actual R4 Temp/true failure.
+  const stringControl = normalize(builds[0].filter(value => !value.startsWith("--config.portable.unpackDirName"))
+    .concat("--config.portable.unpackDirName=true"));
+  assert.equal(typeof stringControl.config.portable.unpackDirName, "string");
+  assert.equal(nsisDefines(stringControl.config.portable).UNPACK_DIR_NAME, "true");
+
   for (const args of builds) {
-    assert.ok(args.includes("--config.portable.unpackDirName=true"));
     assert.ok(args.includes("--publish=never"));
+    const normalized = normalize(args);
+    assert.equal(normalized.config.portable.unpackDirName, true, "the actual rental CLI must pass a boolean");
+    const merged = await getConfig(process.cwd(), null, normalized.config);
+    assert.equal(merged.portable.unpackDirName, true, "base YAML merging must preserve the boolean");
+    const defines = nsisDefines(merged.portable);
+    assert.equal(Object.hasOwn(defines, "UNPACK_DIR_NAME"), false, "NSIS must use its per-process plugin directory");
+    assert.equal(defines.REQUEST_EXECUTION_LEVEL, "user");
   }
 });
