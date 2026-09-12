@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AppConfig,
   DeviceProfile,
@@ -25,6 +25,7 @@ type Props = {
   sessionKind?: SessionKind;
   gameMode?: "normal" | "ai_challenge";
   onSettingsChange?: (config: AppConfig) => void;
+  onTransitionBusyChange?: (busy: boolean) => void;
 };
 
 const SKILLUP_PLAYER_PC_IDS = ["PC01", "PC02", "PC03", "PC04", "PC05", "PC06"];
@@ -215,11 +216,19 @@ function GeumcheonNasStatusPanel({
   role,
   deviceProfile,
   sessionKind,
-  gameMode = "ai_challenge"
-}: Pick<Props, "role" | "deviceProfile" | "sessionKind" | "gameMode">) {
+  gameMode = "ai_challenge",
+  onTransitionBusyChange
+}: Pick<Props, "role" | "deviceProfile" | "sessionKind" | "gameMode" | "onTransitionBusyChange">) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
   const [validated, setValidated] = useState(false);
+
+  const transitionBusyRef = useRef(false);
+  function setTransitionBusy(value: boolean) {
+    transitionBusyRef.current = value;
+    setBusy(value);
+    onTransitionBusyChange?.(value);
+  }
 
   const [status,setStatus]=useState<import("../../../shared/types").DeploymentStatus|null>(null);
   const [candidate,setCandidate]=useState<import("../../../shared/types").DeploymentProfilePreview|null>(null);
@@ -235,12 +244,31 @@ function GeumcheonNasStatusPanel({
     setBusy(true);try{const result=await window.typingKing.chooseDeploymentProfile();if(result.ok)setCandidate(result.data ?? null);else setMessage(result.error || "프로필을 선택할 수 없습니다.");}finally{setBusy(false);}
   }
   async function applyProfile() {
-    setBusy(true);try{const result=await window.typingKing.applyDeploymentProfile();setMessage(result.ok?"프로필을 적용했습니다. 앱을 다시 시작합니다.":result.error || "프로필을 적용할 수 없습니다.");}finally{setBusy(false);}
+    if (busy || transitionBusyRef.current) return;
+    setTransitionBusy(true);
+    try {
+      const result = await window.typingKing.applyDeploymentProfile();
+      setMessage(result.ok ? "프로필을 적용했습니다. 앱을 다시 시작합니다." : result.error || "프로필을 적용할 수 없습니다.");
+      if (!result.ok) setTransitionBusy(false);
+    } catch {
+      setMessage("적용 결과를 확인할 수 없습니다. 앱을 다시 시작해 현재 프로필을 확인해 주세요.");
+    }
   }
   async function cancelProfile() {await window.typingKing.cancelDeploymentProfile();setCandidate(null);}
   async function applySession() {
+    if (busy || transitionBusyRef.current) return;
     if(!/^[1-9]\d*$/.test(dayNo) || !/^[1-9]\d*$/.test(roundNo)){setMessage("일차와 회차는 1 이상의 정수로 입력해 주세요.");return;}
-    setBusy(true);try{const result=await window.typingKing.setDeploymentSession(Number(dayNo),Number(roundNo));if(result.ok)window.location.reload();else setMessage(result.error || "회차를 적용할 수 없습니다.");}finally{setBusy(false);}
+    setTransitionBusy(true);
+    try {
+      const result = await window.typingKing.setDeploymentSession(Number(dayNo), Number(roundNo));
+      if (result.ok) window.location.reload();
+      else {
+        setMessage(result.error || "회차를 적용할 수 없습니다.");
+        setTransitionBusy(false);
+      }
+    } catch {
+      setMessage("적용 결과를 확인할 수 없습니다. 앱을 다시 시작해 현재 회차를 확인해 주세요.");
+    }
   }
 
   const deviceMatches =

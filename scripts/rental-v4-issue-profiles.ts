@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { parseDeploymentProfile, originalProfileFileName, type DeploymentProfileV2 } from '../electron/deploymentProfile';
+import { parseDeploymentProfile, inspectDeploymentProfileForRenewal, originalProfileFileName, type DeploymentProfileV2 } from '../electron/deploymentProfile';
 import { writeZip } from './r7-package-release';
 import { verifyZipAgainstManifest } from './rental-v4-package-release';
 
@@ -23,6 +23,7 @@ export type RentalIssuanceInput = {
   eventConfig:unknown; tokenManifest:unknown;
   keys:Array<{tokenId:string;token:string}>;
   administratorPassword:string;
+  renewalProfiles?:Array<{fileName:string;profile:unknown}>;
 };
 function fail(code:string):never { throw new Error(code); }
 const sha=(text:string|Buffer)=>crypto.createHash('sha256').update(text).digest('hex');
@@ -74,8 +75,25 @@ function parseServerInputs(input:RentalIssuanceInput){
   if(new Set(tokens.map(t=>t.tokenId)).size!==tokens.length||new Set(tokens.map(t=>t.tokenHash)).size!==tokens.length)fail('CREDENTIAL_DUPLICATE');
   return {sessions,tokens};
 }
+function validatedRenewalProfiles(input:RentalIssuanceInput,now:Date){
+  if(input.renewalProfiles===undefined)return undefined;
+  if(!Array.isArray(input.renewalProfiles)||input.renewalProfiles.length!==DEVICES.length)fail('RENEWAL_PROFILE_SET_INVALID');
+  const previous=new Map<string,DeploymentProfileV2>();
+  for(const entry of input.renewalProfiles){
+    const item=record(entry,['fileName','profile'],[],'RENEWAL_PROFILE');
+    if(typeof item.fileName!=='string')fail('RENEWAL_PROFILE_NAME_INVALID');
+    const profile=inspectDeploymentProfileForRenewal(item.profile,{now,fileName:item.fileName});
+    if(!DEVICES.includes(profile.device.deviceId as typeof DEVICES[number])||previous.has(profile.device.deviceId))fail('RENEWAL_PROFILE_SET_INVALID');
+    const actual=crypto.scryptSync(input.administratorPassword,Buffer.from(profile.administrator.salt,'hex'),64);
+    if(!crypto.timingSafeEqual(actual,Buffer.from(profile.administrator.hash,'hex')))fail('RENEWAL_ADMINISTRATOR_INVALID');
+    previous.set(profile.device.deviceId,profile);
+  }
+  if(DEVICES.some(deviceId=>!previous.has(deviceId)))fail('RENEWAL_PROFILE_SET_INVALID');
+  if(Date.parse(input.notBefore)>now.getTime())fail('RENEWAL_PROFILE_NOT_ACTIVE');
+  return previous;
+}
 export function buildRentalProfiles(input:RentalIssuanceInput,{now=new Date()}:{now?:Date}={}){
-  record(input,['stage','deploymentId','apiBaseUrl','issuedAt','notBefore','expiresAt','defaultSessionId','eventConfig','tokenManifest','keys','administratorPassword'],['approvalReference']);
+  record(input,['stage','deploymentId','apiBaseUrl','issuedAt','notBefore','expiresAt','defaultSessionId','eventConfig','tokenManifest','keys','administratorPassword'],['approvalReference','renewalProfiles']);
   if(!['synthetic','test','production'].includes(input.stage))fail('STAGE_INVALID');
   if(input.stage!=='synthetic'&&(typeof input.approvalReference!=='string'||input.approvalReference.trim().length<8))fail('APPROVAL_REQUIRED');
   if(input.stage==='production'&&input.apiBaseUrl!=='https://typingking.thepmd.synology.me')fail('PRODUCTION_ENDPOINT_INVALID');
@@ -99,6 +117,7 @@ export function buildRentalProfiles(input:RentalIssuanceInput,{now=new Date()}:{
       /placeholder|changeme|example|__.+__/i.test(k.token)||new Set(k.token).size<12)fail('KEY_INVALID');
     keyMap.set(k.tokenId,k.token);
   }
+  const renewalProfiles=validatedRenewalProfiles(input,now);
   const selectedKeys=new Set<string>();
   const profiles=DEVICES.map(deviceId=>{
     const credential=(role:'writer'|'leaderboard')=>{
@@ -113,7 +132,8 @@ export function buildRentalProfiles(input:RentalIssuanceInput,{now=new Date()}:{
       selectedKeys.add(existing.tokenId);
       return {eventId:EVENT,deviceId,apiBaseUrl:input.apiBaseUrl,role,token};
     };
-    const salt=crypto.randomBytes(16).toString('hex');
+    const previous=renewalProfiles?.get(deviceId);
+    const salt=previous?.administrator.salt??crypto.randomBytes(16).toString('hex');
     const fileName=originalProfileFileName(deviceId);
     const profile=parseDeploymentProfile({
       schemaVersion:2,deploymentId:input.deploymentId,issuedAt:input.issuedAt,notBefore:input.notBefore,expiresAt:input.expiresAt,
@@ -123,8 +143,15 @@ export function buildRentalProfiles(input:RentalIssuanceInput,{now=new Date()}:{
         sessions:{official:{...selected}},requestTimeoutMs:5000,retry:{initialDelayMs:1000,maxDelayMs:30000}},
       allowedSessions:sessions,
       credentials:{leaderboard:credential('leaderboard'),...(deviceId==='LEADERBOARD01'?{}:{writer:credential('writer')})},
-      administrator:{algorithm:'scrypt',salt,hash:crypto.scryptSync(password,Buffer.from(salt,'hex'),64).toString('hex')}
+      administrator:previous?{...previous.administrator}:{algorithm:'scrypt',salt,hash:crypto.scryptSync(password,Buffer.from(salt,'hex'),64).toString('hex')}
     },{now,fileName,allowInactive:true});
+    if(previous){
+      const sessionKeys=(values:Session[])=>values.map(s=>s.sessionId+'|'+s.dayNo+'|'+s.roundNo).sort().join('\n');
+      if(previous.environment!==profile.environment||JSON.stringify(previous.device)!==JSON.stringify(profile.device)
+        ||sessionKeys(previous.allowedSessions)!==sessionKeys(profile.allowedSessions))fail('RENEWAL_SCOPE_CHANGE');
+      profile.device=previous.device;
+      profile.allowedSessions=previous.allowedSessions;
+    }
     return {fileName,profile};
   });
   if([...keyMap.keys()].some(k=>!selectedKeys.has(k)))fail('KEY_OUTSIDE_BATCH');
@@ -141,7 +168,8 @@ export function buildRentalProfiles(input:RentalIssuanceInput,{now=new Date()}:{
   const privateValues=[
     ...input.keys.map(k=>k.token),password,
     ...tokens.map(t=>t.tokenHash),
-    ...profiles.flatMap(({profile})=>[profile.administrator.salt,profile.administrator.hash])
+    ...profiles.flatMap(({profile})=>[profile.administrator.salt,profile.administrator.hash]),
+    ...[...(renewalProfiles?.values()??[])].flatMap(profile=>Object.values(profile.credentials).map(credential=>credential.token))
   ];
   const assertPublic=(value:unknown):void=>{
     if(typeof value==='string'){
@@ -218,8 +246,9 @@ export async function issueRentalProfiles({input,approvedOutputRoot,outputDirect
 export async function issueRentalProfilesFromRequest(requestPath:string){
   const request=JSON.parse(fs.readFileSync(requirePrivateInput(requestPath),'utf8'));
   record(request,['schemaVersion','stage','deploymentId','apiBaseUrl','issuedAt','notBefore','expiresAt','defaultSessionId',
-    'eventConfigPath','tokenManifestPath','keys','administratorPasswordFile','approvedOutputRoot','outputDirectory'],['approvalReference'],'REQUEST');
-  if(request.schemaVersion!==1||!Array.isArray(request.keys))fail('REQUEST_INVALID');
+    'eventConfigPath','tokenManifestPath','keys','administratorPasswordFile','approvedOutputRoot','outputDirectory'],['approvalReference','renewalProfilePaths'],'REQUEST');
+  if(request.schemaVersion!==1||!Array.isArray(request.keys)
+    ||(request.renewalProfilePaths!==undefined&&(!Array.isArray(request.renewalProfilePaths)||request.renewalProfilePaths.length!==DEVICES.length)))fail('REQUEST_INVALID');
   const read=(p:string)=>fs.readFileSync(requirePrivateInput(p),'utf8');
   const input:RentalIssuanceInput={
     stage:request.stage,deploymentId:request.deploymentId,apiBaseUrl:request.apiBaseUrl,
@@ -227,7 +256,11 @@ export async function issueRentalProfilesFromRequest(requestPath:string){
     ...(request.approvalReference===undefined?{}:{approvalReference:request.approvalReference}),
     eventConfig:JSON.parse(read(request.eventConfigPath)),tokenManifest:JSON.parse(read(request.tokenManifestPath)),
     keys:request.keys.map((k:unknown)=>{const item=record(k,['tokenId','filePath'],[],'KEY_FILE');return {tokenId:item.tokenId,token:read(item.filePath).trim()};}),
-    administratorPassword:read(request.administratorPasswordFile).replace(/\r?\n$/,'')
+    administratorPassword:read(request.administratorPasswordFile).replace(/\r?\n$/,''),
+    ...(request.renewalProfilePaths===undefined?{}:{renewalProfiles:request.renewalProfilePaths.map((file:string)=>{
+      const checked=requirePrivateInput(file);
+      return {fileName:path.basename(checked),profile:JSON.parse(fs.readFileSync(checked,'utf8'))};
+    })})
   };
   return issueRentalProfiles({input,approvedOutputRoot:request.approvedOutputRoot,outputDirectory:request.outputDirectory});
 }

@@ -35,6 +35,16 @@ export function originalProfileFileName(deviceId: string): string {
 export function parseDeploymentProfile(value: unknown, options: { now?: Date; fileName?: string; allowInactive?: boolean } = {}): DeploymentProfileV2 {
   return validateDeploymentProfile(value,{now:options.now,fileName:options.fileName,allowInactive:options.allowInactive});
 }
+/**
+ * Issuer/recovery inspection only: expiry and notBefore eligibility are omitted.
+ * Shape, timestamp format, original filename, roles, credential bindings and
+ * administrator verifier shape remain strict. This does not authorize runtime use.
+ */
+export function inspectDeploymentProfileForRenewal(value: unknown, options: { fileName: string; now?: Date }): DeploymentProfileV2 {
+  if (typeof options?.fileName !== "string" || !options.fileName) fail("PROFILE_ORIGINAL_NAME_REQUIRED");
+  return validateDeploymentProfile(value, { fileName: options.fileName, now: options.now, recoveryInspection: true });
+}
+
 function validateDeploymentProfile(value: unknown, options: {now?:Date;fileName?:string;allowInactive?:boolean;recoveryInspection?:boolean}): DeploymentProfileV2 {
   const p = object(value);
   exact(p, ["schemaVersion","deploymentId","environment","issuedAt","notBefore","expiresAt","device","allowedSessions","credentials","administrator"]);
@@ -199,6 +209,7 @@ const PROFILE_ERROR_MESSAGES: Record<string,string> = {
   "PROFILE_CANDIDATE_MISSING": "먼저 프로필을 선택해 주세요.",
   "PROFILE_CANDIDATE_CHANGED": "선택 후 프로필이 변경되었습니다. 다시 선택해 주세요.",
   "PROFILE_GAME_ROLE_INVALID": "조회 전용 프로필은 게임에 적용할 수 없습니다.",
+  "PROFILE_RELAUNCH_UNAVAILABLE": "다시 시작할 실행 파일을 확인할 수 없습니다. 공통 클라이언트 ZIP 전체를 다시 압축 해제해 주세요.",
   "PROFILE_MANAGEMENT_UNAVAILABLE": "현재 환경에서는 운영 프로필을 관리할 수 없습니다.",
   "SAFE_STORAGE_UNAVAILABLE": "Windows의 보호된 저장소를 사용할 수 없습니다."
 };
@@ -261,6 +272,94 @@ export function replaceDeploymentSelection(targetPath:string,selectionPath:strin
     }
     throw error;
   }
+}
+
+
+/**
+ * Cold startup only: a changed adjacent file may renew an expired, identical saved
+ * deployment. Expired credentials are inspected for binding; normal reads stay strict.
+ */
+export async function renewExpiredAdjacentDeployment(options: {
+  selectionPath: string;
+  directory: string;
+  safeStorage: SafeStorageAdapter;
+  runtimeRootForProfile: (profile: DeploymentProfileV2) => string;
+}): Promise<boolean> {
+  const { selectionPath, directory, safeStorage: storage } = options;
+  if (!fs.existsSync(selectionPath)) return false;
+  if (!storage.isEncryptionAvailable()) fail("SAFE_STORAGE_UNAVAILABLE");
+  const selectionBytes = fs.readFileSync(selectionPath);
+  let saved: Record<string, unknown>;
+  try { saved = object(JSON.parse(storage.decryptString(selectionBytes))); }
+  catch (error) {
+    if (error instanceof Error && (error.message === "DPAPI_LEGACY_STORAGE_UNSUPPORTED" || error.message === "DPAPI_STORAGE_FAILED")) throw error;
+    fail("PROFILE_CACHE_UNREADABLE");
+  }
+  exact(saved, ["profile", "folderFingerprint", "selectedFilePath"]);
+  const previous = validateDeploymentProfile(saved.profile, { recoveryInspection: true });
+  if (typeof saved.selectedFilePath !== "string" || !path.isAbsolute(saved.selectedFilePath)
+    || path.basename(saved.selectedFilePath) !== originalProfileFileName(previous.device.deviceId)
+    || (saved.folderFingerprint !== null && (typeof saved.folderFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(saved.folderFingerprint)))) {
+    fail("PROFILE_CACHE_UNREADABLE");
+  }
+  const folderFingerprint = deploymentFolderFingerprint(directory);
+  // An unchanged folder retains the administrator's saved selection. Valid
+  // profiles retain the existing explicit replacement policy.
+  if (folderFingerprint === null || folderFingerprint === saved.folderFingerprint
+    || Date.now() < Date.parse(previous.expiresAt)) return false;
+
+  const candidate = discoverDeploymentProfile(directory);
+  if (!candidate) fail("PROFILE_FILE_MISSING");
+  const runtimeRoot = options.runtimeRootForProfile(previous);
+  const candidateRoot = options.runtimeRootForProfile(candidate.profile);
+  const sessionKey = (session: ProfileSession) => `${session.sessionId}|${session.dayNo}|${session.roundNo}`;
+  if (path.resolve(runtimeRoot) !== path.resolve(candidateRoot)
+    || previous.environment !== candidate.profile.environment
+    || JSON.stringify(previous.device) !== JSON.stringify(candidate.profile.device)
+    || JSON.stringify(previous.administrator) !== JSON.stringify(candidate.profile.administrator)
+    || previous.allowedSessions.map(sessionKey).sort().join("\n") !== candidate.profile.allowedSessions.map(sessionKey).sort().join("\n")
+    || path.basename(candidate.filePath) !== originalProfileFileName(previous.device.deviceId)) {
+    fail("PROFILE_PENDING_SCOPE_CHANGE");
+  }
+  const protectedPath = path.join(runtimeRoot, "nas", "deployment-profile.bin");
+  const protectedBytes = fs.readFileSync(protectedPath);
+  const candidateFingerprint = profileFingerprint(candidate.profile);
+  const assertUnchanged = () => {
+    if (!fs.existsSync(selectionPath) || !fs.readFileSync(selectionPath).equals(selectionBytes)
+      || !fs.existsSync(protectedPath) || !fs.readFileSync(protectedPath).equals(protectedBytes)
+      || deploymentFolderFingerprint(directory) !== folderFingerprint) fail("PROFILE_CONFIGURATION_CHANGED");
+    const currentCandidate = loadDeploymentProfile(candidate.filePath);
+    if (profileFingerprint(currentCandidate) !== candidateFingerprint) fail("PROFILE_CONFIGURATION_CHANGED");
+  };
+  return withDeploymentLocks([path.dirname(selectionPath), runtimeRoot], async () => {
+    const sameOriginalBytes = fs.existsSync(selectionPath) && fs.readFileSync(selectionPath).equals(selectionBytes)
+      && fs.existsSync(protectedPath) && fs.readFileSync(protectedPath).equals(protectedBytes);
+    if (!sameOriginalBytes) {
+      // Another cold start may have completed this exact renewal while we waited.
+      // Both caches and the adjacent source must already be strictly consistent.
+      try {
+        if (deploymentFolderFingerprint(directory) !== folderFingerprint
+          || profileFingerprint(loadDeploymentProfile(candidate.filePath)) !== candidateFingerprint) fail("PROFILE_CONFIGURATION_CHANGED");
+        const currentSelection = readDeploymentSelection(selectionPath, directory, storage);
+        const currentProtected = new DeploymentProfileStore(protectedPath, storage).read();
+        if (!currentSelection || currentSelection.folderFingerprint !== folderFingerprint
+          || path.resolve(currentSelection.selectedFilePath) !== path.resolve(candidate.filePath)
+          || profileFingerprint(currentSelection.profile) !== candidateFingerprint
+          || profileFingerprint(currentProtected) !== candidateFingerprint) fail("PROFILE_CONFIGURATION_CHANGED");
+      } catch { fail("PROFILE_CONFIGURATION_CHANGED"); }
+      return false;
+    }
+    assertUnchanged();
+    const oldProtected = new DeploymentProfileStore(protectedPath, storage).inspectForRecovery();
+    if (profileFingerprint(oldProtected) !== profileFingerprint(previous)) fail("PROFILE_CONFIGURATION_CHANGED");
+    await assertSafeDeploymentApplication({
+      currentRuntimeRoot: runtimeRoot, targetRuntimeRoot: runtimeRoot,
+      replacement: candidate.profile, safeStorage: storage, coldRecovery: true
+    });
+    assertUnchanged();
+    replaceDeploymentSelection(protectedPath, selectionPath, directory, candidate.profile, candidate.filePath, storage);
+    return true;
+  });
 }
 
 /** Must run under withDeploymentLocks after administrator authentication. Never rewrites an outbox. */

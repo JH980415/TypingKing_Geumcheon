@@ -3,7 +3,9 @@ import type { IpcMainInvokeEvent, OpenDialogOptions } from "electron";
 import { safeStorage as electronSafeStorage } from "electron";
 import { assertSharedWindowsDpapiStateReadable, selectDeploymentStorage } from "./security/windowsDpapiStorage";
 import { createHash, randomUUID } from "node:crypto";
-import { DeploymentProfileStore, loadDeploymentProfile, profileFingerprint, profilePreview, withDeploymentLocks, replaceDeploymentSelection, assertSafeDeploymentApplication, deploymentErrorForDisplay, readDeploymentSelection, saveDeploymentSelection, type DeploymentProfileV2 } from "./deploymentProfile";
+import { RuntimeMutationCoordinator } from "./runtimeMutationCoordinator";
+import { prepareApplicationRelaunch } from "./applicationRelaunch";
+import { DeploymentProfileStore, loadDeploymentProfile, profileFingerprint, profilePreview, withDeploymentLocks, replaceDeploymentSelection, assertSafeDeploymentApplication, deploymentErrorForDisplay, readDeploymentSelection, saveDeploymentSelection, renewExpiredAdjacentDeployment, type DeploymentProfileV2 } from "./deploymentProfile";
 import fs from "node:fs";
 import path from "node:path";
 import tls from "node:tls";
@@ -58,6 +60,7 @@ import {
   resolveLaunchPolicy,
   resolvePackagedMetadata,
   resolveReviewUserDataPath,
+  resolveDeviceRuntimeRoot,
   shouldHideE2eWindow,
   shouldShowStartupErrorDialog,
   resolveStartupProfile
@@ -126,6 +129,7 @@ type GeumcheonNasConnection = {
   source: "production";
   runtime: GeumcheonNasRuntime;
   checkpointFence: RendererCheckpointFence;
+  mutationCoordinator?: RuntimeMutationCoordinator;
   checkReadiness(): Promise<GameStartReadiness>;
   flush(): ReturnType<GeumcheonNasRuntime["flush"]>;
 };
@@ -299,7 +303,8 @@ async function initializeGeumcheonNasConnection(
   eventProfile: EventProfile,
   deviceProfile: NonNullable<ReturnType<typeof resolveStartupProfile>["deviceProfile"]>,
   sessionKind: "official" | "practice",
-  ctx: RuntimeContext
+  ctx: RuntimeContext,
+  options: {coordinator?:RuntimeMutationCoordinator;checkpointFence?:RendererCheckpointFence;deferStartupWork?:boolean} = {}
 ): Promise<GeumcheonNasConnection> {
   const runtimeRoot = resolveRuntimeRoot();
   const localContext = (): RuntimeContext => ({
@@ -353,7 +358,8 @@ async function initializeGeumcheonNasConnection(
   const connection: GeumcheonNasConnection = {
     source: "production",
     runtime,
-    checkpointFence: new RendererCheckpointFence(),
+    checkpointFence: options.checkpointFence ?? new RendererCheckpointFence(),
+    mutationCoordinator: options.coordinator,
     checkReadiness: () => checkGeumcheonNasReadiness({
       checkAuthenticatedReady: () => runtime.checkReady()
     }),
@@ -366,9 +372,16 @@ async function initializeGeumcheonNasConnection(
       return flushInFlight;
     }
   };
-  if (!variant.endsWith("leaderboard")) {
+  if (!variant.endsWith("leaderboard") && !options.deferStartupWork) {
     try {
-      await runtime.recover();
+      const coordinator=options.coordinator;
+      if(coordinator) {
+        const epoch=coordinator.epoch;
+        await coordinator.runMutation(epoch,()=>withDeploymentLocks([runtimeRoot],()=>{
+          coordinator.assertEpoch(epoch);
+          return runtime.recover();
+        }));
+      } else await runtime.recover();
     } catch (error) {
       appendStartupLog(`Geumcheon active-attempt recovery failed: ${errorMessage(error)}`);
     }
@@ -549,6 +562,8 @@ async function registerIpc(
     }
     ctx.config={...ctx.config,pcId:deviceProfile.deviceId,dayNo:deviceProfile.sessions.official.dayNo,roundNo:deviceProfile.sessions.official.roundNo};
   }
+  const mutationCoordinator=activeProfile?new RuntimeMutationCoordinator():undefined;
+  const checkpointFence=new RendererCheckpointFence();
   let geumcheonNas: GeumcheonConnection | null = null;
   if (eventProfile.profileId === "geumcheon-2026") {
     geumcheonNas = await initializeGeumcheonConnection({
@@ -558,7 +573,8 @@ async function registerIpc(
         eventProfile,
         profile,
         variantPolicy.sessionKind,
-        ctx
+        ctx,
+        {coordinator:mutationCoordinator,checkpointFence}
       ),
       createReview: async (reviewContext) => createReviewGeumcheonConnection({
         reviewContext,
@@ -577,7 +593,7 @@ async function registerIpc(
   if(activeProfile)saveRecoveryAuthorization(path.join(path.dirname(selectionPath()),"administrator-recovery.bin"),ctx.config.adminPassword,activeProfile,runtimeRoot,safeStorage);
   ipcMain.handle("app:getBootstrap", () => ({
     ok: true,
-    data: createBootstrapData({
+    data: {...createBootstrapData({
       config: ctx.config,
       assetBaseUrl: rendererAssetBaseUrl,
       notices: ctx.notices,
@@ -586,9 +602,23 @@ async function registerIpc(
         eventProfile,
         deviceProfile,
         reviewContext: startup?.reviewContext
-      })
+      }),...(mutationCoordinator?{runtimeContextEpoch:mutationCoordinator.epoch}:{})}
   }));
 
+
+  function runRecordMutation<T>(epoch:unknown,task:(connection:GeumcheonConnection)=>Promise<T>,storageLock=true):Promise<T> {
+    if(!geumcheonNas)throw new Error("GEUMCHEON_NAS_UNAVAILABLE");
+    const connection={...geumcheonNas} as GeumcheonConnection;
+    const coordinator=connection.source==="production"?connection.mutationCoordinator:undefined;
+    if(!coordinator)return task(connection);
+    return coordinator.runMutation(epoch,()=>{
+      if(!storageLock){coordinator.assertEpoch(epoch);return task(connection);}
+      return withDeploymentLocks([runtimeRoot],()=>{
+        coordinator.assertEpoch(epoch);
+        return task(connection);
+      });
+    });
+  }
 
   let profileCandidate: {profile:DeploymentProfileV2;filePath:string;senderId:number;fingerprint:string} | undefined;
   async function assertSafeProfileChange(allExecutables: boolean): Promise<void> {
@@ -625,26 +655,51 @@ async function registerIpc(
     if(variantPolicy.role==="player" && profile.device.role!=="player")throw new Error("PROFILE_GAME_ROLE_INVALID");
     const targetRoot=path.join(process.env.LOCALAPPDATA || process.env.APPDATA!, "ThePMD","TypingKing2026",profile.device.eventProfileId,profile.device.deviceId);
     const selectedPath=profileCandidate.filePath;
-    await withDeploymentLocks([runtimeRoot,targetRoot],async()=>{
+    const restart=prepareApplicationRelaunch(app);
+    if(!mutationCoordinator)throw new Error("PROFILE_MANAGEMENT_UNAVAILABLE");
+    await mutationCoordinator.runTransition(()=>withDeploymentLocks([runtimeRoot,targetRoot],async()=>{
       if (usesSharedWindowsDpapi) for (const root of new Set([runtimeRoot,targetRoot])) assertSharedWindowsDpapiStateReadable({ runtimeRoot: root, installationRoot: path.dirname(selectionPath()), storage: safeStorage });
       await assertSafeDeploymentApplication({currentRuntimeRoot:runtimeRoot,targetRuntimeRoot:targetRoot,replacement:profile,safeStorage});
       replaceDeploymentSelection(path.join(targetRoot,"nas","deployment-profile.bin"),selectionPath(),deploymentDirectory(),profile,selectedPath,safeStorage);
-    });
+    }));
     profileCandidate=undefined;
-    setTimeout(()=>{app.relaunch();app.quit();},150);
+    setTimeout(restart,150);
     return true;
   }));
   ipcMain.handle("deployment:setSession", (event, dayNo:unknown, roundNo:unknown)=>safeAsync(async()=>{
     adminAccessSessions.require(event.sender);assertCurrentDeployment();
     if(!Number.isSafeInteger(dayNo) || Number(dayNo)<1 || !Number.isSafeInteger(roundNo) || Number(roundNo)<1)throw new Error("PROFILE_SESSION_INPUT_INVALID");
     const session=activeProfile?.allowedSessions.find(s=>s.dayNo===dayNo && s.roundNo===roundNo);
-    if(!session || !deviceProfile)throw new Error("PROFILE_SESSION_NOT_ALLOWED");
-    if(variantPolicy.role==="player") await assertSafeProfileChange(false);
-    deviceProfile={...deviceProfile,sessions:{official:{...session}}};
-    ctx.config={...ctx.config,dayNo:session.dayNo,roundNo:session.roundNo};
-    fs.writeFileSync(path.join(runtimeRoot,"nas",`session-${variant}.json`),JSON.stringify(session));
-    Object.assign(geumcheonNas!,await initializeGeumcheonNasConnection(eventProfile,deviceProfile,"official",ctx));
-    return createBootstrapData({config:ctx.config,assetBaseUrl:rendererAssetBaseUrl,notices:ctx.notices,mode,variant,eventProfile,deviceProfile});
+    if(!session || !deviceProfile || !geumcheonNas || !mutationCoordinator)throw new Error("PROFILE_SESSION_NOT_ALLOWED");
+    return mutationCoordinator.runTransition(()=>withDeploymentLocks([runtimeRoot],async()=>{
+      assertCurrentDeployment();
+      if(variantPolicy.role==="player")await assertSafeProfileChange(false);
+      const nextDevice={...deviceProfile!,sessions:{official:{...session}}};
+      const nextContext={...ctx,config:{...ctx.config,dayNo:session.dayNo,roundNo:session.roundNo}};
+      const nextConnection=await initializeGeumcheonNasConnection(eventProfile,nextDevice,"official",nextContext,
+        {coordinator:mutationCoordinator,checkpointFence,deferStartupWork:true});
+      const nextBootstrap=createBootstrapData({config:nextContext.config,assetBaseUrl:rendererAssetBaseUrl,notices:nextContext.notices,mode,variant,eventProfile,deviceProfile:nextDevice});
+      const sessionPath=path.join(runtimeRoot,"nas",`session-${variant}.json`);
+      const previousBytes=fs.existsSync(sessionPath)?fs.readFileSync(sessionPath):undefined;
+      const temporary=sessionPath+"."+randomUUID()+".transition";
+      try {
+        fs.writeFileSync(temporary,JSON.stringify(session),{flag:"wx"});
+        fs.renameSync(temporary,sessionPath);
+      } catch(error) {
+        if(fs.existsSync(temporary))fs.unlinkSync(temporary);
+        const actual=fs.existsSync(sessionPath)?fs.readFileSync(sessionPath):undefined;
+        if(previousBytes===undefined) {
+          if(actual!==undefined)fs.unlinkSync(sessionPath);
+        } else if(actual===undefined||!actual.equals(previousBytes)) {
+          fs.writeFileSync(temporary,previousBytes,{flag:"wx"});fs.renameSync(temporary,sessionPath);
+        }
+        throw error;
+      }
+      deviceProfile=nextDevice;
+      ctx.config=nextContext.config;
+      Object.assign(geumcheonNas!,nextConnection);
+      return nextBootstrap;
+    }));
   }));
 
   ipcMain.handle("admin:validate", (event, password: string, adminName?: string) => {
@@ -724,25 +779,28 @@ async function registerIpc(
   ipcMain.handle("records:checkpointActiveAttempt", (
     _event,
     input: SaveRecordInput,
-    closeRequestId?: string
+    closeRequestId?: string,
+    runtimeContextEpoch?: string
   ) =>
     safeAsync(async () => {
       if (!geumcheonNas || variantPolicy.role !== "player") {
         throw new Error("Active-attempt checkpoint is unavailable for this event");
       }
-      await geumcheonNas.checkpointFence.run(
+      const connection={...geumcheonNas} as GeumcheonConnection;
+      await connection.checkpointFence.run(
         _event.sender.id,
         closeRequestId,
-        () => geumcheonNas!.runtime.checkpoint(input)
+        () => runRecordMutation(runtimeContextEpoch,current=>current.runtime.checkpoint(input))
       );
     })
   );
-  ipcMain.handle("records:save", (_event, input: SaveRecordInput) =>
+  ipcMain.handle("records:save", (_event, input: SaveRecordInput, runtimeContextEpoch?: string) =>
     safeAsync(async () => {
       assertPlayerRecordSaveAllowed(variantPolicy.role);
       if (geumcheonNas) {
-        const row = await geumcheonNas.runtime.save(input);
-        void geumcheonNas.flush().catch((error) => {
+        const connection={...geumcheonNas} as GeumcheonConnection;
+        const row = await runRecordMutation(runtimeContextEpoch,current=>current.runtime.save(input));
+        void connection.flush().catch((error) => {
           appendStartupLog(`Geumcheon NAS save flush failed: ${errorMessage(error)}`);
         });
         return toGeumcheonPublicRecordRow(row);
@@ -782,39 +840,41 @@ async function registerIpc(
   });
   ipcMain.handle(
     "records:update",
-    (event, recordId: string, patch: Partial<RecordRow>) =>
+    (event, recordId: string, patch: Partial<RecordRow>, _adminName?: string, runtimeContextEpoch?: string) =>
       safeAsync(
         async () => {
           const { adminName } = adminAccessSessions.require(event.sender);
           if (!geumcheonNas) return updateRecord(ctx, recordId, patch, adminName);
           assertGeumcheonRecordEditAllowed(patch);
-          const before = (await geumcheonNas.runtime.loadRecords()).rows.find(
-            (record) => record.record_id === recordId
-          );
-          if (!before) throw new Error("수정 또는 삭제할 기록을 선택해 주세요.");
-          const replacement = recalculateRecord({ ...before, ...patch, record_id: recordId });
-          await geumcheonNas.runtime.edit(recordId, replacement, adminName);
-          return toGeumcheonPublicRecordRow(replacement);
+          return runRecordMutation(runtimeContextEpoch,async connection=>{
+            const before = (await connection.runtime.loadRecords()).rows.find(
+              (record) => record.record_id === recordId
+            );
+            if (!before) throw new Error("수정 또는 삭제할 기록을 선택해 주세요.");
+            const replacement = recalculateRecord({ ...before, ...patch, record_id: recordId });
+            await connection.runtime.edit(recordId, replacement, adminName);
+            return toGeumcheonPublicRecordRow(replacement);
+          },false);
         },
         "기록 수정 중 오류가 발생했습니다. 백업 파일을 확인해 주세요."
       )
   );
-  ipcMain.handle("records:delete", (event, recordId: string) =>
+  ipcMain.handle("records:delete", (event, recordId: string, _adminName?: string, runtimeContextEpoch?: string) =>
     safeAsync(
       async () => {
         const { adminName } = adminAccessSessions.require(event.sender);
         if (!geumcheonNas) return deleteRecord(ctx, recordId, adminName);
-        await geumcheonNas.runtime.hide(recordId, true, adminName);
+        await runRecordMutation(runtimeContextEpoch,connection=>connection.runtime.hide(recordId, true, adminName),false);
       },
       "기록 삭제 중 오류가 발생했습니다. 백업 파일을 확인해 주세요."
     )
   );
-  ipcMain.handle("records:clear", (event) =>
+  ipcMain.handle("records:clear", (event, _adminName?: string, runtimeContextEpoch?: string) =>
     safeAsync(
       async () => {
         const { adminName } = adminAccessSessions.require(event.sender);
         if (geumcheonNas) {
-          await geumcheonNas.runtime.resetSession(adminName);
+          await runRecordMutation(runtimeContextEpoch,connection=>connection.runtime.resetSession(adminName),false);
           return;
         }
         // 연습 리더보드는 일반+AI 두 보드를 함께 표시하므로 두 모드 모두 표시 초기화한다.
@@ -1142,6 +1202,14 @@ if (mayStartApplication && app.isPackaged && selectedEventProfileId === "geumche
 
 if (mayStartApplication) void app.whenReady().then(async () => {
   try {
+    if (metadata.deploymentProfileVersion === 2 && !metadata.reviewContext && !profilePathOverride) {
+      await renewExpiredAdjacentDeployment({
+        selectionPath: selectionPath(), directory: deploymentDirectory(), safeStorage,
+        runtimeRootForProfile: profile => !app.isPackaged && process.env.TYPINGKING_RUNTIME_ROOT
+          ? process.env.TYPINGKING_RUNTIME_ROOT
+          : resolveDeviceRuntimeRoot(process.env.LOCALAPPDATA || process.env.APPDATA || resolveRoot(), profile.device.eventProfileId, profile.device.deviceId)
+      });
+    }
     try { initializeStartup(); }
     catch(error) {
       if (!(error instanceof Error) || error.message !== "PROFILE_FILE_MISSING") throw error;
@@ -1182,34 +1250,33 @@ if (mayStartApplication) void app.whenReady().then(async () => {
   }
   const beforeClose = geumcheonNas && launchPolicy.pcRole === "player"
     ? async (closingWindow: BrowserWindow) => {
-        const closeRequestId = randomUUID();
-        geumcheonNas.checkpointFence.begin(
-          closingWindow.webContents.id,
-          closeRequestId
-        );
-        const checkpointResult = await requestRendererActiveAttemptCheckpoint({
-          ipc: ipcMain,
-          target: closingWindow.webContents,
-          timeoutMs: 900,
-          requestId: closeRequestId
-        });
-        geumcheonNas.checkpointFence.seal(
-          closingWindow.webContents.id,
-          closeRequestId
-        );
-        if (checkpointResult !== "completed") {
-          appendStartupLog(
-            `Geumcheon close-time checkpoint used fallback: ${checkpointResult}`
-          );
-        }
-        const recovered = await geumcheonNas.runtime.recover();
-        if (!recovered) return;
-        await Promise.race([
-          geumcheonNas.flush().then(() => undefined).catch((error) => {
-            appendStartupLog(`Geumcheon NAS window-close flush failed: ${errorMessage(error)}`);
-          }),
-          new Promise<void>((resolve) => setTimeout(resolve, 1500))
-        ]);
+        const connection={...geumcheonNas} as GeumcheonConnection;
+        const coordinator=connection.source==="production"?connection.mutationCoordinator:undefined;
+        const lifecycle=coordinator?.beginLifecycle(coordinator.epoch);
+        try {
+          const closeRequestId = randomUUID();
+          connection.checkpointFence.begin(closingWindow.webContents.id,closeRequestId);
+          const checkpointResult = await requestRendererActiveAttemptCheckpoint({
+            ipc: ipcMain,target: closingWindow.webContents,timeoutMs: 900,requestId: closeRequestId
+          });
+          connection.checkpointFence.seal(closingWindow.webContents.id,closeRequestId);
+          if (checkpointResult !== "completed") {
+            appendStartupLog("Geumcheon close-time checkpoint used fallback: "+checkpointResult);
+          }
+          const recovered=coordinator&&lifecycle
+            ?await coordinator.runMutation(lifecycle.epoch,()=>withDeploymentLocks([resolveRuntimeRoot()],()=>{
+              coordinator.assertEpoch(lifecycle.epoch);
+              return connection.runtime.recover();
+            }))
+            :await connection.runtime.recover();
+          if (!recovered) return;
+          await Promise.race([
+            connection.flush().then(() => undefined).catch((error) => {
+              appendStartupLog("Geumcheon NAS window-close flush failed: "+errorMessage(error));
+            }),
+            new Promise<void>((resolve) => setTimeout(resolve, 1500))
+          ]);
+        } finally {lifecycle?.release();}
       }
     : undefined;
   const activeEventProfile = startup.eventProfile;

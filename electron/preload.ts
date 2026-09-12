@@ -6,8 +6,22 @@ const ACTIVE_ATTEMPT_CHECKPOINT_REQUEST_CHANNEL =
 const ACTIVE_ATTEMPT_CHECKPOINT_ACK_CHANNEL =
   "records:activeAttemptCheckpointReady";
 
+let bootstrapContextCaptured=false;
+let runtimeContextEpoch:string|undefined;
+async function getBootstrap() {
+  const result=await ipcRenderer.invoke("app:getBootstrap");
+  if(result?.ok===true&&result.data) {
+    if(!bootstrapContextCaptured) {
+      bootstrapContextCaptured=true;
+      runtimeContextEpoch=typeof result.data.runtimeContextEpoch==="string"?result.data.runtimeContextEpoch:undefined;
+    }
+    return {...result,data:{...result.data,runtimeContextEpoch}};
+  }
+  return result;
+}
+
 contextBridge.exposeInMainWorld("typingKing", {
-  getBootstrap: () => ipcRenderer.invoke("app:getBootstrap"),
+  getBootstrap,
   getDeploymentStatus: () => ipcRenderer.invoke("deployment:status"),
   chooseDeploymentProfile: () => ipcRenderer.invoke("deployment:choose"),
   cancelDeploymentProfile: () => ipcRenderer.invoke("deployment:cancel"),
@@ -45,17 +59,17 @@ contextBridge.exposeInMainWorld("typingKing", {
     return () => ipcRenderer.removeListener(ACTIVE_ATTEMPT_CHECKPOINT_REQUEST_CHANNEL, listener);
   },
   checkpointActiveAttempt: (input: SaveRecordInput, closeRequestId?: string) =>
-    ipcRenderer.invoke("records:checkpointActiveAttempt", input, closeRequestId),
-  saveRecord: (input: SaveRecordInput) => ipcRenderer.invoke("records:save", input),
+    ipcRenderer.invoke("records:checkpointActiveAttempt", input, closeRequestId, runtimeContextEpoch),
+  saveRecord: (input: SaveRecordInput) => ipcRenderer.invoke("records:save", input, runtimeContextEpoch),
   checkGameStartReadiness: (gameMode: "normal" | "ai_challenge") =>
     ipcRenderer.invoke("records:checkStartReady", gameMode),
   listRecords: (request?: RecordListRequest) => request === undefined
     ? ipcRenderer.invoke("records:list") : ipcRenderer.invoke("records:list", request),
   updateRecord: (recordId: string, patch: Partial<RecordRow>, adminName: string) =>
-    ipcRenderer.invoke("records:update", recordId, patch, adminName),
+    ipcRenderer.invoke("records:update", recordId, patch, adminName, runtimeContextEpoch),
   deleteRecord: (recordId: string, adminName: string) =>
-    ipcRenderer.invoke("records:delete", recordId, adminName),
-  clearRecords: (adminName: string) => ipcRenderer.invoke("records:clear", adminName),
+    ipcRenderer.invoke("records:delete", recordId, adminName, runtimeContextEpoch),
+  clearRecords: (adminName: string) => ipcRenderer.invoke("records:clear", adminName, runtimeContextEpoch),
   exportRecords: (rows: RecordRow[], scope: "all" | "filtered" | "leaderboard") =>
     ipcRenderer.invoke("records:export", rows, scope),
   exportCurrentSessionBackup: () => ipcRenderer.invoke("records:exportSessionBackup"),

@@ -488,6 +488,7 @@ export type CsvBackupExportResult = {
 };
 
 export type BootstrapData = {
+  runtimeContextEpoch?: string;
   config: AppConfig;
   assetBaseUrl: string;
   notices: string[];

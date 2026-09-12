@@ -153,6 +153,30 @@ test('operator local-file command emits only receipt and protects every generate
     for(const key of input.keys)assert.ok(!cli.stdout.includes(key.token)&&!cli.stderr.includes(key.token));
     assert.ok(!cli.stdout.includes(input.administratorPassword));
     assert.equal(JSON.parse(cli.stdout).stage,'SYNTHETIC');
+
+    const originals=buildRentalProfiles(input,{now}).profiles.map(({fileName})=>{
+      const file=path.join(privateInputs,fileName);
+      return {file,fileName,bytes:fs.readFileSync(file)};
+    });
+    const renewalRequest={...request,deploymentId:request.deploymentId+'-renewed',renewalProfilePaths:originals.map(p=>p.file),outputDirectory:path.join(base,'renewed')};
+    const renewalRequestFile=write('synthetic-renewal-request.json',JSON.stringify(renewalRequest));
+    const renewalCli=spawnSync(process.execPath,[path.resolve('node_modules/tsx/dist/cli.mjs'),path.resolve('scripts/rental-v4-issue-profiles.ts'),renewalRequestFile],{encoding:'utf8',windowsHide:true,timeout:60000});
+    assert.equal(renewalCli.status,0,renewalCli.stderr);
+    assert.equal(JSON.parse(renewalCli.stdout).deploymentId,renewalRequest.deploymentId);
+    for(const original of originals){
+      assert.ok(fs.readFileSync(original.file).equals(original.bytes));
+      const renewed=JSON.parse(fs.readFileSync(path.join(renewalRequest.outputDirectory,original.fileName),'utf8'));
+      assert.ok(JSON.stringify(renewed.administrator)===JSON.stringify(JSON.parse(original.bytes.toString()).administrator));
+      assert.ok(!renewalCli.stdout.includes(original.file));
+    }
+    for(const key of input.keys)assert.ok(!renewalCli.stdout.includes(key.token)&&!renewalCli.stderr.includes(key.token));
+    assert.ok(!renewalCli.stdout.includes(input.administratorPassword));
+    const refusedRequest={...renewalRequest,renewalProfilePaths:[path.resolve('package.json'),...renewalRequest.renewalProfilePaths.slice(1)],outputDirectory:path.join(base,'rejected-renewal')};
+    const refusedFile=write('synthetic-refused-renewal.json',JSON.stringify(refusedRequest));
+    const refused=spawnSync(process.execPath,[path.resolve('node_modules/tsx/dist/cli.mjs'),path.resolve('scripts/rental-v4-issue-profiles.ts'),refusedFile],{encoding:'utf8',windowsHide:true,timeout:60000});
+    assert.equal(refused.status,1);
+    assert.equal(fs.existsSync(refusedRequest.outputDirectory),false);
+
     if(process.platform==='win32'){
       const code="$p='"+path.join(request.outputDirectory,'player_01.device-profile.json').replace(/'/g,"''")+"'; $acl=[IO.File]::GetAccessControl($p); $allowed=@([Security.Principal.WindowsIdentity]::GetCurrent().User.Value,'S-1-5-18'); foreach($rule in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])){if($rule.AccessControlType -eq 'Allow' -and $rule.IdentityReference.Value -notin $allowed){exit 1}}";
       const acl=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',code],{encoding:'utf8',windowsHide:true});
@@ -207,5 +231,111 @@ test('receipt refuses administrator raw password and server token hash in otherw
     input.administratorPassword='ChosenAdministratorSecret123';
     input.deploymentId=kind==='password'?input.administratorPassword:input.tokenManifest.tokens[0]!.tokenHash;
     assert.throws(()=>buildRentalProfiles(input,{now}),/PUBLIC_RECEIPT_SECRET_MATCH/);
+  }
+});
+
+
+test('explicit renewal from two actual issuer batches is accepted by the cold runtime', async context=>{
+  const first=syntheticInput(), renewal=syntheticInput();
+  const current=new Date(), previousTime=new Date(current.getTime()-7200000);
+  first.input.issuedAt=first.input.notBefore=previousTime.toISOString();
+  first.input.expiresAt=new Date(current.getTime()-3600000).toISOString();
+  renewal.input.issuedAt=renewal.input.notBefore=current.toISOString();
+  renewal.input.expiresAt=new Date(current.getTime()+3600000).toISOString();
+  renewal.input.deploymentId+='-renewed';
+  renewal.input.administratorPassword=first.input.administratorPassword;
+  for(const input of [first.input,renewal.input])for(const token of input.tokenManifest.tokens)token.expiresAt=new Date(current.getTime()+7200000).toISOString();
+  const oldBatch=buildRentalProfiles(first.input,{now:previousTime});
+  const nextBatch=buildRentalProfiles({...renewal.input,renewalProfiles:oldBatch.profiles},{now:current});
+  const normalSecondBatch=buildRentalProfiles(renewal.input,{now:current});
+  const old=oldBatch.profiles[0]!, next=nextBatch.profiles[0]!;
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'rental-v4-issued-renewal-'));
+  context.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const directory=path.join(root,'client'),runtimeRoot=path.join(root,'runtime');
+  fs.mkdirSync(directory);fs.mkdirSync(path.join(runtimeRoot,'nas'),{recursive:true});
+  const selectedFilePath=path.join(directory,old.fileName),selectionPath=path.join(root,'selected-profile.bin');
+  const protectedPath=path.join(runtimeRoot,'nas','deployment-profile.bin');
+  const storage={isEncryptionAvailable:()=>true,encryptString:(value:string)=>Buffer.from('synthetic-protected:'+value),
+    decryptString:(value:Buffer)=>{assert.equal(value.subarray(0,20).toString(),'synthetic-protected:');return value.subarray(20).toString();}};
+  const runtime=await import('../../electron/deploymentProfile');
+  fs.writeFileSync(selectedFilePath,JSON.stringify(old.profile));
+  runtime.saveDeploymentSelection(selectionPath,directory,old.profile,selectedFilePath,storage);
+  fs.writeFileSync(protectedPath,storage.encryptString(JSON.stringify(old.profile)));
+  const before=[fs.readFileSync(selectionPath),fs.readFileSync(protectedPath)];
+  fs.writeFileSync(selectedFilePath,JSON.stringify(normalSecondBatch.profiles[0]!.profile));
+  await assert.rejects(()=>runtime.renewExpiredAdjacentDeployment({selectionPath,directory,safeStorage:storage,runtimeRootForProfile:()=>runtimeRoot}),/PROFILE_PENDING_SCOPE_CHANGE/);
+  assert.ok(fs.readFileSync(selectionPath).equals(before[0]!)&&fs.readFileSync(protectedPath).equals(before[1]!));
+  fs.writeFileSync(selectedFilePath,JSON.stringify(next.profile));
+  assert.equal(await runtime.renewExpiredAdjacentDeployment({selectionPath,directory,safeStorage:storage,runtimeRootForProfile:()=>runtimeRoot}),true);
+  assert.ok(JSON.stringify(next.profile.administrator)===JSON.stringify(old.profile.administrator));
+  assert.ok(new runtime.DeploymentProfileStore(protectedPath,storage).token('writer')===next.profile.credentials.writer!.token);
+});
+
+
+function explicitRenewalFixture(){
+  const {input,now}=syntheticInput();
+  const previous=buildRentalProfiles(input,{now}).profiles;
+  const renewal={...syntheticInput().input,administratorPassword:input.administratorPassword,renewalProfiles:structuredClone(previous)};
+  renewal.deploymentId+='-renewed';
+  return {input:renewal,previous,now};
+}
+test('explicit renewal preserves each distinct verifier and only rotates approved credential and validity fields',()=>{
+  const {input,previous,now}=explicitRenewalFixture();
+  const before=JSON.stringify(previous);
+  const next=buildRentalProfiles(input,{now});
+  assert.equal(new Set(previous.map(p=>p.profile.administrator.salt)).size,5);
+  assert.equal(JSON.stringify(previous),before);
+  for(const original of previous){
+    const renewed=next.profiles.find(p=>p.fileName===original.fileName)!;
+    assert.ok(JSON.stringify(renewed.profile.administrator)===JSON.stringify(original.profile.administrator));
+    assert.deepEqual(renewed.profile.device,original.profile.device);
+    assert.deepEqual(renewed.profile.allowedSessions,original.profile.allowedSessions);
+    for(const role of Object.keys(original.profile.credentials) as Array<'writer'|'leaderboard'>){
+      assert.ok(renewed.profile.credentials[role]!.token!==original.profile.credentials[role]!.token);
+      assert.deepEqual({...renewed.profile.credentials[role],token:'redacted'},{...original.profile.credentials[role],token:'redacted'});
+    }
+  }
+  const receipt=JSON.stringify(next.receipt);
+  for(const old of previous)for(const credential of Object.values(old.profile.credentials))assert.ok(!receipt.includes(credential.token));
+});
+test('explicit renewal refuses wrong administrator, incomplete original set and any scope change',()=>{
+  const changes:Array<{name:string;edit:(input:any)=>void}>=[
+    {name:'wrong password',edit:i=>i.administratorPassword='AnotherStrongAdministrator2026!'},
+    {name:'one verifier mismatch',edit:i=>i.renewalProfiles[4].profile.administrator.hash='0'.repeat(128)},
+    {name:'missing original',edit:i=>i.renewalProfiles.pop()},
+    {name:'extra original',edit:i=>i.renewalProfiles.push(structuredClone(i.renewalProfiles[0]))},
+    {name:'duplicate device',edit:i=>i.renewalProfiles[4]=structuredClone(i.renewalProfiles[0])},
+    {name:'renamed original',edit:i=>i.renewalProfiles[0].fileName='renamed.device-profile.json'},
+    {name:'API change',edit:i=>i.apiBaseUrl='https://127.0.0.1:9555'},
+    {name:'default session change',edit:i=>i.defaultSessionId='v4-round-2'},
+    {name:'session scope change',edit:i=>i.eventConfig.allowedSessions.official.push({sessionId:'new-round',dayNo:2,roundNo:1})},
+    {name:'device timeout change',edit:i=>i.renewalProfiles[2].profile.device.requestTimeoutMs=6000},
+    {name:'wrong credential role',edit:i=>i.renewalProfiles[3].profile.credentials.writer.role='leaderboard'},
+    {name:'malformed old profile',edit:i=>i.renewalProfiles[0].profile.extra='not-allowed'},
+    {name:'future new activation',edit:i=>i.notBefore='2026-09-12T01:00:00.000Z'},
+    {name:'expired new profile',edit:i=>i.expiresAt='2026-09-11T00:00:00.000Z'}
+  ];
+  for(const change of changes){
+    const {input,now}=explicitRenewalFixture();change.edit(input);let result:unknown;
+    assert.throws(()=>{result=buildRentalProfiles(input,{now});},undefined,change.name);
+    assert.equal(result,undefined,change.name+' must not return a partial batch');
+  }
+});
+test('failed explicit renewal creates no output and leaves all five local originals unchanged',async context=>{
+  const {input,previous,now}=explicitRenewalFixture();
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'rental-v4-renewal-output-'));
+  context.after(()=>{assert.ok(path.resolve(root).startsWith(path.resolve(os.tmpdir())+path.sep));fs.rmSync(root,{recursive:true,force:true});});
+  const originals=previous.map(p=>{const file=path.join(root,p.fileName),bytes=Buffer.from(JSON.stringify(p.profile));fs.writeFileSync(file,bytes);return {file,bytes};});
+  for(const [index,edit] of [
+    (value:any)=>value.administratorPassword='AnotherStrongAdministrator2026!',
+    (value:any)=>value.renewalProfiles[4].profile.administrator.hash='0'.repeat(128),
+    (value:any)=>value.defaultSessionId='v4-round-2',
+    (value:any)=>value.renewalProfiles.pop()
+  ].entries()){
+    const candidate=structuredClone(input);edit(candidate);
+    const outputDirectory=path.join(root,'rejected-'+index);
+    await assert.rejects(()=>issueRentalProfiles({input:candidate,approvedOutputRoot:root,outputDirectory,now}));
+    assert.equal(fs.existsSync(outputDirectory),false);
+    for(const original of originals)assert.ok(fs.readFileSync(original.file).equals(original.bytes));
   }
 });

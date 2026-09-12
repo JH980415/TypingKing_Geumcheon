@@ -160,6 +160,8 @@ export function TypingGameApp({ bootstrap }: Props) {
   const [privacyAgreedAt, setPrivacyAgreedAt] = useState("");
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
+  const [transitionBusy, setTransitionBusy] = useState(false);
+  const transitionBusyRef = useRef(false);
   const [startFormKey, setStartFormKey] = useState(0);
   const [pendingGameAction, setPendingGameAction] = useState<GameControlAction | null>(null);
   const [gameControlSaving, setGameControlSaving] = useState(false);
@@ -401,6 +403,7 @@ export function TypingGameApp({ bootstrap }: Props) {
   }
 
   async function startGame(requestedMode: GameMode = forcedGameMode ?? gameMode, requestedDebugMode: DebugModeType = "") {
+    if (transitionBusyRef.current) return;
     const isDebug = requestedDebugMode !== "";
     const modeToStart = forcedGameMode ?? requestedMode;
     if (!isDebug) {
@@ -426,6 +429,7 @@ export function TypingGameApp({ bootstrap }: Props) {
     }
 
     const storageReady = await window.typingKing.checkGameStartReadiness(modeToStart);
+    if (transitionBusyRef.current) return;
     if (!storageReady.ok || !storageReady.data?.ready) {
       const message = formatGameStartReadinessFailure(storageReady, bootstrap.eventProfile.profileId);
       setFormMessage(message);
@@ -438,6 +442,7 @@ export function TypingGameApp({ bootstrap }: Props) {
         sessionKind: bootstrap.variantPolicy.sessionKind,
         gameMode: "ai_challenge"
       });
+      if (transitionBusyRef.current) return;
       if (!drawn.ok || !drawn.data) {
         setFormMessage(storageErrorForDisplay(drawn.error, "대회 문구를 불러오지 못했습니다. 관리자에게 문의해 주세요."));
         return;
@@ -1062,7 +1067,7 @@ export function TypingGameApp({ bootstrap }: Props) {
           <p className={canStart ? "notice-text" : "error-text"}>{formMessage || validationMessage}</p>
           </div>
           <div className="button-row split">
-            <button className="primary-button large" disabled={!canStart} onClick={() => void startGame()}>
+            <button className="primary-button large" disabled={!canStart || transitionBusy} onClick={() => void startGame()}>
               시작
             </button>
             <button type="button" className="secondary-button" onClick={() => setAdminOpen(true)}>
@@ -1098,8 +1103,13 @@ export function TypingGameApp({ bootstrap }: Props) {
       )}
       {adminOpen && (
         <StageTextAdmin
-          onClose={() => setAdminOpen(false)}
+          onClose={() => { if (!transitionBusyRef.current) setAdminOpen(false); }}
+          onTransitionBusyChange={(busy) => {
+            transitionBusyRef.current = busy;
+            setTransitionBusy(busy);
+          }}
           onStartDebug={(mode) => {
+            if (transitionBusyRef.current) return;
             setAdminOpen(false);
             const debugMode = forcedGameMode ?? gameMode;
             void startGame(debugMode, debugMode === "ai_challenge" ? "ai_challenge_debug" : "normal_typing_debug");

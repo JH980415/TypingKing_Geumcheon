@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import type { DeviceProfile, EventProfileId, SessionKind, StageText } from "../../../shared/types";
 import {
   formatQueuedRecordFlushMessage,
@@ -9,6 +9,7 @@ import {
 type Props = {
   onClose: () => void;
   onStartDebug: (mode: TextMode) => void;
+  onTransitionBusyChange?: (busy: boolean) => void;
   allowedMode?: TextMode;
   isPractice?: boolean;
   eventProfileId?: EventProfileId;
@@ -38,6 +39,7 @@ export function stageTextEditingAllowed(profileId: EventProfileId | undefined, p
 export function StageTextAdmin({
   onClose,
   onStartDebug,
+  onTransitionBusyChange,
   allowedMode = "normal",
   isPractice = false,
   eventProfileId,
@@ -45,6 +47,19 @@ export function StageTextAdmin({
   sessionKind
 }: Props) {
   const canEditStageTexts = stageTextEditingAllowed(eventProfileId, isPractice);
+  const [transitionBusy, setTransitionBusy] = useState(false);
+  const transitionBusyRef = useRef(false);
+  function handleTransitionBusyChange(busy: boolean) {
+    transitionBusyRef.current = busy;
+    setTransitionBusy(busy);
+    onTransitionBusyChange?.(busy);
+  }
+  function closeAdmin() {
+    if (!transitionBusyRef.current) onClose();
+  }
+  function startDebug(mode: TextMode) {
+    if (!transitionBusyRef.current) onStartDebug(mode);
+  }
   const [authorized, setAuthorized] = useState(false);
   const [password, setPassword] = useState("");
   const [adminName, setAdminName] = useState("admin");
@@ -198,7 +213,7 @@ export function StageTextAdmin({
         <section className="modal admin-modal">
           <header className="modal-header">
             <h2>관리자 로그인</h2>
-            <button className="icon-button" onClick={onClose} aria-label="닫기">×</button>
+            <button className="icon-button" onClick={closeAdmin} disabled={transitionBusy} aria-label="닫기">×</button>
           </header>
           <label className="field">
             <span>관리자 이름</span>
@@ -217,7 +232,7 @@ export function StageTextAdmin({
           </label>
           {message && <p className="error-text">{message}</p>}
           <div className="button-row">
-            <button className="secondary-button" onClick={onClose}>취소</button>
+            <button className="secondary-button" onClick={closeAdmin} disabled={transitionBusy}>취소</button>
             <button className="primary-button" onClick={authorize}>비밀번호 확인</button>
           </div>
         </section>
@@ -243,7 +258,7 @@ export function StageTextAdmin({
               ))}
             </div>
           </div>
-          <button className="icon-button" onClick={onClose} aria-label="닫기">×</button>
+          <button className="icon-button" onClick={closeAdmin} disabled={transitionBusy} aria-label="닫기">×</button>
         </header>
 
         <section className="debug-mode-panel">
@@ -251,16 +266,16 @@ export function StageTextAdmin({
           <p>디버그 모드는 기능 테스트용입니다. 기록은 리더보드에 반영되지 않습니다.</p>
           <div className="debug-mode-options">
             {allowedMode === "normal" && (
-              <button type="button" className="primary-button" onClick={() => onStartDebug("normal")}>
+              <button type="button" className="primary-button" onClick={() => startDebug("normal")} disabled={transitionBusy}>
                 일잘러 타자왕 디버그 시작
               </button>
             )}
             {allowedMode === "ai_challenge" && (
-              <button type="button" className="primary-button" onClick={() => onStartDebug("ai_challenge")}>
+              <button type="button" className="primary-button" onClick={() => startDebug("ai_challenge")} disabled={transitionBusy}>
                 AI 타자왕 디버그 시작
               </button>
             )}
-            <button type="button" className="secondary-button" onClick={onClose}>
+            <button type="button" className="secondary-button" onClick={closeAdmin} disabled={transitionBusy}>
               메인화면으로 돌아가기
             </button>
           </div>
@@ -277,6 +292,7 @@ export function StageTextAdmin({
           deviceProfile={deviceProfile}
           sessionKind={sessionKind}
           gameMode={allowedMode}
+          onTransitionBusyChange={handleTransitionBusyChange}
         />
 
         <section className="queued-records-panel">
