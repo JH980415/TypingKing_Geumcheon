@@ -214,3 +214,58 @@ test("accepts authenticated leaderboard ready identity", async () => {
 
   assert.equal(identity.role, "leaderboard");
 });
+
+test("keeps the request timeout armed until the JSON body is fully read", async () => {
+  const timer: { callback?: () => void; cleared: boolean } = { cleared: false };
+  const fetch: FetchLike = async (_input, init) => {
+    const signal = init?.signal;
+    const body = new ReadableStream<Uint8Array>({
+      pull() {
+        return new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("body aborted")), { once: true });
+        });
+      },
+    });
+    return new Response(body, { status: 200, headers: { "content-type": "application/json" } });
+  };
+  const client = new NasApiClient({
+    baseUrl: "https://records.example.test",
+    deviceId: "PC01",
+    getToken: async () => token,
+    fetch,
+    requestTimeoutMs: 750,
+    timers: {
+      setTimeout: (callback) => { timer.callback = callback; return 23; },
+      clearTimeout: () => { timer.cleared = true; },
+    },
+  });
+  const outcome = client.getRecords({ kind: "official", session_id: "official-1", day_no: 1, round_no: 1 }).then(() => "resolved", (error: unknown) => error instanceof Error ? error.message : "rejected");
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(timer.cleared, false, "timeout must stay armed while the body is still streaming");
+  timer.callback?.();
+  const result = await Promise.race([outcome, new Promise((resolve) => setTimeout(() => resolve("HUNG"), 500))]);
+  assert.notEqual(result, "HUNG", "a stalled body must not hang the caller");
+  assert.notEqual(result, "resolved");
+  assert.equal(timer.cleared, true);
+});
+
+test("exposes the server clock skew measured from the Date header", async () => {
+  const client = new NasApiClient({
+    baseUrl: "https://records.example.test",
+    deviceId: "PC01",
+    getToken: async () => token,
+    fetch: async () => new Response(JSON.stringify({
+      schema_version: 1,
+      status: "ready",
+      event_id: "geumcheon-science-festival-2026",
+      device_id: "PC01",
+      role: "writer",
+      session: { kind: "official", session_id: "official-1", day_no: 1, round_no: 1 },
+    }), { status: 200, headers: { "content-type": "application/json", date: new Date(Date.now() - 10_000).toUTCString() } }),
+    requestTimeoutMs: 1_000,
+  });
+  assert.equal(client.serverClockSkewMs(), undefined);
+  await client.getReady({ kind: "official", session_id: "official-1", day_no: 1, round_no: 1 }, { eventId: "geumcheon-science-festival-2026", role: "writer" });
+  const skew = client.serverClockSkewMs();
+  assert.ok(typeof skew === "number" && skew >= 9_000 && skew <= 12_000, `client should measure about +10 s ahead, got ${skew}`);
+});

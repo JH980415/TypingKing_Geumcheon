@@ -34,6 +34,7 @@ export class NasApiError extends Error {
 
 export class NasApiClient {
   private readonly baseUrl: string;
+  private lastServerClock: { serverMs: number; localMs: number } | undefined;
 
   constructor(private readonly options: {
     baseUrl: string;
@@ -89,6 +90,11 @@ export class NasApiClient {
     });
     return value;
   }
+  /** Client clock minus server clock (from the HTTP Date header, 1 s resolution) at the last response; positive = this PC is ahead. */
+  serverClockSkewMs(): number | undefined {
+    return this.lastServerClock ? this.lastServerClock.localMs - this.lastServerClock.serverMs : undefined;
+  }
+
   async postAdminAction(action: NasAdminActionV1): Promise<unknown> {
     return this.request("/api/v1/admin/actions", {
       method: "POST",
@@ -105,27 +111,37 @@ export class NasApiClient {
     const timeout = timers.setTimeout(() => controller.abort(), this.options.requestTimeoutMs);
     let response: Response;
     try {
-      response = await this.options.fetch(`${this.baseUrl}${route}`, {
-        ...init,
-        redirect: "error",
-        cache: "no-store",
-        headers: {
-          authorization: `Bearer ${token}`,
-          "x-device-id": this.options.deviceId,
-          accept: "application/json",
-          ...init.headers,
-        },
-        signal: controller.signal,
-      });
-    } catch {
-      throw new NasApiError(0, "NAS_NETWORK_ERROR");
+      try {
+        response = await this.options.fetch(`${this.baseUrl}${route}`, {
+          ...init,
+          redirect: "error",
+          cache: "no-store",
+          headers: {
+            authorization: `Bearer ${token}`,
+            "x-device-id": this.options.deviceId,
+            accept: "application/json",
+            ...init.headers,
+          },
+          signal: controller.signal,
+        });
+      } catch {
+        throw new NasApiError(0, "NAS_NETWORK_ERROR");
+      }
+      this.recordServerClock(response.headers.get("date"));
+      if (!response.ok) throw new NasApiError(response.status, `HTTP_${response.status}`, parseRetryAfter(response.headers.get("retry-after")));
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!/^application\/json(?:;|$)/i.test(contentType)) throw new Error("NAS_RESPONSE_CONTENT_TYPE_INVALID");
+      // The timeout stays armed while the body streams so a stalled connection cannot hang a poll or the outbox flush.
+      return await readLimitedJson(response);
     } finally {
       timers.clearTimeout(timeout);
     }
-    if (!response.ok) throw new NasApiError(response.status, `HTTP_${response.status}`, parseRetryAfter(response.headers.get("retry-after")));
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!/^application\/json(?:;|$)/i.test(contentType)) throw new Error("NAS_RESPONSE_CONTENT_TYPE_INVALID");
-    return readLimitedJson(response);
+  }
+
+  private recordServerClock(dateHeader: string | null): void {
+    if (dateHeader == null) return;
+    const serverMs = Date.parse(dateHeader);
+    if (Number.isFinite(serverMs)) this.lastServerClock = { serverMs, localMs: Date.now() };
   }
 }
 

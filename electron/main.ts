@@ -361,7 +361,8 @@ async function initializeGeumcheonNasConnection(
     checkpointFence: options.checkpointFence ?? new RendererCheckpointFence(),
     mutationCoordinator: options.coordinator,
     checkReadiness: () => checkGeumcheonNasReadiness({
-      checkAuthenticatedReady: () => runtime.checkReady()
+      checkAuthenticatedReady: () => runtime.checkReady(),
+      getServerClockSkewMs: () => runtime.serverClockSkewMs()
     }),
     flush: () => {
       if (variant.endsWith("leaderboard")) return Promise.resolve({attempted:0,sent:0,blocked:0,deferred:0,authRequired:false});
@@ -388,9 +389,17 @@ async function initializeGeumcheonNasConnection(
     void connection.flush().catch((error) => {
       appendStartupLog(`Geumcheon NAS startup flush failed: ${errorMessage(error)}`);
     });
+    // A record deferred by a network outage must not wait for the next game or an app restart.
+    const periodicFlush = setInterval(() => {
+      void connection.flush().catch((error) => {
+        appendStartupLog(`Geumcheon NAS periodic flush failed: ${errorMessage(error)}`);
+      });
+    }, GEUMCHEON_PERIODIC_FLUSH_MS);
+    periodicFlush.unref();
   }
   return connection;
 }
+const GEUMCHEON_PERIODIC_FLUSH_MS = 60_000;
 
 export function createWindow(
   variant: AppVariant,

@@ -23,6 +23,8 @@ import type { AuthenticatedPrincipal } from "./auth.js";
 import type { NasServerConfigV1 } from "./config.js";
 
 const MAX_CANONICAL_BODY_BYTES = 32 * 1024;
+// Rental PC clocks may run ahead of the NAS clock; receivedAt stays the authoritative server timestamp.
+const CLIENT_CLOCK_SKEW_TOLERANCE_MS = 5 * 60_000;
 const INTERRUPTION_MEMOS = new Set([
   "사용자 중단:메인화면",
   "사용자 중단:다시하기",
@@ -190,7 +192,7 @@ function validateTimestamps(row: RecordRow, receivedAt: string): void {
   const completed = timestamp(row.completed_at, "COMPLETED_AT_INVALID");
   const received = timestamp(receivedAt, "RECEIVED_AT_INVALID");
   const consent = timestamp(row.privacy_agreed_at, "CONSENT_TIMESTAMP_INVALID");
-  if (created > completed || completed > received || consent > completed) {
+  if (created > completed || completed > received + CLIENT_CLOCK_SKEW_TOLERANCE_MS || consent > completed) {
     throw new Error("COMPLETED_AT_INVALID");
   }
 }

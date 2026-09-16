@@ -287,6 +287,15 @@ test("validates phrase identity, timestamps, consent, phone and birth date", () 
   assert.throws(() => validateAndNormalizeRecord(envelope(recordRow({ birthdate: "2001-02-29" })), principal, validationConfig("X:\\data"), RECEIVED_AT), /BIRTHDATE_INVALID/);
 });
 
+test("tolerates a client clock ahead of the server by up to 5 minutes but keeps received_at authoritative", () => {
+  // RECEIVED_AT is 03:10:00Z; a rental PC clock 4 minutes ahead must not lose the record.
+  const ahead = validateAndNormalizeRecord(envelope(recordRow({ completed_at: "2026-08-26T03:14:00.000Z" })), principal, validationConfig("X:\\data"), RECEIVED_AT);
+  assert.equal(ahead.row.completed_at, "2026-08-26T03:14:00.000Z");
+  assert.equal(ahead.received_at, RECEIVED_AT);
+  // 6 minutes ahead exceeds the tolerance and is still rejected.
+  assert.throws(() => validateAndNormalizeRecord(envelope(recordRow({ completed_at: "2026-08-26T03:16:00.000Z" })), principal, validationConfig("X:\\data"), RECEIVED_AT), /COMPLETED_AT_INVALID/);
+});
+
 test("rejects payloads whose canonical form exceeds 32 KiB", () => {
   assert.throws(
     () => validateAndNormalizeRecord(envelope(recordRow({ memo: "x".repeat(33 * 1024) })), principal, validationConfig("X:\\data"), RECEIVED_AT),

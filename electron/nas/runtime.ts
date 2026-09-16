@@ -71,6 +71,8 @@ export type GeumcheonNasRuntime = {
   recover(): Promise<RecordRow | null>;
   flush(): Promise<RetryFlushResult>;
   queueStatus(): Promise<{ pending: number; blocked: number }>;
+  /** Client clock minus server clock at the last NAS response for this device's role; positive = PC ahead. */
+  serverClockSkewMs(): number | undefined;
   loadRecords(options?: { freshOnly?: boolean }): ReturnType<NasLeaderboardClient["load"]>;
   edit(recordId: string, replacement: RecordRow, adminName: string): Promise<unknown>;
   hide(recordId: string, hidden: boolean, adminName: string): Promise<unknown>;
@@ -213,6 +215,7 @@ export function createGeumcheonNasRuntime(options: GeumcheonNasRuntimeOptions): 
       const [pending, blocked] = await Promise.all([outbox.list(options.sessionKind), outbox.listBlocked(options.sessionKind)]);
       return { pending: pending.length, blocked: blocked.length };
     },
+    serverClockSkewMs: () => ((options.executionRole ?? options.device.role) === "player" ? writerApi : leaderboardApi).serverClockSkewMs(),
     loadRecords: async (readOptions) => {
       if(options.credentials) options.credentials.assertCurrent(); else requireRole("leaderboard");
       try {

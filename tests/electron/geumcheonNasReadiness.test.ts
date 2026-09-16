@@ -52,3 +52,34 @@ test("credential bootstrap failures stop startup with a sanitized error", async 
       && !error.message.includes("token-value-must-not-leak"),
   );
 });
+
+const readyIdentity = {
+  schema_version: 1,
+  status: "ready",
+  event_id: "geumcheon-science-festival-2026",
+  device_id: "PC01",
+  role: "writer",
+  session: { kind: "official", session_id: "official-1", day_no: 1, round_no: 1 },
+} as const;
+
+test("refuses game start when the PC clock is ahead of the record server by more than one second", async () => {
+  const result = await checkGeumcheonNasReadiness({
+    checkAuthenticatedReady: async () => readyIdentity,
+    getServerClockSkewMs: () => 4_200,
+  });
+  assert.equal(result.ready, false);
+  assert.deepEqual(result.reasons, ["CLIENT_CLOCK_AHEAD"]);
+  assert.match(result.message ?? "", /시계/);
+  assert.match(result.message ?? "", /시간/);
+  assert.match(result.message ?? "", /4초/);
+});
+
+test("allows unknown, small or negative clock skew", async () => {
+  for (const skew of [undefined, 900, 0, -120_000]) {
+    const result = await checkGeumcheonNasReadiness({
+      checkAuthenticatedReady: async () => readyIdentity,
+      getServerClockSkewMs: () => skew,
+    });
+    assert.deepEqual(result, { ready: true }, `skew ${skew}`);
+  }
+});
