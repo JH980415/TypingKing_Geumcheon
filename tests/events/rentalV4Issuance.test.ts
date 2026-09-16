@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { buildRentalProfiles, issueRentalProfiles, assertPrivateLocalPath } from '../../scripts/rental-v4-issue-profiles';
+import { AdminAccessSessions, REVIEW_LOCAL_ADMIN_PASSWORD } from '../../electron/adminAccessSession';
 
 export function syntheticInput() {
   const now = new Date('2026-09-12T00:00:00.000Z');
@@ -338,4 +339,78 @@ test('failed explicit renewal creates no output and leaves all five local origin
     assert.equal(fs.existsSync(outputDirectory),false);
     for(const original of originals)assert.ok(fs.readFileSync(original.file).equals(original.bytes));
   }
+});
+
+
+function approvedPinInput(){
+  const {input}=syntheticInput();
+  const now=new Date('2026-09-16T00:00:00.000Z');
+  for(const token of input.tokenManifest.tokens)token.expiresAt='2026-10-02T00:00:00.000Z';
+  // Existing test fixture only; production never imports a review password/default.
+  const pin=REVIEW_LOCAL_ADMIN_PASSWORD;
+  return {now,pin,input:{...input,stage:'production' as const,
+    deploymentId:'geumcheon-official-20260916-r7',apiBaseUrl:'https://typingking.thepmd.synology.me',
+    issuedAt:now.toISOString(),notBefore:'2026-09-15T15:00:00.000Z',expiresAt:'2026-09-30T15:00:00.000Z',
+    approvalReference:'approved-pin-policy-regression-test',administratorPassword:pin,
+    administratorPinPolicy:'geumcheon-20260916-approved' as const}};
+}
+
+test('approved event PIN stays a leading-zero string through issuance, renewal and profile verification',()=>{
+  const {input,now,pin}=approvedPinInput();
+  assert.ok(pin.length===4&&pin.startsWith('0'));
+  const before=JSON.stringify(input.keys),batch=buildRentalProfiles(input,{now});
+  assert.equal(JSON.stringify(input.keys),before);
+  assert.ok(!JSON.stringify(batch.receipt).includes(pin));
+  assert.equal(new Set(batch.profiles.map(p=>p.profile.administrator.salt)).size,5);
+  for(const {profile} of batch.profiles){
+    assert.deepEqual(Object.keys(profile.administrator).sort(),['algorithm','hash','salt']);
+    assert.equal(profile.administrator.algorithm,'scrypt');
+    const sessions=new AdminAccessSessions({password:'',verifier:profile.administrator,ttlMs:60_000});
+    const sender={id:47,once(){}};
+    assert.throws(()=>sessions.require(sender),/ADMIN_AUTH_REQUIRED/);
+    for(const wrong of [String(Number(pin)),Number(pin),pin+'0','0473',' '+pin,pin+' ',pin+'\n','０４７３']){
+      assert.deepEqual(sessions.authenticate(sender,wrong as any),{ok:false});
+    }
+    assert.equal(sessions.authenticate(sender,pin).ok,true);
+    assert.equal(sessions.require(sender).adminName,'admin');
+    const selected=input.keys.find(k=>k.tokenId===profile.device.deviceId+'-leaderboard')!;
+    assert.equal(profile.credentials.leaderboard.token,selected.token);
+    assert.notEqual(profile.credentials.leaderboard.token,pin);
+  }
+  const renewed=buildRentalProfiles({...input,renewalProfiles:batch.profiles},{now});
+  for(let i=0;i<batch.profiles.length;i++)assert.deepEqual(renewed.profiles[i]!.profile.administrator,batch.profiles[i]!.profile.administrator);
+  assert.throws(()=>buildRentalProfiles({...input,administratorPassword:String(Number(pin)),renewalProfiles:batch.profiles},{now}),/ADMINISTRATOR_PIN_APPROVAL_INVALID/);
+});
+
+test('approved event PIN rejects numeric coercion, alternate PINs, whitespace and missing opt-in',()=>{
+  const {input,now,pin}=approvedPinInput();
+  for(const value of [undefined,null,Number(pin),47.3,'',String(Number(pin)),pin+'0','0473','1234567890123456','abcd','04a3','０４７３',' '+pin,pin+' ',pin+'\n',pin+'\r\n',pin+'\0','a'.repeat(257)]){
+    assert.throws(()=>buildRentalProfiles({...input,administratorPassword:value as any},{now}),/ADMINISTRATOR_PIN_APPROVAL_INVALID/);
+  }
+  const {administratorPinPolicy,...normal}=input;
+  assert.throws(()=>buildRentalProfiles(normal,{now}),/ADMINISTRATOR_PASSWORD_WEAK/);
+  for(const value of ['password','NoDigitsInThisLongSecret','no-uppercase-digits123','NO-LOWERCASE-DIGITS123']){
+    assert.throws(()=>buildRentalProfiles({...normal,administratorPassword:value},{now}),/ADMINISTRATOR_PASSWORD_WEAK/);
+  }
+});
+
+test('approved event PIN stays bound to this deployment, event, validity, approval and bearer roles',()=>{
+  const {input,now,pin}=approvedPinInput();
+  for(const changes of [
+    {deploymentId:input.deploymentId+'-other'},
+    {administratorPinPolicy:'other-policy'},
+    {stage:'test'},
+    {notBefore:'2026-09-15T14:59:59.999Z'},
+    {expiresAt:'2026-09-30T15:00:00.001Z'},
+    {approvalReference:undefined},
+    {apiBaseUrl:'https://other.example'},
+    {eventConfig:{...input.eventConfig,eventId:'other-event'}},
+    {tokenManifest:{...input.tokenManifest,eventId:'other-event'}},
+  ])assert.throws(()=>buildRentalProfiles({...input,...changes} as any,{now}),/PIN_APPROVAL|APPROVAL|ENDPOINT|EVENT/);
+  const tokenManifest=structuredClone(input.tokenManifest),keys=structuredClone(input.keys);
+  keys[0]!.token=pin;tokenManifest.tokens[0]!.tokenHash=crypto.createHash('sha256').update(pin).digest('hex');
+  assert.throws(()=>buildRentalProfiles({...input,keys,tokenManifest},{now}),/KEY_INVALID/);
+  const approved=buildRentalProfiles(input,{now});
+  assert.equal(approved.profiles.length,5);
+  assert.equal(approved.receipt.productionRelease,'HOLD');
 });

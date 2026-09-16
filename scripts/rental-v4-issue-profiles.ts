@@ -23,6 +23,7 @@ export type RentalIssuanceInput = {
   eventConfig:unknown; tokenManifest:unknown;
   keys:Array<{tokenId:string;token:string}>;
   administratorPassword:string;
+  administratorPinPolicy?:'geumcheon-20260916-approved';
   renewalProfiles?:Array<{fileName:string;profile:unknown}>;
 };
 function fail(code:string):never { throw new Error(code); }
@@ -93,7 +94,7 @@ function validatedRenewalProfiles(input:RentalIssuanceInput,now:Date){
   return previous;
 }
 export function buildRentalProfiles(input:RentalIssuanceInput,{now=new Date()}:{now?:Date}={}){
-  record(input,['stage','deploymentId','apiBaseUrl','issuedAt','notBefore','expiresAt','defaultSessionId','eventConfig','tokenManifest','keys','administratorPassword'],['approvalReference','renewalProfiles']);
+  record(input,['stage','deploymentId','apiBaseUrl','issuedAt','notBefore','expiresAt','defaultSessionId','eventConfig','tokenManifest','keys','administratorPassword'],['approvalReference','renewalProfiles','administratorPinPolicy']);
   if(!['synthetic','test','production'].includes(input.stage))fail('STAGE_INVALID');
   if(input.stage!=='synthetic'&&(typeof input.approvalReference!=='string'||input.approvalReference.trim().length<8))fail('APPROVAL_REQUIRED');
   if(input.stage==='production'&&input.apiBaseUrl!=='https://typingking.thepmd.synology.me')fail('PRODUCTION_ENDPOINT_INVALID');
@@ -102,7 +103,14 @@ export function buildRentalProfiles(input:RentalIssuanceInput,{now=new Date()}:{
   const expiry=iso(input.expiresAt,'EXPIRY_INVALID');
   if(expiry<=now.getTime()||iso(input.notBefore,'NOT_BEFORE_INVALID')>=expiry||iso(input.issuedAt,'ISSUED_AT_INVALID')>=expiry)fail('PROFILE_TIME_INVALID');
   const password=input.administratorPassword;
-  if(typeof password!=='string'||password.length<16||password.length>256||!/[a-z]/.test(password)||!/[A-Z]/.test(password)||!/[0-9]/.test(password)||
+  if(input.administratorPinPolicy!==undefined){
+    // Exact operator-approved event exception; never supplies a password or changes NAS credentials.
+    if(input.administratorPinPolicy!=='geumcheon-20260916-approved'||input.stage!=='production'||
+      input.deploymentId!=='geumcheon-official-20260916-r7'||
+      Date.parse(input.notBefore)!==Date.parse('2026-09-15T15:00:00.000Z')||
+      expiry!==Date.parse('2026-09-30T15:00:00.000Z')||
+      typeof password!=='string'||password.length!==4||sha(password)!=='0421773648ad7d96b578b34b423057eeba404de4bce1a71cc3e296cd6faf20dc')fail('ADMINISTRATOR_PIN_APPROVAL_INVALID');
+  }else if(typeof password!=='string'||password.length<16||password.length>256||!/[a-z]/.test(password)||!/[A-Z]/.test(password)||!/[0-9]/.test(password)||
     /password|changeme|placeholder|__.+__/i.test(password))fail('ADMINISTRATOR_PASSWORD_WEAK');
   const {sessions,tokens}=parseServerInputs(input);
   const selected=sessions.find(s=>s.sessionId===input.defaultSessionId);
@@ -246,7 +254,7 @@ export async function issueRentalProfiles({input,approvedOutputRoot,outputDirect
 export async function issueRentalProfilesFromRequest(requestPath:string){
   const request=JSON.parse(fs.readFileSync(requirePrivateInput(requestPath),'utf8'));
   record(request,['schemaVersion','stage','deploymentId','apiBaseUrl','issuedAt','notBefore','expiresAt','defaultSessionId',
-    'eventConfigPath','tokenManifestPath','keys','administratorPasswordFile','approvedOutputRoot','outputDirectory'],['approvalReference','renewalProfilePaths'],'REQUEST');
+    'eventConfigPath','tokenManifestPath','keys','administratorPasswordFile','approvedOutputRoot','outputDirectory'],['approvalReference','renewalProfilePaths','administratorPinPolicy'],'REQUEST');
   if(request.schemaVersion!==1||!Array.isArray(request.keys)
     ||(request.renewalProfilePaths!==undefined&&(!Array.isArray(request.renewalProfilePaths)||request.renewalProfilePaths.length!==DEVICES.length)))fail('REQUEST_INVALID');
   const read=(p:string)=>fs.readFileSync(requirePrivateInput(p),'utf8');
@@ -254,6 +262,7 @@ export async function issueRentalProfilesFromRequest(requestPath:string){
     stage:request.stage,deploymentId:request.deploymentId,apiBaseUrl:request.apiBaseUrl,
     issuedAt:request.issuedAt,notBefore:request.notBefore,expiresAt:request.expiresAt,defaultSessionId:request.defaultSessionId,
     ...(request.approvalReference===undefined?{}:{approvalReference:request.approvalReference}),
+    ...(request.administratorPinPolicy===undefined?{}:{administratorPinPolicy:request.administratorPinPolicy}),
     eventConfig:JSON.parse(read(request.eventConfigPath)),tokenManifest:JSON.parse(read(request.tokenManifestPath)),
     keys:request.keys.map((k:unknown)=>{const item=record(k,['tokenId','filePath'],[],'KEY_FILE');return {tokenId:item.tokenId,token:read(item.filePath).trim()};}),
     administratorPassword:read(request.administratorPasswordFile).replace(/\r?\n$/,''),

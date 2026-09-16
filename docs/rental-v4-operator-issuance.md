@@ -31,9 +31,12 @@
 | eventConfigPath | 기존 서버 설정 파일의 승인된 로컬 경로 |
 | tokenManifestPath | 기존 서버 토큰 해시 manifest의 승인된 로컬 경로 |
 | keys | 9개의 {tokenId, filePath}. filePath는 해당 기존 원문 키 파일 경로 |
-| administratorPasswordFile | 승인된 담당자 관리자 암호 로컬 파일. 16~256자, 영문 대/소문자와 숫자 포함, 공통 기본암호 금지 |
+| administratorPasswordFile | 승인된 담당자 관리자 암호 로컬 파일. 기본은 16~256자·영문 대/소문자·숫자 포함. 아래 명시 정책의 이번 금천 승인 PIN만 예외이며, 공통 기본암호·자동 채움 금지 |
 | approvedOutputRoot | 승인된 기존 비공유 로컬 출력 부모 폴더 |
 | outputDirectory | approvedOutputRoot 바로 아래의 아직 존재하지 않는 새 발급 폴더 |
+| administratorPinPolicy | 선택 필드. 이번 승인 PIN 발급에만 `geumcheon-20260916-approved`; 생략하면 기존 강한 암호 정책 유지 |
+
+PIN 예외는 `stage=production`, `deploymentId=geumcheon-official-20260916-r7`, 승인 HTTPS·승인참조, 금천 event-config/manifest, `notBefore=2026-09-15T15:00:00.000Z` 및 `expiresAt=2026-09-30T15:00:00.000Z`, 사용자 승인 PIN의 고정 SHA-256 일치가 모두 필요하다. 다른 배포·기간·PIN은 거부한다. PIN은 선행 0을 포함한 문자열 그대로 보호된 파일에서 읽고 프로필에는 기존 scrypt salt/hash verifier만 담는다. 숫자 변환·공백 제거·자동 기본값을 추가하지 않는다. PIN은 NAS writer/leaderboard/operator 키를 대체하지 않으며 일반 EXE 시작에서 입력을 요구하지 않는다.
 
 로컬 입력 파일은 현재 운영자/SYSTEM/로컬 Administrators 외 읽기 허용이 있으면 거부합니다. 출력 폴더는 현재 운영자와 SYSTEM만 접근하는 보호 ACL을 적용한 뒤 파일을 씁니다. 네트워크 경로·네트워크 매핑 드라이브·알려진 동기화 폴더·Git 저장소·경로 링크는 거부합니다. 기존 출력 폴더는 덮어쓰지 않습니다.
 
